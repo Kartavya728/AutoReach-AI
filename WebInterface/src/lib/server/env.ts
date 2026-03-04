@@ -22,11 +22,10 @@ export function getServerConfig() {
     campaignxBaseUrl: getEnv("CAMPAIGNX_BASE_URL", DEFAULT_CAMPAIGNX_BASE_URL)!,
     campaignxApiKey: getEnv("CAMPAIGNX_API_KEY"),
     geminiApiKey: getEnv("GEMINI_API_KEY"),
-    geminiModel: getEnv("GEMINI_MODEL", "gemini-2.0-flash"),
+    geminiModel: getEnv("GEMINI_MODEL", "gemini-2.5-flash"),
     langsmithApiKey: getEnv("LANGSMITH_API_KEY"),
-    langsmithWorkspaceId: getEnv("LANGSMITH_WORKSPACE_ID"),
     langsmithProject: getEnv("LANGSMITH_PROJECT"),
-    langchainProject: getEnv("LANGCHAIN_PROJECT", "campaignx-ai")!,
+    langchainProject: getEnv("LANGCHAIN_PROJECT", "ai mailing agent")!,
     langchainEndpoint: getEnv("LANGCHAIN_ENDPOINT", DEFAULT_LANGCHAIN_ENDPOINT)!,
     langchainTracingEnabled: getEnv("LANGCHAIN_TRACING_V2", "true") === "true",
     supabaseUrl: getEnv("NEXT_PUBLIC_SUPABASE_URL"),
@@ -34,3 +33,12 @@ export function getServerConfig() {
     supabaseServiceRoleKey: getEnv("SUPABASE_SERVICE_ROLE_KEY"),
   };
 }
+
+/** Available Gemini models the user can select from */
+export const AVAILABLE_MODELS = [
+  { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash", isDefault: true },
+  { id: "gemini-2.0-flash", name: "Gemini 2.0 Flash", isDefault: false },
+  { id: "gemini-2.0-flash-lite", name: "Gemini 2.0 Flash Lite", isDefault: false },
+  { id: "gemini-1.5-flash", name: "Gemini 1.5 Flash", isDefault: false },
+  { id: "gemini-1.5-pro", name: "Gemini 1.5 Pro", isDefault: false },
+];

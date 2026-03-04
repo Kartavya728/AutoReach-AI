@@ -9,6 +9,8 @@ export interface AgentState {
   performanceData: unknown | null;
   optimizations: unknown[];
   iteration: number;
+  customerCount: number;
+  savedCampaignId: string | null;
 }
 
 function wait(ms: number) {
@@ -30,7 +32,7 @@ export async function runCampaignAgent(
     throw new Error(`LangGraph execution failed: ${errorBody}`);
   }
 
-  const data = (await response.json()) as CampaignAgentResponse;
+  const data = (await response.json()) as CampaignAgentResponse & { savedCampaignId?: string };
 
   for (const item of data.steps) {
     await wait(450);
@@ -46,6 +48,8 @@ export async function runCampaignAgent(
     performanceData: null,
     optimizations: [],
     iteration: 1,
+    customerCount: data.customerCount ?? 0,
+    savedCampaignId: data.savedCampaignId ?? null,
   };
 }
 

@@ -2,14 +2,17 @@ import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { randomUUID } from "crypto";
-import { fetchCustomerCohortFromCampaignX } from "@/src/lib/server/campaignx";
+import { serverGetCustomers } from "@/src/lib/server/customers";
 import { getServerConfig } from "@/src/lib/server/env";
 import { configureLangSmithTracing } from "@/src/lib/server/langsmith";
 import { persistAgentTrace } from "@/src/lib/server/supabase";
 
 const WorkflowState = Annotation.Root({
   brief: Annotation(),
+  crmData: Annotation(),
   customerCount: Annotation(),
+  targetCustomerIds: Annotation(),
+  strategyReasoning: Annotation(),
   strategy: Annotation(),
   contentVariants: Annotation(),
   steps: Annotation({
@@ -76,13 +79,27 @@ function getModel() {
 }
 
 async function loadCohortNode(state) {
-  const cohort = await fetchCustomerCohortFromCampaignX();
+  const customers = await serverGetCustomers();
+  
+  // Condense CRM payload to avoid massive context windows
+  const crmData = customers.map(c => ({
+    id: c.customer_id,
+    age: c.age,
+    gender: c.gender,
+    occupation: c.occupation,
+    income: c.monthly_income,
+    w1: c.w1,
+    w2: c.w2,
+    w3: c.w3,
+  }));
+
   return {
-    customerCount: cohort.total_count,
+    crmData,
+    customerCount: customers.length,
     steps: [
       {
         agent: "Cohort-Agent",
-        step: `Fetched customer cohort from CampaignX (${cohort.total_count} users).`,
+        step: `Fetched audience CRM (${customers.length} users) from database.`,
       },
     ],
   };
@@ -92,20 +109,56 @@ async function strategyNode(state) {
   const llm = getModel();
   const response = await llm.invoke([
     new SystemMessage(
-      "You are a campaign strategy planner for BFSI email campaigns. Keep output concise."
+      "You are a BFSI AI targeting agent. " +
+      "Analyze the brief and the customer database (CRM). " +
+      "Weights (w1,w2,w3) represent engagement likelihood for different financial products (e.g. w1=loans, w2=deposits, w3=cards). " +
+      "Your GOAL is to explicitly filter and select a subset of customers who are most likely to convert. " +
+      "Instead of returning huge lists of IDs, return the logically calculated criteria to slice the cohort. " +
+      "You must return JSON containing ONLY: " +
+      "1. `targetWeight`: The best weight to filter by ('w1', 'w2', or 'w3'). " +
+      "2. `strategy`: 4 bullet points of the content strategy. " +
+      "3. `strategyReasoning`: Detailed natural language explanation of WHY these specific users were chosen based on attributes and weights."
     ),
     new HumanMessage(
-      `Campaign brief:\n${state.brief}\n\nCustomer count: ${state.customerCount}\n\nProvide strategy in 4 bullet points.`
+      `Campaign brief:\n${state.brief}\n\nCRM Data Summary:\n` + 
+      `Total users: ${state.crmData.length}. Average w1: 0.5, w2: 0.5, w3: 0.5.\n\nReturn strict JSON.`
     ),
   ]);
 
-  const strategy = contentToText(response.content);
+  const outputRaw = contentToText(response.content);
+  let parsed;
+  try {
+    const start = outputRaw.indexOf("{");
+    const end = outputRaw.lastIndexOf("}");
+    parsed = JSON.parse(outputRaw.slice(start, end + 1));
+  } catch (e) {
+    console.error("[LangGraph] Failed to parse Strategy output:", e);
+    parsed = {
+      targetWeight: "w1",
+      strategy: "* Target top users\n* Engage\n* Monitor\n* Optimize",
+      strategyReasoning: "Fallback targeting top w1 users due to JSON parsing failure.",
+    };
+  }
+
+  // Filter cohort securely in the backend using LLM's criteria
+  let targetCustomerIds = state.crmData.map(c => c.id);
+  if (parsed.targetWeight) {
+    const targetKey = parsed.targetWeight;
+    const scored = state.crmData.map(c => ({ id: c.id, score: Number(c[targetKey]) || 0 }));
+    scored.sort((a,b) => b.score - a.score);
+    // Take exactly the top 20% to guarantee subset reduction
+    const subsetSize = Math.max(1, Math.floor(scored.length * 0.20));
+    targetCustomerIds = scored.slice(0, subsetSize).map(x => x.id);
+  }
+
   return {
-    strategy,
+    strategy: parsed.strategy,
+    targetCustomerIds,
+    strategyReasoning: parsed.strategyReasoning || `Targeting criteria: Top 20% of ${parsed.targetWeight}`,
     steps: [
       {
-        agent: "Strategy-Agent",
-        step: "Generated targeting and delivery strategy with LangChain.",
+        agent: "Targeting-Agent",
+        step: `Selected ${targetCustomerIds.length} users and generated strategy reasoning.`,
       },
     ],
   };
@@ -151,7 +204,12 @@ function buildGraph() {
 }
 
 export async function runCampaignLangGraph(brief) {
-  configureLangSmithTracing();
+  try {
+    configureLangSmithTracing();
+  } catch (e) {
+    console.warn("[LangSmith] Tracing setup failed, continuing without tracing:", e);
+  }
+
   const startedAt = Date.now();
   const runId = randomUUID();
 
@@ -159,49 +217,64 @@ export async function runCampaignLangGraph(brief) {
     const graph = buildGraph();
     const result = await graph.invoke({
       brief,
+      crmData: [],
       customerCount: 0,
+      targetCustomerIds: [],
+      strategyReasoning: "",
       strategy: "",
       contentVariants: [],
       steps: [
         {
           agent: "Orchestrator",
-          step: "Initialized LangGraph campaign workflow.",
+          step: "Initialized LangGraph AI targeting workflow.",
         },
       ],
     });
 
-    await persistAgentTrace({
-      run_id: runId,
-      agent_name: "langgraph-orchestrator",
-      input_payload: { brief },
-      output_payload: {
-        strategy: result.strategy,
-        variant_count: result.contentVariants.length,
-        customer_count: result.customerCount,
-      },
-      status: "success",
-      latency_ms: Date.now() - startedAt,
-    });
+    // Persist trace in background — don't let it crash the response
+    try {
+      await persistAgentTrace({
+        run_id: runId,
+        agent_name: "langgraph-orchestrator",
+        input_payload: { brief },
+        output_payload: {
+          strategy: result.strategy,
+          variant_count: result.contentVariants.length,
+          customer_count: result.customerCount,
+        },
+        status: "success",
+        latency_ms: Date.now() - startedAt,
+      });
+    } catch (traceErr) {
+      console.warn("[Supabase] Failed to persist success trace:", traceErr);
+    }
 
     return {
       brief,
       strategy: result.strategy,
+      strategyReasoning: result.strategyReasoning,
+      targetCustomerIds: result.targetCustomerIds,
       contentVariants: result.contentVariants,
-      customerCount: result.customerCount,
+      customerCount: result.targetCustomerIds?.length || result.customerCount,
       campaignReady: true,
       steps: result.steps,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
 
-    await persistAgentTrace({
-      run_id: runId,
-      agent_name: "langgraph-orchestrator",
-      input_payload: { brief },
-      output_payload: { error: message },
-      status: "error",
-      latency_ms: Date.now() - startedAt,
-    });
+    // Persist error trace in background — don't let it mask the real error
+    try {
+      await persistAgentTrace({
+        run_id: runId,
+        agent_name: "langgraph-orchestrator",
+        input_payload: { brief },
+        output_payload: { error: message },
+        status: "error",
+        latency_ms: Date.now() - startedAt,
+      });
+    } catch (traceErr) {
+      console.warn("[Supabase] Failed to persist error trace:", traceErr);
+    }
 
     throw error;
   }

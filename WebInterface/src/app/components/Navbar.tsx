@@ -14,10 +14,12 @@ import {
   ChevronRight,
   Activity,
   Cpu,
+  Users,
 } from "lucide-react";
 
 const navLinks = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/dashboard/customers", label: "Customers CRM", icon: Users },
   { href: "/dashboard/new-campaign", label: "New Campaign", icon: PlusCircle },
   { href: "/how-to-use", label: "How to Use", icon: BookOpen },
 ];

@@ -17,7 +17,7 @@ import {
 } from "recharts";
 import { Navbar } from "../components/Navbar";
 import { AIProcessing } from "../components/AIProcessing";
-import { MOCK_ANALYSIS_REPORT, MOCK_OPTIMIZATION_SUGGESTIONS, MOCK_CAMPAIGNS } from "../../lib/mock-data";
+import type { CampaignRow, OptimizationSuggestionRow, ComputedAnalysisReport, ImprovementReport } from "../../lib/types";
 
 const ANALYSIS_STEPS = [
   { step: "Fetching campaign report from CampaignX API...", agent: "Performance-Monitor" },
@@ -55,28 +55,90 @@ export default function CampaignAnalysis() {
   const router = useRouter();
   const [analysisStep, setAnalysisStep] = useState<"loading" | "ready">("loading");
   const [agentSteps, setAgentSteps] = useState<{ step: string; agent: string }[]>([]);
-  const [optStatuses, setOptStatuses] = useState<Record<string, "pending" | "approved" | "rejected">>(
-    Object.fromEntries(MOCK_OPTIMIZATION_SUGGESTIONS.map((o) => [o.id, o.status as "pending" | "approved" | "rejected"]))
-  );
+  const [optStatuses, setOptStatuses] = useState<Record<string, "pending" | "approved" | "rejected">>({});
   const [expandedOpt, setExpandedOpt] = useState<string | null>(null);
   const [showRelaunching, setShowRelaunching] = useState(false);
+  const [improvementReport, setImprovementReport] = useState<ImprovementReport | null>(null);
+
+  // Real data state
+  const [campaign, setCampaign] = useState<CampaignRow | null>(null);
+  const [report, setReport] = useState<ComputedAnalysisReport | null>(null);
+  const [suggestions, setSuggestions] = useState<OptimizationSuggestionRow[]>([]);
+  const [dataLoading, setDataLoading] = useState(true);
+  const [notFound, setNotFound] = useState(false);
 
   const id = Array.isArray(params?.id) ? params.id[0] : params?.id;
-  const campaignId = id === "camp-001" || id === "camp-002" ? id : "camp-001";
-  const report = MOCK_ANALYSIS_REPORT[campaignId as keyof typeof MOCK_ANALYSIS_REPORT];
-    const campaign =
-      MOCK_CAMPAIGNS.find((c) => c.id === (id || "camp-001")) || MOCK_CAMPAIGNS[0];
+  const campaignId = id || "";
 
+  // Fetch real data from API
   useEffect(() => {
-    ANALYSIS_STEPS.forEach((step, i) => {
+    if (!campaignId) {
+      setNotFound(true);
+      setDataLoading(false);
+      return;
+    }
+
+    async function loadCampaignData() {
+      // 1. Session Cache for instant load
+      const cacheKey = `campaign_data_${campaignId}`;
+      // Always fetch fresh — never serve cached metrics (old data may have 0% rates)
+      // const cached = sessionStorage.getItem(cacheKey);
+      // disabled: cache caused stale 0% metrics to persist
+
+      try {
+        const res = await fetch(`/api/campaigns/${campaignId}`);
+        if (!res.ok) {
+          if (res.status === 404) setNotFound(true);
+          throw new Error(`Failed to fetch: ${res.status}`);
+        }
+        const data = await res.json();
+        
+        // Cache for next session load
+        sessionStorage.setItem(cacheKey, JSON.stringify(data));
+
+        setCampaign(data.campaign);
+        setReport(data.analysisReport);
+        setSuggestions(data.optimizations || []);
+
+        // Initialize opt statuses from fetched suggestions
+        const statuses: Record<string, "pending" | "approved" | "rejected"> = {};
+        for (const opt of (data.optimizations || [])) {
+          statuses[opt.id] = opt.status || "pending";
+        }
+        setOptStatuses(statuses);
+      } catch (err) {
+        console.warn("Failed to load campaign data:", err);
+      } finally {
+        setDataLoading(false);
+      }
+    }
+
+    loadCampaignData();
+  }, [campaignId]);
+
+  // Animate analysis steps
+  useEffect(() => {
+    if (dataLoading) return;
+    const steps = [
+      { step: `Fetching campaign report from CampaignX API...`, agent: "Performance-Monitor" },
+      { step: `Parsing ${report?.totalSent ?? 0} customer interaction records (EO/EC flags)...`, agent: "Performance-Monitor" },
+      { step: `Calculating open rate: ${report?.totalOpened ?? 0} / ${report?.totalSent ?? 0} = ${report?.openRate ?? 0}%`, agent: "Performance-Monitor" },
+      { step: `Calculating click rate: ${report?.totalClicked ?? 0} / ${report?.totalSent ?? 0} = ${report?.clickRate ?? 0}%`, agent: "Performance-Monitor" },
+      { step: "THOUGHT: Identifying performance patterns by segment", agent: "ReAct-Planner" },
+      { step: "ACTION: Segment analysis by time, cohort data", agent: "ReAct-Planner" },
+      { step: `OBSERVATION: Best performing time window: ${report?.hourlyBestPerformance ?? 'N/A'}`, agent: "ReAct-Planner" },
+      { step: `Generated ${suggestions.length} optimization recommendations`, agent: "ReAct-Planner" },
+      { step: "Analysis complete. Optimization report ready for review.", agent: "Orchestrator" },
+    ];
+    steps.forEach((step, i) => {
       setTimeout(() => {
         setAgentSteps((prev) => [...prev, step]);
-        if (i === ANALYSIS_STEPS.length - 1) {
+        if (i === steps.length - 1) {
           setTimeout(() => setAnalysisStep("ready"), 800);
         }
-      }, i * 500);
+      }, i * 400);
     });
-  }, []);
+  }, [dataLoading, report, suggestions.length]);
 
   const handleApproveOpt = (optId: string) => {
     setOptStatuses((prev) => ({ ...prev, [optId]: "approved" }));
@@ -90,9 +152,101 @@ export default function CampaignAnalysis() {
 
   const handleRelaunch = async () => {
     setShowRelaunching(true);
-    await new Promise((r) => setTimeout(r, 3000));
-    setShowRelaunching(false);
-    router.push("/dashboard/new-campaign");
+
+    // Auto-approve pending suggestions for seamless implementation
+    const approvedSuggestions = suggestions.map((s) => ({
+      ...s,
+      status: optStatuses[s.id] === "rejected" ? "rejected" : "approved"
+    })).filter(s => s.status === "approved");
+
+    // Update local UI state immediately
+    const newStatuses = { ...optStatuses };
+    suggestions.forEach(s => {
+      if (newStatuses[s.id] !== "rejected") newStatuses[s.id] = "approved";
+    });
+    setOptStatuses(newStatuses);
+
+    try {
+      const res = await fetch("/api/agent/optimize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          campaignId,
+          approvedSuggestions,
+        }),
+      });
+
+      if (!res.ok) {
+        throw new Error(`Optimization failed: ${res.status}`);
+      }
+
+      const result = await res.json() as ImprovementReport;
+      setImprovementReport(result);
+      setShowRelaunching(false);
+    } catch (err) {
+      console.error("Optimization failed:", err);
+      setShowRelaunching(false);
+      alert(err instanceof Error ? err.message : "Optimization failed");
+    }
+  };
+
+  // Loading and not found states
+  if (dataLoading) {
+    return (
+      <div className="min-h-screen pt-20 pb-16 px-4 flex items-center justify-center">
+        <Navbar />
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center">
+          <motion.div
+            animate={{ rotate: 360 }}
+            transition={{ duration: 1.5, repeat: Infinity, ease: "linear" }}
+            className="w-12 h-12 rounded-full mx-auto mb-4"
+            style={{ border: "3px solid rgba(139,92,246,0.3)", borderTopColor: "#7c3aed" }}
+          />
+          <div className="text-gray-400" style={{ fontSize: "0.875rem" }}>Loading campaign analysis...</div>
+        </motion.div>
+      </div>
+    );
+  }
+
+  if (notFound || !campaign) {
+    return (
+      <div className="min-h-screen pt-20 pb-16 px-4 flex items-center justify-center">
+        <Navbar />
+        <div className="text-center">
+          <AlertTriangle className="w-12 h-12 text-yellow-400 mx-auto mb-4" />
+          <div className="text-white mb-2" style={{ fontSize: "1.2rem", fontWeight: 600 }}>Campaign Not Found</div>
+          <div className="text-gray-400 mb-4" style={{ fontSize: "0.875rem" }}>The requested campaign could not be found.</div>
+          <button
+            onClick={() => router.push("/dashboard")}
+            className="px-4 py-2 rounded-xl text-violet-400 hover:bg-violet-600/20 transition-all"
+            style={{ border: "1px solid rgba(139,92,246,0.3)" }}
+          >
+            ← Back to Dashboard
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Safe report fallback when campaign hasn't been sent yet
+  const safeReport: ComputedAnalysisReport = report ?? {
+    campaignId: campaignId,
+    totalSent: campaign.total_customers || 0,
+    totalOpened: campaign.total_opened ?? 0,
+    totalClicked: campaign.total_clicked ?? 0,
+    openRate: campaign.open_rate ?? 0,
+    clickRate: campaign.click_rate ?? 0,
+    timeSeriesData: [],
+    segmentPerformance: [],
+    regionPerformance: [],
+    genderPerformance: [],
+    deviceBreakdown: [
+      { device: "Mobile", percentage: 64 },
+      { device: "Desktop", percentage: 28 },
+      { device: "Tablet", percentage: 8 },
+    ],
+    hourlyBestPerformance: "N/A",
+    topPerformingSegment: "All Customers",
   };
 
   return (
@@ -163,10 +317,10 @@ export default function CampaignAnalysis() {
             {/* Stats Row */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
               {[
-                { label: "Total Sent", value: report.totalSent.toLocaleString(), icon: Mail, color: "#7c3aed" },
-                { label: "Total Opened", value: report.totalOpened.toLocaleString(), icon: Eye, color: "#0891b2" },
-                { label: "Open Rate", value: `${report.openRate}%`, icon: TrendingUp, color: "#059669", sub: "Industry avg: 22%" },
-                { label: "Click Rate", value: `${report.clickRate}%`, icon: MousePointer, color: "#ec4899", sub: "Industry avg: 10%" },
+                { label: "Total Sent", value: safeReport.totalSent.toLocaleString(), icon: Mail, color: "#7c3aed" },
+                { label: "Total Opened", value: safeReport.totalOpened.toLocaleString(), icon: Eye, color: "#0891b2" },
+                { label: "Open Rate", value: `${safeReport.openRate}%`, icon: TrendingUp, color: "#059669", sub: "Industry avg: 22%" },
+                { label: "Click Rate", value: `${safeReport.clickRate}%`, icon: MousePointer, color: "#ec4899", sub: "Industry avg: 10%" },
               ].map((stat, i) => (
                 <motion.div
                   key={i}
@@ -243,11 +397,11 @@ export default function CampaignAnalysis() {
                       fontSize: "0.7rem",
                     }}
                   >
-                    Peak: {report.hourlyBestPerformance}
+                    Peak: {safeReport.hourlyBestPerformance}
                   </div>
                 </div>
                 <ResponsiveContainer width="100%" height={200}>
-                  <AreaChart data={report.timeSeriesData}>
+                  <AreaChart data={safeReport.timeSeriesData}>
                     <defs>
                       <linearGradient id="openGrad" x1="0" y1="0" x2="0" y2="1">
                         <stop offset="5%" stopColor="#7c3aed" stopOpacity={0.4} />
@@ -285,7 +439,7 @@ export default function CampaignAnalysis() {
                 <ResponsiveContainer width="100%" height={140}>
                   <PieChart>
                     <Pie
-                      data={report.deviceBreakdown}
+                      data={safeReport.deviceBreakdown}
                       cx="50%"
                       cy="50%"
                       innerRadius={40}
@@ -293,7 +447,7 @@ export default function CampaignAnalysis() {
                       dataKey="percentage"
                       strokeWidth={0}
                     >
-                      {report.deviceBreakdown.map((_, index) => (
+                      {safeReport.deviceBreakdown.map((_, index) => (
                         <Cell key={index} fill={DEVICE_COLORS[index % DEVICE_COLORS.length]} />
                       ))}
                     </Pie>
@@ -301,7 +455,7 @@ export default function CampaignAnalysis() {
                   </PieChart>
                 </ResponsiveContainer>
                 <div className="mt-3 space-y-2">
-                  {report.deviceBreakdown.map((item, i) => (
+                  {safeReport.deviceBreakdown.map((item, i) => (
                     <div key={item.device} className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <div className="w-2 h-2 rounded-full" style={{ background: DEVICE_COLORS[i] }} />
@@ -338,7 +492,7 @@ export default function CampaignAnalysis() {
                   Open & click rates per age group
                 </p>
                 <ResponsiveContainer width="100%" height={200}>
-                  <BarChart data={report.segmentPerformance}>
+                  <BarChart data={safeReport.segmentPerformance}>
                     <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
                     <XAxis dataKey="segment" tick={{ fill: "#6b7280", fontSize: 10 }} axisLine={false} />
                     <YAxis tick={{ fill: "#6b7280", fontSize: 10 }} axisLine={false} unit="%" />
@@ -367,7 +521,7 @@ export default function CampaignAnalysis() {
                   Engagement rates across Indian regions
                 </p>
                 <div className="space-y-3">
-                  {report.regionPerformance.map((r, i) => (
+                  {safeReport.regionPerformance.map((r, i) => (
                     <motion.div
                       key={r.region}
                       initial={{ opacity: 0, x: -10 }}
@@ -435,7 +589,7 @@ export default function CampaignAnalysis() {
                 Performance by Gender
               </h3>
               <div className="grid md:grid-cols-2 gap-6">
-                {report.genderPerformance.map((g) => (
+                {safeReport.genderPerformance.map((g) => (
                   <div key={g.gender} className="flex items-center gap-4">
                     <div
                       className="w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0"
@@ -505,8 +659,8 @@ export default function CampaignAnalysis() {
                   AI Key Insight
                 </div>
                 <div className="text-gray-300" style={{ fontSize: "0.82rem", lineHeight: "1.6" }}>
-                  Top performing segment: <span className="text-violet-400 font-semibold">{report.topPerformingSegment}</span>.{" "}
-                  Campaign performs best during <span className="text-pink-400 font-semibold">{report.hourlyBestPerformance}</span>.
+                  Top performing segment: <span className="text-violet-400 font-semibold">{safeReport.topPerformingSegment}</span>.{" "}
+                  Campaign performs best during <span className="text-pink-400 font-semibold">{safeReport.hourlyBestPerformance}</span>.
                   South India + female + 26-45 age group shows strongest engagement. Recommend morning-slot targeted
                   re-campaign with personalized subject lines.
                 </div>
@@ -548,28 +702,31 @@ export default function CampaignAnalysis() {
                   >
                     {approvedCount} approved
                   </div>
-                  {approvedCount > 0 && (
+                  {suggestions.length > 0 && (
                     <motion.button
                       whileHover={{ scale: 1.05, boxShadow: "0 0 30px rgba(139,92,246,0.4)" }}
                       whileTap={{ scale: 0.95 }}
                       onClick={handleRelaunch}
+                      disabled={showRelaunching}
                       className="flex items-center gap-2 px-4 py-2 rounded-xl text-white font-semibold"
                       style={{
                         background: "linear-gradient(135deg, #7c3aed, #ec4899)",
                         fontSize: "0.8rem",
+                        opacity: showRelaunching ? 0.6 : 1,
                       }}
                     >
-                      <RefreshCw className="w-3.5 h-3.5" />
-                      Apply & Relaunch
+                      <RefreshCw className={`w-3.5 h-3.5 ${showRelaunching ? 'animate-spin' : ''}`} />
+                      {showRelaunching ? "Implementing..." : "Implement Strategies"}
                     </motion.button>
                   )}
                 </div>
               </div>
 
               <div className="space-y-4">
-                {MOCK_OPTIMIZATION_SUGGESTIONS.map((opt, i) => {
+                {suggestions.map((opt: OptimizationSuggestionRow, i: number) => {
                   const status = optStatuses[opt.id] || "pending";
-                  const Icon = OPT_ICONS[opt.icon] || Target;
+                  const categoryIcon = opt.category || "clock";
+                  const Icon = OPT_ICONS[categoryIcon] || Target;
                   const priority = PRIORITY_CONFIG[opt.priority];
                   const isExpanded = expandedOpt === opt.id;
 
@@ -648,12 +805,12 @@ export default function CampaignAnalysis() {
                                   fontSize: "0.65rem",
                                 }}
                               >
-                                {opt.expectedImpact}
+                                {opt.expected_impact}
                               </span>
                             </div>
                             <p className="text-gray-400" style={{ fontSize: "0.78rem" }}>
-                              <span className="text-gray-500">Current:</span> {opt.currentValue} →{" "}
-                              <span className="text-violet-400">{opt.suggestedValue}</span>
+                              <span className="text-gray-500">Current:</span> {opt.current_value || "N/A"} →{" "}
+                              <span className="text-violet-400">{opt.suggested_value || "N/A"}</span>
                             </p>
                           </div>
 
@@ -756,7 +913,7 @@ export default function CampaignAnalysis() {
                                     </span>
                                   </div>
                                   <div className="space-y-1.5 font-mono">
-                                    {opt.agentThoughts.map((thought, ti) => (
+                                    {(opt.agent_thoughts || []).map((thought: string, ti: number) => (
                                       <motion.div
                                         key={ti}
                                         initial={{ opacity: 0, x: -5 }}

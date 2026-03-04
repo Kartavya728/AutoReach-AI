@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "motion/react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   Send, Sliders, RefreshCw, CheckCircle, Clock, Users,
   ArrowRight, ChevronLeft, Sparkles, Zap, Target,
@@ -12,7 +12,7 @@ import { Navbar } from "../components/Navbar";
 import { AIProcessing } from "../components/AIProcessing";
 import { ContentVariants, type EmailVariantCard } from "../components/ContentVariants";
 import { CustomizeParams } from "../components/CustomizeParams";
-import { MOCK_EMAIL_VARIANTS, MOCK_CUSTOMER_COHORT } from "../../lib/mock-data";
+
 import { getCustomerCohort, sendCampaign } from "../../lib/campaignx-api";
 import { generateCampaignContent } from "../../lib/gemini";
 import { runCampaignAgent } from "../../lib/langgraph";
@@ -35,7 +35,25 @@ function wait(ms: number) {
 }
 
 function toCampaignXDateTime(sendDate: string, sendTime: string) {
+  // CampaignX API format: DD:MM:YY HH:MM:SS
   const [year, month, day] = sendDate.split("-");
+  const now = new Date();
+
+  // Build the intended datetime
+  const intended = new Date(`${sendDate}T${sendTime}:00`);
+
+  // If intended time is in the past, use now + 5 minutes
+  if (intended <= now) {
+    const future = new Date(now.getTime() + 5 * 60 * 1000);
+    const dd = String(future.getDate()).padStart(2, "0");
+    const mm = String(future.getMonth() + 1).padStart(2, "0");
+    const yy = String(future.getFullYear()).slice(-2);
+    const hh = String(future.getHours()).padStart(2, "0");
+    const mi = String(future.getMinutes()).padStart(2, "0");
+    const ss = String(future.getSeconds()).padStart(2, "0");
+    return `${dd}:${mm}:${yy} ${hh}:${mi}:${ss}`;
+  }
+
   return `${day}:${month}:${year.slice(-2)} ${sendTime}:00`;
 }
 
@@ -69,10 +87,8 @@ export default function NewCampaign() {
   const [agentSteps, setAgentSteps] = useState<{ step: string; agent: string }[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingDone, setProcessingDone] = useState(false);
-  const [selectedVariant, setSelectedVariant] = useState<string | null>("var-b");
-  const [emailVariants, setEmailVariants] = useState<EmailVariantCard[]>(
-    MOCK_EMAIL_VARIANTS as EmailVariantCard[]
-  );
+  const [selectedVariant, setSelectedVariant] = useState<string | null>(null);
+  const [emailVariants, setEmailVariants] = useState<EmailVariantCard[]>([]);
   const [showCustomize, setShowCustomize] = useState(false);
   const [customParams, setCustomParams] = useState({
     useEmojis: true,
@@ -85,13 +101,32 @@ export default function NewCampaign() {
     customAddOn: "",
   });
   const [sendTime, setSendTime] = useState("10:00");
-  const [sendDate, setSendDate] = useState("2026-03-05");
+  const [sendDate, setSendDate] = useState(
+    new Date().toISOString().split("T")[0]
+  );
   const [isLaunching, setIsLaunching] = useState(false);
   const [launched, setLaunched] = useState(false);
-  const [customerCohortSize, setCustomerCohortSize] = useState(
-    MOCK_CUSTOMER_COHORT.total_count
-  );
+  const [customerCohortSize, setCustomerCohortSize] = useState(0);
   const [launchError, setLaunchError] = useState<string | null>(null);
+  const [savedCampaignId, setSavedCampaignId] = useState<string | null>(null);
+  const [targetCustomerIds, setTargetCustomerIds] = useState<string[]>([]);
+  const [cohortData, setCohortData] = useState<{ active: number; inactive: number; total: number } | null>(null);
+  const [selectedModel, setSelectedModel] = useState("gemini-2.5-flash");
+  const [availableModels, setAvailableModels] = useState<{ id: string; name: string; isDefault: boolean }[]>([]);
+
+  // Fetch available models
+  useEffect(() => {
+    fetch("/api/models")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.models) {
+          setAvailableModels(data.models);
+          const defaultModel = data.models.find((m: { isDefault: boolean }) => m.isDefault);
+          if (defaultModel) setSelectedModel(defaultModel.id);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   const handleGeneratePlan = async () => {
     if (!brief.trim()) return;
@@ -103,6 +138,11 @@ export default function NewCampaign() {
       const agentResult = await runCampaignAgent(brief, (step, agent) => {
         setAgentSteps((prev) => [...prev, { step, agent }]);
       });
+
+      // Save the campaign ID returned by the agent
+      if (agentResult.savedCampaignId) {
+        setSavedCampaignId(agentResult.savedCampaignId);
+      }
 
       if (Array.isArray(agentResult.contentVariants) && agentResult.contentVariants.length > 0) {
         const mappedVariants = agentResult.contentVariants.map((item, index) => {
@@ -122,6 +162,14 @@ export default function NewCampaign() {
         });
         setEmailVariants(mappedVariants);
         setSelectedVariant(mappedVariants[0]?.id ?? null);
+      }
+
+      // Update customer count from agent result
+      if (agentResult.targetCustomerIds) {
+        setTargetCustomerIds(agentResult.targetCustomerIds);
+        setCustomerCohortSize(agentResult.targetCustomerIds.length);
+      } else if (agentResult.customerCount) {
+        setCustomerCohortSize(agentResult.customerCount);
       }
 
       setTimeout(() => {
@@ -203,8 +251,20 @@ export default function NewCampaign() {
 
     try {
       const cohort = await getCustomerCohort();
-      setCustomerCohortSize(cohort.total_count);
-      const customerIds = cohort.data.map((customer) => customer.customer_id);
+      
+      // Use the AI targeted subset if available, otherwise fallback to the active cohort
+      let finalCustomerIds = targetCustomerIds;
+      if (!finalCustomerIds || finalCustomerIds.length === 0) {
+        finalCustomerIds = cohort.data.map((customer) => customer.customer_id);
+      }
+      
+      setCustomerCohortSize(finalCustomerIds.length);
+      setCohortData({
+        total: cohort.total_count,
+        active: cohort.data.filter((c) => c.status !== "inactive").length,
+        inactive: cohort.data.filter((c) => c.status === "inactive").length,
+      });
+
       const selected = emailVariants.find((variant) => variant.id === selectedVariant);
       if (!selected) {
         throw new Error("No email variant selected.");
@@ -213,15 +273,38 @@ export default function NewCampaign() {
       const sendResult = await sendCampaign({
         subject: selected.subject,
         body: selected.body,
-        list_customer_ids: customerIds,
+        list_customer_ids: finalCustomerIds,
         send_time: toCampaignXDateTime(sendDate, sendTime),
       });
+
+      // Update campaign in Supabase with external campaign ID
+      if (savedCampaignId) {
+        try {
+          await fetch(`/api/campaigns/${savedCampaignId}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              external_campaign_id: sendResult.campaign_id,
+              status: "active",
+              send_time: new Date(`${sendDate}T${sendTime}`).toISOString(),
+              total_customers: finalCustomerIds.length,
+              target_customer_ids: finalCustomerIds,
+              subject: selected.subject,
+              body: selected.body,
+            }),
+          });
+        } catch (err) {
+          console.warn("Failed to update campaign in Supabase:", err);
+        }
+      }
 
       setIsLaunching(false);
       setLaunched(true);
 
+      // Navigate to analysis using saved campaign ID or external ID
+      const analysisId = savedCampaignId || sendResult.campaign_id;
       setTimeout(() => {
-        router.push(`/campaign/${sendResult.campaign_id}/analysis`);
+        router.push(`/campaign/${analysisId}/analysis`);
       }, 1500);
     } catch (error) {
       const message =
@@ -359,16 +442,44 @@ export default function NewCampaign() {
                     Campaign Brief (natural language)
                   </span>
                   <div
-                    className="ml-auto flex items-center gap-1 px-2 py-0.5 rounded-full"
-                    style={{
-                      background: "rgba(139,92,246,0.1)",
-                      border: "1px solid rgba(139,92,246,0.2)",
-                    }}
+                    className="ml-auto flex items-center gap-3"
                   >
-                    <Sparkles className="w-3 h-3 text-violet-400" />
-                    <span className="text-violet-400" style={{ fontSize: "0.65rem" }}>
-                      AI will analyze
-                    </span>
+                    {/* Model selector */}
+                    <select
+                      value={selectedModel}
+                      onChange={(e) => setSelectedModel(e.target.value)}
+                      className="px-2 py-1 rounded-lg text-gray-300 outline-none cursor-pointer"
+                      style={{
+                        background: "rgba(255,255,255,0.05)",
+                        border: "1px solid rgba(255,255,255,0.1)",
+                        fontSize: "0.7rem",
+                        appearance: "auto",
+                      }}
+                    >
+                      {availableModels.length > 0
+                        ? availableModels.map((m) => (
+                            <option key={m.id} value={m.id} style={{ background: "#1a1a2e", color: "#e5e7eb" }}>
+                              {m.name}
+                            </option>
+                          ))
+                        : (
+                            <option value="gemini-2.5-flash" style={{ background: "#1a1a2e", color: "#e5e7eb" }}>
+                              Gemini 2.5 Flash
+                            </option>
+                          )}
+                    </select>
+                    <div
+                      className="flex items-center gap-1 px-2 py-0.5 rounded-full"
+                      style={{
+                        background: "rgba(139,92,246,0.1)",
+                        border: "1px solid rgba(139,92,246,0.2)",
+                      }}
+                    >
+                      <Sparkles className="w-3 h-3 text-violet-400" />
+                      <span className="text-violet-400" style={{ fontSize: "0.65rem" }}>
+                        AI will analyze
+                      </span>
+                    </div>
                   </div>
                 </div>
                 <textarea
@@ -832,10 +943,10 @@ export default function NewCampaign() {
                     </div>
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                       {[
-                        { label: "Active", value: "3,760", color: "#7c3aed" },
-                        { label: "Inactive", value: "1,240", color: "#6b7280" },
-                        { label: "Female Senior", value: "842", color: "#ec4899" },
-                        { label: "Avg Age", value: "41 yrs", color: "#0891b2" },
+                        { label: "Active", value: cohortData ? cohortData.active.toLocaleString() : "—", color: "#7c3aed" },
+                        { label: "Inactive", value: cohortData ? cohortData.inactive.toLocaleString() : "—", color: "#6b7280" },
+                        { label: "Total", value: customerCohortSize.toLocaleString(), color: "#ec4899" },
+                        { label: "Segments", value: "All", color: "#0891b2" },
                       ].map((item) => (
                         <div
                           key={item.label}
