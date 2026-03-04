@@ -1,0 +1,38 @@
+import type { Metadata } from "next";
+import "../src/styles/index.css";
+
+export const metadata: Metadata = {
+  title: "CampaignX",
+  description: "AI multi-agent marketing automation platform",
+};
+
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
+  return (
+    <html lang="en">
+      <body>
+        <div
+          className="min-h-screen relative"
+          style={{
+            background:
+              "linear-gradient(135deg, #050510 0%, #0d0520 40%, #050515 80%, #020210 100%)",
+            color: "#ffffff",
+          }}
+        >
+          <div
+            className="fixed inset-0 pointer-events-none z-0"
+            style={{
+              backgroundImage:
+                "linear-gradient(rgba(139,92,246,0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(139,92,246,0.03) 1px, transparent 1px)",
+              backgroundSize: "60px 60px",
+            }}
+          />
+          <div className="relative z-10">{children}</div>
+        </div>
+      </body>
+    </html>
+  );
+}

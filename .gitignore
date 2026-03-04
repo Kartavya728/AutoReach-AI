@@ -1,0 +1,13 @@
+# Text files
+*.txt
+
+# Info HTML files
+info.html
+
+# Environment files
+.env
+.env.*
+
+# Node.js / Next.js
+node_modules/
+.next/
