@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
 import { runOptimizationAgent } from "@/src/lib/server/optimize";
+import { configureLangSmithTracing } from "@/src/lib/server/langsmith";
 import type { OptimizeRequest } from "@/src/lib/types";
 
 export async function POST(request: Request) {
   try {
+    configureLangSmithTracing();
     const payload = (await request.json()) as OptimizeRequest;
 
     if (!payload.campaignId) {

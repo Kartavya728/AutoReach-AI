@@ -21,15 +21,15 @@ import type { CampaignRow, OptimizationSuggestionRow, ComputedAnalysisReport, Im
 
 const ANALYSIS_STEPS = [
   { step: "Fetching campaign report from CampaignX API...", agent: "Performance-Monitor" },
-  { step: "Parsing 5000 customer interaction records (EO/EC flags)...", agent: "Performance-Monitor" },
-  { step: "Calculating open rate: 1710 / 5000 = 34.2%", agent: "Performance-Monitor" },
-  { step: "Calculating click rate: 935 / 5000 = 18.7%", agent: "Performance-Monitor" },
+  { step: "Parsing customer interaction records (EO/EC flags)...", agent: "Performance-Monitor" },
+  { step: "Calculating open rate across audience...", agent: "Performance-Monitor" },
+  { step: "Calculating click rate across audience...", agent: "Performance-Monitor" },
   { step: "THOUGHT: Identifying performance patterns by segment", agent: "ReAct-Planner" },
   { step: "ACTION: Segment analysis by age, gender, region, device", agent: "ReAct-Planner" },
-  { step: "OBSERVATION: South India & 26-35 age group show highest engagement", agent: "ReAct-Planner" },
+  { step: "OBSERVATION: Correlating demographic engagement", agent: "ReAct-Planner" },
   { step: "Querying RAG knowledge base for optimization strategies...", agent: "RAG-Retriever" },
-  { step: "Retrieved 34 relevant optimization documents", agent: "RAG-Retriever" },
-  { step: "Generating 5 optimization recommendations with reasoning...", agent: "ReAct-Planner" },
+  { step: "Retrieved relevant optimization documents", agent: "RAG-Retriever" },
+  { step: "Generating optimization recommendations with reasoning...", agent: "ReAct-Planner" },
   { step: "Ranking optimizations by expected impact × confidence...", agent: "Strategy-Agent" },
   { step: "Analysis complete. Optimization report ready for review.", agent: "Orchestrator" },
 ];
@@ -110,35 +110,12 @@ export default function CampaignAnalysis() {
         console.warn("Failed to load campaign data:", err);
       } finally {
         setDataLoading(false);
+        setAnalysisStep("ready");
       }
     }
 
     loadCampaignData();
   }, [campaignId]);
-
-  // Animate analysis steps
-  useEffect(() => {
-    if (dataLoading) return;
-    const steps = [
-      { step: `Fetching campaign report from CampaignX API...`, agent: "Performance-Monitor" },
-      { step: `Parsing ${report?.totalSent ?? 0} customer interaction records (EO/EC flags)...`, agent: "Performance-Monitor" },
-      { step: `Calculating open rate: ${report?.totalOpened ?? 0} / ${report?.totalSent ?? 0} = ${report?.openRate ?? 0}%`, agent: "Performance-Monitor" },
-      { step: `Calculating click rate: ${report?.totalClicked ?? 0} / ${report?.totalSent ?? 0} = ${report?.clickRate ?? 0}%`, agent: "Performance-Monitor" },
-      { step: "THOUGHT: Identifying performance patterns by segment", agent: "ReAct-Planner" },
-      { step: "ACTION: Segment analysis by time, cohort data", agent: "ReAct-Planner" },
-      { step: `OBSERVATION: Best performing time window: ${report?.hourlyBestPerformance ?? 'N/A'}`, agent: "ReAct-Planner" },
-      { step: `Generated ${suggestions.length} optimization recommendations`, agent: "ReAct-Planner" },
-      { step: "Analysis complete. Optimization report ready for review.", agent: "Orchestrator" },
-    ];
-    steps.forEach((step, i) => {
-      setTimeout(() => {
-        setAgentSteps((prev) => [...prev, step]);
-        if (i === steps.length - 1) {
-          setTimeout(() => setAnalysisStep("ready"), 800);
-        }
-      }, i * 400);
-    });
-  }, [dataLoading, report, suggestions.length]);
 
   const handleApproveOpt = (optId: string) => {
     setOptStatuses((prev) => ({ ...prev, [optId]: "approved" }));
@@ -151,20 +128,18 @@ export default function CampaignAnalysis() {
   const approvedCount = Object.values(optStatuses).filter((s) => s === "approved").length;
 
   const handleRelaunch = async () => {
+    if (approvedCount === 0) {
+      alert("Please approve at least one optimization suggestion first.");
+      return;
+    }
+
     setShowRelaunching(true);
 
-    // Auto-approve pending suggestions for seamless implementation
+    // Only include explicitly approved suggestions
     const approvedSuggestions = suggestions.map((s) => ({
       ...s,
-      status: optStatuses[s.id] === "rejected" ? "rejected" : "approved"
+      status: optStatuses[s.id]
     })).filter(s => s.status === "approved");
-
-    // Update local UI state immediately
-    const newStatuses = { ...optStatuses };
-    suggestions.forEach(s => {
-      if (newStatuses[s.id] !== "rejected") newStatuses[s.id] = "approved";
-    });
-    setOptStatuses(newStatuses);
 
     try {
       const res = await fetch("/api/agent/optimize", {
@@ -191,18 +166,28 @@ export default function CampaignAnalysis() {
   };
 
   // Loading and not found states
-  if (dataLoading) {
+  if (dataLoading || analysisStep === "loading") {
     return (
-      <div className="min-h-screen pt-20 pb-16 px-4 flex items-center justify-center">
+      <div className="min-h-screen pt-20 pb-16 px-4 flex flex-col items-center justify-center">
         <Navbar />
-        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center">
-          <motion.div
-            animate={{ rotate: 360 }}
-            transition={{ duration: 1.5, repeat: Infinity, ease: "linear" }}
-            className="w-12 h-12 rounded-full mx-auto mb-4"
-            style={{ border: "3px solid rgba(139,92,246,0.3)", borderTopColor: "#7c3aed" }}
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center max-w-lg w-full">
+          <div className="mb-6">
+            <h2 className="text-white mb-2" style={{ fontSize: "1.5rem", fontWeight: 700 }}>
+              AI Agent Generating Analysis
+            </h2>
+            <p className="text-gray-400" style={{ fontSize: "0.875rem" }}>
+              Retrieving performance data and routing through ReAct optimization planner...
+            </p>
+          </div>
+          <AIProcessing
+            steps={[
+              { step: "Fetching campaign report from CampaignX API...", agent: "Performance-Monitor" },
+              { step: "Parsing interaction records and identifying performance patterns", agent: "ReAct-Planner" },
+              { step: "Generating optimization recommendations with reasoning...", agent: "ReAct-Planner" },
+            ]}
+            isComplete={false}
+            title="Analysis Pipeline"
           />
-          <div className="text-gray-400" style={{ fontSize: "0.875rem" }}>Loading campaign analysis...</div>
         </motion.div>
       </div>
     );
@@ -212,6 +197,7 @@ export default function CampaignAnalysis() {
     return (
       <div className="min-h-screen pt-20 pb-16 px-4 flex items-center justify-center">
         <Navbar />
+        
         <div className="text-center">
           <AlertTriangle className="w-12 h-12 text-yellow-400 mx-auto mb-4" />
           <div className="text-white mb-2" style={{ fontSize: "1.2rem", fontWeight: 600 }}>Campaign Not Found</div>
@@ -282,31 +268,7 @@ export default function CampaignAnalysis() {
           </div>
         </motion.div>
 
-        {/* AI Processing section */}
-        <AnimatePresence>
-          {analysisStep === "loading" && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="mb-8"
-            >
-              <div className="mb-4">
-                <h2 className="text-white mb-1" style={{ fontSize: "1.5rem", fontWeight: 700 }}>
-                  AI Agent Analyzing Campaign
-                </h2>
-                <p className="text-gray-400" style={{ fontSize: "0.875rem" }}>
-                  ReAct agent fetching performance data and generating optimization insights
-                </p>
-              </div>
-              <AIProcessing
-                steps={agentSteps}
-                isComplete={false}
-                title="Performance Analysis Pipeline"
-              />
-            </motion.div>
-          )}
-        </AnimatePresence>
+        {/* AI Processing section was originally here */}
 
         {analysisStep === "ready" && (
           <motion.div
@@ -315,12 +277,13 @@ export default function CampaignAnalysis() {
             transition={{ duration: 0.5 }}
           >
             {/* Stats Row */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
               {[
                 { label: "Total Sent", value: safeReport.totalSent.toLocaleString(), icon: Mail, color: "#7c3aed" },
                 { label: "Total Opened", value: safeReport.totalOpened.toLocaleString(), icon: Eye, color: "#0891b2" },
                 { label: "Open Rate", value: `${safeReport.openRate}%`, icon: TrendingUp, color: "#059669", sub: "Industry avg: 22%" },
                 { label: "Click Rate", value: `${safeReport.clickRate}%`, icon: MousePointer, color: "#ec4899", sub: "Industry avg: 10%" },
+                { label: "Opt Rounds", value: campaign.optimization_round ?? 1, icon: RefreshCw, color: "#f59e0b", sub: "Active Iterations" },
               ].map((stat, i) => (
                 <motion.div
                   key={i}
@@ -666,6 +629,72 @@ export default function CampaignAnalysis() {
                 </div>
               </div>
             </motion.div>
+
+            {/* ── OPTIMIZATION HISTORY ── */}
+            {campaign.json_output?.optimization_history && campaign.json_output.optimization_history.length > 0 && (
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.58 }}
+                className="mb-10"
+              >
+                <div className="flex items-center gap-3 mb-6">
+                  <div
+                    className="w-8 h-8 rounded-xl flex items-center justify-center"
+                    style={{ background: "linear-gradient(135deg, #f59e0b, #ec4899)" }}
+                  >
+                    <Activity className="w-4 h-4 text-white" />
+                  </div>
+                  <h2 className="text-white" style={{ fontSize: "1.3rem", fontWeight: 700 }}>
+                    Previous Optimization Rounds
+                  </h2>
+                </div>
+                
+                <div className="space-y-4">
+                  {campaign.json_output.optimization_history.map((hist: any, idx: number) => (
+                    <motion.div
+                      key={idx}
+                      className="p-5 rounded-2xl"
+                      style={{
+                        background: "rgba(255,255,255,0.02)",
+                        border: "1px solid rgba(255,255,255,0.07)",
+                      }}
+                    >
+                      <div className="flex justify-between items-center mb-3">
+                        <div className="text-white font-semibold flex items-center gap-2">
+                          <span className="px-2 py-0.5 rounded bg-orange-500/20 text-orange-400 text-xs">Round {hist.round || idx + 1}</span>
+                          <span className="text-sm text-gray-400">{hist.date ? new Date(hist.date).toLocaleDateString() : 'Previous'}</span>
+                        </div>
+                        <div className="flex items-center gap-4 text-sm">
+                          <div className="px-3 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
+                            <span className="text-gray-500 text-xs mr-2">Open Rate</span> 
+                            <span className="text-emerald-400 font-bold">{hist.previousMetrics?.openRate ?? 'N/A'}%</span>
+                          </div>
+                          <div className="px-3 py-1 rounded-lg bg-blue-500/10 border border-blue-500/20">
+                            <span className="text-gray-500 text-xs mr-2">Click Rate</span> 
+                            <span className="text-blue-400 font-bold">{hist.previousMetrics?.clickRate ?? 'N/A'}%</span>
+                          </div>
+                        </div>
+                      </div>
+                      
+                      {hist.optimizationsApplied && hist.optimizationsApplied.length > 0 && (
+                        <div className="mt-3">
+                          <div className="text-xs text-violet-400 mb-2 font-semibold uppercase tracking-wider">Applied Optimizations</div>
+                          <div className="space-y-1.5">
+                            {hist.optimizationsApplied.map((opt: string, i: number) => (
+                              <div key={i} className="text-sm text-gray-300 flex items-start gap-2">
+                                <span className="text-violet-500 mt-0.5">•</span>
+                                <span>{opt}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </motion.div>
+                  ))}
+                </div>
+              </motion.div>
+            )}
 
             {/* ── OPTIMIZATION SECTION ── */}
             <motion.div

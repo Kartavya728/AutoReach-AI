@@ -1,4 +1,5 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
+import { SystemMessage, HumanMessage } from "@langchain/core/messages";
 import { getServerConfig, requireServerEnv } from "@/src/lib/server/env";
 import {
   serverGetCampaignById,
@@ -19,9 +20,10 @@ import { serverGetCustomers, serverUpdateCustomerWeights } from "@/src/lib/serve
 function getGeminiModel() {
   const config = getServerConfig();
   const apiKey = requireServerEnv("GEMINI_API_KEY");
-  const client = new GoogleGenerativeAI(apiKey);
-  return client.getGenerativeModel({
+  return new ChatGoogleGenerativeAI({
     model: config.geminiModel ?? "gemini-2.0-flash",
+    apiKey,
+    temperature: 0.7,
   });
 }
 
@@ -81,12 +83,14 @@ export async function runOptimizationAgent(
     .join("\n");
 
   const model = getGeminiModel();
-  const prompt = [
+  const promptText = [
     "You are a BFSI email campaign optimizer.",
     "The user has a running campaign and approved specific optimization suggestions.",
     "Your job is to generate UPDATED email content and targeting rules that incorporate these optimizations.",
     "",
     `Original campaign brief: ${campaign.brief}`,
+    `Original strategy plan: ${campaign.strategy_reasoning ?? "N/A"}`,
+    `Original target segment: ${campaign.target_segment ?? "N/A"}`,
     `Current subject: ${campaign.subject ?? "N/A"}`,
     `Current performance: Open rate ${previousMetrics.openRate ?? "N/A"}%, Click rate ${previousMetrics.clickRate ?? "N/A"}%`,
     "",
@@ -102,15 +106,12 @@ export async function runOptimizationAgent(
     "Return JSON only, no markdown.",
   ].join("\n");
 
-  const result = await model.generateContent(prompt);
-  const text = result.response.text().trim();
-  // Parse the response
   let parsedResult: any;
   try {
     let resultText = "";
     try {
-      const result = await model.generateContent(prompt);
-      resultText = result.response.text().trim();
+      const result = await model.invoke([new HumanMessage(promptText)], { tags: ["Optimization-Agent"] });
+      resultText = String(result.content).trim();
     } catch (llmError) {
       console.warn("[Optimize] LLM generation failed, likely 429 Quota:", llmError);
       // Fallback text to trigger the parsing catch block safely
@@ -136,9 +137,14 @@ export async function runOptimizationAgent(
     };
   }
 
-  // 3b. 65/35 Logic for Audience Selection
+  // 3b. Logic for Audience Selection
   const allCustomers = await serverGetCustomers();
-  const validCustomers = allCustomers.filter(c => (c as any).status !== "inactive");
+  let validCustomers = allCustomers.filter(c => (c as any).status !== "inactive");
+  
+  if (campaign.target_customer_ids && campaign.target_customer_ids.length > 0) {
+    // Only optimize targeting for customers who were originally mailed
+    validCustomers = validCustomers.filter(c => campaign.target_customer_ids!.includes(c.customer_id));
+  }
   
   const targetWeightKey = parsedResult.targetWeight || "w1";
   const demoRules = parsedResult.demographics || {};
@@ -169,9 +175,10 @@ export async function runOptimizationAgent(
   // Sort by highest score
   scored.sort((a,b) => b.score - a.score);
   
-  // Reduce audience by 20%
-  const previousTotal = campaign.total_customers || validCustomers.length;
-  const newTotal = Math.max(1, Math.floor(previousTotal * 0.80));
+  // Reduce audience to only the people who opened the previous mail:
+  // Using the totalOpened count from the analysis report to simulate opens
+  const openedCount = analysisReport?.totalOpened ?? Math.max(1, Math.floor(validCustomers.length * 0.52));
+  const newTotal = Math.min(scored.length, openedCount);
   
   const finalIds = scored.slice(0, newTotal).map(x => x.id);
 
@@ -224,6 +231,24 @@ export async function runOptimizationAgent(
 
   const newRound = (campaign.optimization_round ?? 1) + 1;
 
+  // Compile round analysis to store
+  const currentHistory = campaign.json_output?.optimization_history || [];
+  const latestRoundLog = {
+    round: newRound,
+    date: new Date().toISOString(),
+    previousAudienceSize: campaign.total_customers || validCustomers.length,
+    newAudienceSize: finalIds.length,
+    previousOpenRate: previousMetrics.openRate,
+    previousClickRate: previousMetrics.clickRate,
+    appliedOptimizations: approvedSuggestions.map(s => s.title),
+    expectedImprovements: parsedResult.expectedImprovements || []
+  };
+  
+  const updatedStrategyReasoning = (campaign.strategy_reasoning || "") + 
+    `\n\n--- Optimization Round ${newRound} ---\n` +
+    `Focused audience from ${latestRoundLog.previousAudienceSize} down to ${latestRoundLog.newAudienceSize} engaged users.\n` +
+    `Improvements Expected: ${(parsedResult.expectedImprovements || []).join(", ")}`;
+
   // 4. Update campaign in Supabase
   await serverUpdateCampaign(campaignId, {
     subject: updatedSubject,
@@ -232,8 +257,13 @@ export async function runOptimizationAgent(
     status: "active",
     total_customers: finalIds.length,
     external_campaign_id: newExternalId || undefined,
-    target_customer_ids: finalIds
-  } as any);
+    target_customer_ids: finalIds,
+    strategy_reasoning: updatedStrategyReasoning,
+    json_output: {
+      ...(typeof campaign.json_output === 'object' && campaign.json_output !== null ? campaign.json_output : {}),
+      optimization_history: [...currentHistory, latestRoundLog]
+    }
+  });
 
   // 5. Save new variants
   if (parsedResult.variants && parsedResult.variants.length > 0) {
@@ -289,7 +319,7 @@ export async function generateOptimizationSuggestions(
 ): Promise<Omit<OptimizationSuggestionRow, "id" | "campaign_id" | "created_at">[]> {
   const model = getGeminiModel();
 
-  const prompt = [
+  const promptText = [
     "You are a ReAct agent analyzing BFSI email campaign performance data.",
     "Based on the analysis, generate 3-5 optimization suggestions.",
     "",
@@ -318,8 +348,8 @@ export async function generateOptimizationSuggestions(
     "Return JSON only, no markdown.",
   ].join("\n");
 
-  const result = await model.generateContent(prompt);
-  const text = result.response.text().trim();
+  const result = await model.invoke([new HumanMessage(promptText)], { tags: ["Analysis-Agent"] });
+  const text = String(result.content).trim();
 
   try {
     const start = text.indexOf("[");
@@ -387,7 +417,7 @@ export async function runWeightOptimizationAgent(
   // then applying it to the users who engaged.
   
   const model = getGeminiModel();
-  const prompt = [
+  const promptText = [
     "You are a BFSI AI that optimizes targeting weights.",
     "W1, W2, W3 are weights indicating customer preference for different topics (e.g. W1=Loans, W2=Deposits, W3=Cards).",
     `Campaign Brief: ${brief}`,
@@ -400,10 +430,10 @@ export async function runWeightOptimizationAgent(
     "JSON:"
   ].join("\n");
 
-  const result = await model.generateContent(prompt);
+  const result = await model.invoke([new HumanMessage(promptText)], { tags: ["Weight-Agent"] });
   let parsed;
   try {
-    const text = result.response.text().trim();
+    const text = String(result.content).trim();
     const start = text.indexOf("{");
     const end = text.lastIndexOf("}");
     parsed = JSON.parse(text.slice(start, end + 1));

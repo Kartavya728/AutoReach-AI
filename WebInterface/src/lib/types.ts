@@ -222,6 +222,9 @@ export interface UpdateCampaignPayload {
   total_clicked?: number;
   approved_by?: string;
   approved_at?: string;
+  target_customer_ids?: string[];
+  strategy_reasoning?: string;
+  json_output?: any;
 }
 
 export interface OptimizeRequest {

@@ -79,6 +79,7 @@ function getModel() {
 }
 
 async function loadCohortNode(state) {
+  console.log("[LangGraph] load_cohort starting with brief:", state.brief);
   const customers = await serverGetCustomers();
   
   // Condense CRM payload to avoid massive context windows
@@ -93,9 +94,18 @@ async function loadCohortNode(state) {
     w3: c.w3,
   }));
 
-  return {
-    crmData,
+  if (!crmData || crmData.length === 0) {
+    console.error("[LangGraph] load_cohort: fetched 0 customers (empty CRM data).");
+  }
+
+  const result = {
+    brief: state.brief || "",
+    strategy: state.strategy || "",
+    strategyReasoning: state.strategyReasoning || "",
+    contentVariants: state.contentVariants || [],
+    crmData: crmData,
     customerCount: customers.length,
+    targetCustomerIds: state.targetCustomerIds || [],
     steps: [
       {
         agent: "Cohort-Agent",
@@ -103,9 +113,13 @@ async function loadCohortNode(state) {
       },
     ],
   };
+  
+  console.log("[LangGraph] load_cohort finished. customerCount:", result.customerCount);
+  return result;
 }
 
 async function strategyNode(state) {
+  console.log("[LangGraph] strategyNode starting. crmData present:", !!state.crmData);
   const llm = getModel();
   const response = await llm.invoke([
     new SystemMessage(
@@ -121,7 +135,7 @@ async function strategyNode(state) {
     ),
     new HumanMessage(
       `Campaign brief:\n${state.brief}\n\nCRM Data Summary:\n` + 
-      `Total users: ${state.crmData.length}. Average w1: 0.5, w2: 0.5, w3: 0.5.\n\nReturn strict JSON.`
+      `Total users: ${state.crmData ? state.crmData.length : 0}. Average w1: 0.5, w2: 0.5, w3: 0.5.\n\nReturn strict JSON.`
     ),
   ]);
 
@@ -141,20 +155,31 @@ async function strategyNode(state) {
   }
 
   // Filter cohort securely in the backend using LLM's criteria
-  let targetCustomerIds = state.crmData.map(c => c.id);
-  if (parsed.targetWeight) {
+  let targetCustomerIds = state.crmData ? state.crmData.map(c => c.id) : [];
+  if (parsed.targetWeight && state.crmData) {
     const targetKey = parsed.targetWeight;
     const scored = state.crmData.map(c => ({ id: c.id, score: Number(c[targetKey]) || 0 }));
     scored.sort((a,b) => b.score - a.score);
-    // Take exactly the top 20% to guarantee subset reduction
-    const subsetSize = Math.max(1, Math.floor(scored.length * 0.20));
+    // Take between 1500 and 2000 customers (or max scored.length if < 1500)
+    const subsetSize = Math.min(scored.length, Math.floor(Math.random() * 501) + 1500);
     targetCustomerIds = scored.slice(0, subsetSize).map(x => x.id);
   }
 
-  return {
-    strategy: parsed.strategy,
-    targetCustomerIds,
-    strategyReasoning: parsed.strategyReasoning || `Targeting criteria: Top 20% of ${parsed.targetWeight}`,
+  const finalStrategy = parsed.strategy || "";
+  const finalReasoning = parsed.strategyReasoning || `Targeting criteria: Top 20% of ${parsed.targetWeight}`;
+
+  if (!finalStrategy || !finalReasoning || !targetCustomerIds || targetCustomerIds.length === 0) {
+    console.error("[LangGraph] strategyNode returned empty strategy or zero target users.");
+  }
+
+  const result = {
+    brief: state.brief || "",
+    strategy: finalStrategy,
+    strategyReasoning: finalReasoning,
+    contentVariants: state.contentVariants || [],
+    crmData: state.crmData || [],
+    customerCount: state.customerCount || 0,
+    targetCustomerIds: targetCustomerIds,
     steps: [
       {
         agent: "Targeting-Agent",
@@ -162,9 +187,13 @@ async function strategyNode(state) {
       },
     ],
   };
+
+  console.log("[LangGraph] strategyNode finished. Selected targets:", result.targetCustomerIds.length);
+  return result;
 }
 
 async function contentNode(state) {
+  console.log("[LangGraph] contentNode starting. strategy present:", !!state.strategy);
   const llm = getModel();
   const response = await llm.invoke([
     new SystemMessage(
@@ -176,8 +205,24 @@ async function contentNode(state) {
   ]);
   const variants = parseVariants(contentToText(response.content));
 
-  return {
-    contentVariants: variants,
+  if (!variants || variants.length === 0) {
+    console.error("[LangGraph] contentNode generated empty contentVariants.");
+  }
+
+  const result = {
+    brief: state.brief || "",
+    strategy: state.strategy || "",
+    strategyReasoning: state.strategyReasoning || "",
+    contentVariants: variants && variants.length > 0 ? variants : [{
+      subject: "Engage with our latest offer",
+      body: "Hello! Based on your recent activity, we have a great offer to help you achieve your goals. Visit our dashboard to learn more.",
+      variant: "Fallback A",
+      tone: "professional",
+      tags: ["fallback", "engagement"]
+    }],
+    crmData: state.crmData || [],
+    customerCount: state.customerCount || 0,
+    targetCustomerIds: state.targetCustomerIds || [],
     steps: [
       {
         agent: "Content-Agent",
@@ -189,6 +234,9 @@ async function contentNode(state) {
       },
     ],
   };
+
+  console.log("[LangGraph] contentNode finished. variants:", variants.length);
+  return result;
 }
 
 function buildGraph() {
