@@ -4,6 +4,7 @@ import type {
   CampaignRow,
   CampaignVariantRow,
   OptimizationSuggestionRow,
+  OptimizationHistoryRow,
   CreateCampaignPayload,
   UpdateCampaignPayload,
 } from "@/src/lib/types";
@@ -163,4 +164,34 @@ export async function serverSaveOptimizations(
 
   if (error) throw error;
   return (data ?? []) as OptimizationSuggestionRow[];
+}
+
+// ── Optimization History ──
+
+export async function serverGetOptimizationHistory(
+  campaignId: string
+): Promise<OptimizationHistoryRow[]> {
+  const client = requireAdminClient();
+  const { data, error } = await client
+    .from("campaign_optimization_history")
+    .select("*")
+    .eq("campaign_id", campaignId)
+    .order("round", { ascending: true });
+
+  if (error) throw error;
+  return (data ?? []) as OptimizationHistoryRow[];
+}
+
+export async function serverSaveOptimizationHistory(
+  history: Omit<OptimizationHistoryRow, "id" | "created_at">
+): Promise<OptimizationHistoryRow> {
+  const client = requireAdminClient();
+  const { data, error } = await client
+    .from("campaign_optimization_history")
+    .insert(history)
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data as OptimizationHistoryRow;
 }

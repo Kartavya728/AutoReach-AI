@@ -6,6 +6,7 @@ import {
   serverUpdateCampaign,
   serverSaveVariants,
   serverSaveOptimizations,
+  serverSaveOptimizationHistory,
 } from "@/src/lib/server/supabase";
 import { fetchCampaignReportFromCampaignX, sendCampaignToCampaignX } from "@/src/lib/server/campaignx";
 import type {
@@ -232,21 +233,28 @@ export async function runOptimizationAgent(
   const newRound = (campaign.optimization_round ?? 1) + 1;
 
   // Compile round analysis to store
-  const currentHistory = campaign.json_output?.optimization_history || [];
   const latestRoundLog = {
+    campaign_id: campaignId,
     round: newRound,
     date: new Date().toISOString(),
-    previousAudienceSize: campaign.total_customers || validCustomers.length,
-    newAudienceSize: finalIds.length,
-    previousOpenRate: previousMetrics.openRate,
-    previousClickRate: previousMetrics.clickRate,
-    appliedOptimizations: approvedSuggestions.map(s => s.title),
-    expectedImprovements: parsedResult.expectedImprovements || []
+    previous_audience_size: campaign.total_customers || validCustomers.length,
+    new_audience_size: finalIds.length,
+    previous_open_rate: previousMetrics.openRate,
+    previous_click_rate: previousMetrics.clickRate,
+    applied_optimizations: approvedSuggestions.map(s => s.title),
+    expected_improvements: parsedResult.expectedImprovements || []
   };
   
+  // Persist the history trace immediately
+  try {
+    await serverSaveOptimizationHistory(latestRoundLog);
+  } catch (err) {
+    console.error("[Optimize] Failed to insert into campaign_optimization_history table", err);
+  }
+
   const updatedStrategyReasoning = (campaign.strategy_reasoning || "") + 
     `\n\n--- Optimization Round ${newRound} ---\n` +
-    `Focused audience from ${latestRoundLog.previousAudienceSize} down to ${latestRoundLog.newAudienceSize} engaged users.\n` +
+    `Focused audience from ${latestRoundLog.previous_audience_size} down to ${latestRoundLog.new_audience_size} engaged users.\n` +
     `Improvements Expected: ${(parsedResult.expectedImprovements || []).join(", ")}`;
 
   // 4. Update campaign in Supabase
@@ -259,10 +267,6 @@ export async function runOptimizationAgent(
     external_campaign_id: newExternalId || undefined,
     target_customer_ids: finalIds,
     strategy_reasoning: updatedStrategyReasoning,
-    json_output: {
-      ...(typeof campaign.json_output === 'object' && campaign.json_output !== null ? campaign.json_output : {}),
-      optimization_history: [...currentHistory, latestRoundLog]
-    }
   });
 
   // 5. Save new variants

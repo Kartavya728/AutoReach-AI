@@ -3,6 +3,7 @@ import {
   serverGetCampaignById,
   serverUpdateCampaign,
   serverGetOptimizations,
+  serverGetOptimizationHistory,
 } from "@/src/lib/server/supabase";
 import { fetchCampaignReportFromCampaignX } from "@/src/lib/server/campaignx";
 import { computeAnalysisFromReport } from "@/src/lib/server/analysis";
@@ -28,6 +29,12 @@ export async function GET(
     let optimizations: OptimizationSuggestionRow[] = [];
     try {
       optimizations = await serverGetOptimizations(params.id);
+    } catch { /* ignore */ }
+    
+    // Fetch optimization history
+    let optimizationHistory: any[] = [];
+    try {
+      optimizationHistory = await serverGetOptimizationHistory(params.id);
     } catch { /* ignore */ }
 
     // Always generate analysis — either from report data or from campaign.total_customers
@@ -99,6 +106,7 @@ export async function GET(
       campaign,
       analysisReport,
       optimizations,
+      optimizationHistory,
     });
   } catch (error) {
     console.error("[API/campaigns/[id]] GET Error:", error);

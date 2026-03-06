@@ -64,6 +64,7 @@ export default function CampaignAnalysis() {
   const [campaign, setCampaign] = useState<CampaignRow | null>(null);
   const [report, setReport] = useState<ComputedAnalysisReport | null>(null);
   const [suggestions, setSuggestions] = useState<OptimizationSuggestionRow[]>([]);
+  const [optimizationHistory, setOptimizationHistory] = useState<any[]>([]);
   const [dataLoading, setDataLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
 
@@ -99,6 +100,7 @@ export default function CampaignAnalysis() {
         setCampaign(data.campaign);
         setReport(data.analysisReport);
         setSuggestions(data.optimizations || []);
+        setOptimizationHistory(data.optimizationHistory || []);
 
         // Initialize opt statuses from fetched suggestions
         const statuses: Record<string, "pending" | "approved" | "rejected"> = {};
@@ -631,7 +633,7 @@ export default function CampaignAnalysis() {
             </motion.div>
 
             {/* ── OPTIMIZATION HISTORY ── */}
-            {campaign.json_output?.optimization_history && campaign.json_output.optimization_history.length > 0 && (
+            {optimizationHistory && optimizationHistory.length > 0 && (
               <motion.div
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -651,7 +653,7 @@ export default function CampaignAnalysis() {
                 </div>
                 
                 <div className="space-y-4">
-                  {campaign.json_output.optimization_history.map((hist: any, idx: number) => (
+                  {optimizationHistory.map((hist: any, idx: number) => (
                     <motion.div
                       key={idx}
                       className="p-5 rounded-2xl"
@@ -668,20 +670,20 @@ export default function CampaignAnalysis() {
                         <div className="flex items-center gap-4 text-sm">
                           <div className="px-3 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
                             <span className="text-gray-500 text-xs mr-2">Open Rate</span> 
-                            <span className="text-emerald-400 font-bold">{hist.previousMetrics?.openRate ?? 'N/A'}%</span>
+                            <span className="text-emerald-400 font-bold">{hist.previous_open_rate ?? 'N/A'}%</span>
                           </div>
                           <div className="px-3 py-1 rounded-lg bg-blue-500/10 border border-blue-500/20">
                             <span className="text-gray-500 text-xs mr-2">Click Rate</span> 
-                            <span className="text-blue-400 font-bold">{hist.previousMetrics?.clickRate ?? 'N/A'}%</span>
+                            <span className="text-blue-400 font-bold">{hist.previous_click_rate ?? 'N/A'}%</span>
                           </div>
                         </div>
                       </div>
                       
-                      {hist.optimizationsApplied && hist.optimizationsApplied.length > 0 && (
+                      {hist.applied_optimizations && hist.applied_optimizations.length > 0 && (
                         <div className="mt-3">
                           <div className="text-xs text-violet-400 mb-2 font-semibold uppercase tracking-wider">Applied Optimizations</div>
                           <div className="space-y-1.5">
-                            {hist.optimizationsApplied.map((opt: string, i: number) => (
+                            {hist.applied_optimizations.map((opt: string, i: number) => (
                               <div key={i} className="text-sm text-gray-300 flex items-start gap-2">
                                 <span className="text-violet-500 mt-0.5">•</span>
                                 <span>{opt}</span>

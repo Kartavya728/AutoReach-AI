@@ -185,6 +185,20 @@ export interface OptimizationSuggestionRow {
   created_at: string;
 }
 
+export interface OptimizationHistoryRow {
+  id: string;
+  campaign_id: string;
+  round: number;
+  date: string;
+  previous_audience_size: number | null;
+  new_audience_size: number | null;
+  previous_open_rate: number | null;
+  previous_click_rate: number | null;
+  applied_optimizations: string[] | null;
+  expected_improvements: string[] | null;
+  created_at: string;
+}
+
 // ── Request/Response shapes for new API routes ──
 
 export interface CreateCampaignPayload {
