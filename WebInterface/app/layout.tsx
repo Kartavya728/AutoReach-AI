@@ -1,9 +1,10 @@
 import type { Metadata } from "next";
 import "../src/styles/index.css";
+import { BackgroundGlow } from "../src/app/components/BackgroundGlow";
 
 export const metadata: Metadata = {
-  title: "CampaignX",
-  description: "AI multi-agent marketing automation platform",
+  title: "Autoreach AI",
+  description: "AI-powered marketing campaigns",
 };
 
 export default function RootLayout({
@@ -30,6 +31,7 @@ export default function RootLayout({
               backgroundSize: "60px 60px",
             }}
           />
+          <BackgroundGlow />
           <div className="relative z-10">{children}</div>
         </div>
       </body>

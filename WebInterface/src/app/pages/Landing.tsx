@@ -188,34 +188,6 @@ export default function Landing() {
     <div ref={containerRef} className="min-h-screen overflow-x-hidden">
       <ParticleCanvas />
 
-      {/* Gradient orbs */}
-      <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        <div
-          className="absolute w-96 h-96 rounded-full blur-3xl opacity-20"
-          style={{
-            background: "radial-gradient(circle, #7c3aed, transparent)",
-            top: "10%",
-            left: "10%",
-          }}
-        />
-        <div
-          className="absolute w-80 h-80 rounded-full blur-3xl opacity-15"
-          style={{
-            background: "radial-gradient(circle, #ec4899, transparent)",
-            top: "20%",
-            right: "15%",
-          }}
-        />
-        <div
-          className="absolute w-72 h-72 rounded-full blur-3xl opacity-10"
-          style={{
-            background: "radial-gradient(circle, #0891b2, transparent)",
-            bottom: "20%",
-            left: "30%",
-          }}
-        />
-      </div>
-
       {/* Hero */}
       <div className="relative z-10 min-h-screen flex flex-col items-center justify-center px-4 pt-24">
         <motion.div
@@ -242,7 +214,7 @@ export default function Landing() {
               <Sparkles className="w-4 h-4 text-violet-400" />
             </motion.div>
             <span className="text-violet-300" style={{ fontSize: "0.8rem" }}>
-              CampaignX · FrostHack XPECTO 2026 · IIT Mandi
+              Autoreach AI · FrostHack XPECTO 2026 · IIT Mandi
             </span>
             <span
               className="px-2 py-0.5 rounded-full bg-violet-500/30 text-violet-300"
@@ -688,7 +660,7 @@ export default function Landing() {
       {/* Footer */}
       <footer className="relative z-10 py-8 px-4 text-center border-t border-white/5">
         <p className="text-gray-600" style={{ fontSize: "0.8rem" }}>
-          CampaignX · Built for FrostHack XPECTO 2026 · IIT Mandi ·{" "}
+          Autoreach AI · Built for FrostHack XPECTO 2026 · IIT Mandi ·{" "}
           <span className="text-violet-500">InXiteOut</span> Hackathon
         </p>
       </footer>

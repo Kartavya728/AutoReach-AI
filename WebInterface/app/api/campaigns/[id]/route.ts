@@ -7,6 +7,7 @@ import {
 } from "@/src/lib/server/supabase";
 import { fetchCampaignReportFromCampaignX } from "@/src/lib/server/campaignx";
 import { computeAnalysisFromReport } from "@/src/lib/server/analysis";
+import { serverGetCustomers } from "@/src/lib/server/customers";
 import { generateOptimizationSuggestions } from "@/src/lib/server/optimize";
 import { configureLangSmithTracing } from "@/src/lib/server/langsmith";
 import type { UpdateCampaignPayload, OptimizationSuggestionRow } from "@/src/lib/types";
@@ -30,7 +31,7 @@ export async function GET(
     try {
       optimizations = await serverGetOptimizations(params.id);
     } catch { /* ignore */ }
-    
+
     // Fetch optimization history
     let optimizationHistory: any[] = [];
     try {
@@ -57,15 +58,20 @@ export async function GET(
         : (campaign.total_customers || 0);
 
       if (totalSentCount > 0) {
-        // Build a synthetic records array if needed (only used for totalSent count inside computeAnalysisFromReport)
+        // Build a synthetic records array if needed
         const records = reportRecords.length > 0
           ? reportRecords
           : Array.from({ length: totalSentCount }, (_, i) => ({ EO: "N", EC: "N", customer_id: `CUST${i}`, send_time: "", invokation_time: "" }));
 
+        // Fetch CRM customers for data-driven analysis breakdowns
+        let crmCustomers;
+        try { crmCustomers = await serverGetCustomers(); } catch { /* non-critical */ }
+
         analysisReport = computeAnalysisFromReport(
           campaign.external_campaign_id || campaign.id,
           records,
-          campaign
+          campaign,
+          crmCustomers
         );
 
         // Update cached metrics in Supabase
@@ -78,25 +84,25 @@ export async function GET(
           });
         } catch { /* non-critical */ }
 
-          // Generate AI optimization suggestions if none exist
-          if (optimizations.length === 0 && (analysisReport?.totalSent || 0) > 0) {
-            try {
-              const { serverSaveOptimizations } = await import(
-                "@/src/lib/server/supabase"
-              );
-              const suggestions = await generateOptimizationSuggestions(
-                params.id,
-                analysisReport!,
-                campaign.brief
-              );
-              optimizations = await serverSaveOptimizations(
-                params.id,
-                suggestions
-              );
-            } catch (err) {
-              console.warn("[API] Failed to generate optimizations:", err);
-            }
+        // Generate AI optimization suggestions if none exist
+        if (optimizations.length === 0 && (analysisReport?.totalSent || 0) > 0) {
+          try {
+            const { serverSaveOptimizations } = await import(
+              "@/src/lib/server/supabase"
+            );
+            const suggestions = await generateOptimizationSuggestions(
+              params.id,
+              analysisReport!,
+              campaign.brief
+            );
+            optimizations = await serverSaveOptimizations(
+              params.id,
+              suggestions
+            );
+          } catch (err) {
+            console.warn("[API] Failed to generate optimizations:", err);
           }
+        }
       }
     } catch (err) {
       console.warn("[API] Could not compute analysis:", err);

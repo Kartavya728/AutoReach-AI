@@ -13,7 +13,6 @@ import {
   X,
   ChevronRight,
   Activity,
-  Cpu,
   Users,
 } from "lucide-react";
 
@@ -45,24 +44,33 @@ export function Navbar() {
         {/* Logo */}
         <Link href="/" className="flex items-center gap-2 group">
           <motion.div
-            whileHover={{ rotate: 360 }}
-            transition={{ duration: 0.6 }}
-            className="w-8 h-8 bg-gradient-to-br from-violet-500 to-fuchsia-500 rounded-lg flex items-center justify-center"
+            whileHover={{ scale: 1.1, rotate: 180 }}
+            transition={{ duration: 0.4 }}
+            className="relative w-8 h-8 rounded-lg flex items-center justify-center overflow-hidden"
           >
-            <Zap className="w-4 h-4 text-white" />
+            <motion.div
+              className="absolute inset-0 bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500"
+              animate={{ rotate: 360 }}
+              transition={{ repeat: Infinity, duration: 4, ease: "linear" }}
+              style={{ scale: 1.5 }}
+            />
+            <div className="absolute inset-[2px] bg-[#0A0A1E] rounded-md z-0" />
+            <Zap className="w-4 h-4 text-violet-400 relative z-10" />
           </motion.div>
-          <span
-            className="font-bold text-white"
-            style={{ fontSize: "1.1rem" }}
-          >
-            Campaign
-            <span className="text-violet-400">X</span>
-          </span>
-          <div className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-violet-500/20 border border-violet-500/30">
-            <Activity className="w-3 h-3 text-violet-400" />
-            <span className="text-violet-400" style={{ fontSize: "0.65rem" }}>
-              AI
-            </span>
+
+          <div className="flex items-center tracking-tight font-extrabold" style={{ fontSize: "1.15rem" }}>
+            <span className="text-white">Autoreach</span>
+            <div className="relative ml-2 flex items-center px-2 py-0.5 rounded-full overflow-hidden" style={{ background: "rgba(139, 92, 246, 0.15)", border: "1px solid rgba(139, 92, 246, 0.3)" }}>
+              <motion.div
+                className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent"
+                animate={{ x: ["-100%", "200%"] }}
+                transition={{ repeat: Infinity, duration: 2, ease: "linear" }}
+              />
+              <Activity className="w-3 h-3 text-violet-400 mr-1" />
+              <span className="text-violet-400 font-bold tracking-wider" style={{ fontSize: "0.65rem" }}>
+                AI
+              </span>
+            </div>
           </div>
         </Link>
 
@@ -112,15 +120,6 @@ export function Navbar() {
               AI Active
             </span>
           </div>
-          <motion.div
-            whileHover={{ scale: 1.05 }}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-violet-500/10 border border-violet-500/20 cursor-pointer"
-          >
-            <Cpu className="w-3 h-3 text-violet-400" />
-            <span className="text-violet-400" style={{ fontSize: "0.75rem" }}>
-              Gemini 2.0
-            </span>
-          </motion.div>
         </div>
 
         {/* Mobile menu button */}

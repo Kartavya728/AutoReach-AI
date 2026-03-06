@@ -37,8 +37,6 @@ export function getServerConfig() {
 /** Available Gemini models the user can select from */
 export const AVAILABLE_MODELS = [
   { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash", isDefault: true },
-  { id: "gemini-2.0-flash", name: "Gemini 2.0 Flash", isDefault: false },
-  { id: "gemini-2.0-flash-lite", name: "Gemini 2.0 Flash Lite", isDefault: false },
-  { id: "gemini-1.5-flash", name: "Gemini 1.5 Flash", isDefault: false },
-  { id: "gemini-1.5-pro", name: "Gemini 1.5 Pro", isDefault: false },
+  { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro", isDefault: false },
+  { id: "gemini-3.1-pro", name: "Gemini 3.1 Pro", isDefault: false },
 ];

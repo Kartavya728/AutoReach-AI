@@ -6,6 +6,7 @@ import { useState, useEffect } from "react";
 import type { CampaignRow } from "../../lib/types";
 import { Plus, Users, Mail, Activity, ArrowRight, Eye, MousePointer } from "lucide-react";
 import { Navbar } from "../components/Navbar";
+import { Loader } from "../components/Loader";
 
 const STATUS_CONFIG: Record<string, { bg: string; text: string; dot: string; label: string }> = {
   completed: { bg: "rgba(16,185,129,0.1)", text: "#10b981", dot: "#10b981", label: "Completed" },
@@ -16,7 +17,7 @@ const STATUS_CONFIG: Record<string, { bg: string; text: string; dot: string; lab
 
 function CampaignCard({ campaign, index }: { campaign: CampaignRow; index: number }) {
   const status = STATUS_CONFIG[campaign.status] || STATUS_CONFIG.draft;
-  
+
   return (
     <Link href={`/campaign/${campaign.id}/analysis`}>
       <motion.div
@@ -32,7 +33,7 @@ function CampaignCard({ campaign, index }: { campaign: CampaignRow; index: numbe
         }}
       >
         <div className="absolute inset-0 bg-gradient-to-br from-indigo-500/10 to-purple-500/10 opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
-        
+
         <div className="relative z-10 flex flex-col h-full">
           <div className="flex justify-between items-start mb-4">
             <span
@@ -63,7 +64,7 @@ function CampaignCard({ campaign, index }: { campaign: CampaignRow; index: numbe
                 {(campaign.total_customers || 0).toLocaleString()} <span className="text-gray-500 text-xs">users</span>
               </div>
             </div>
-            
+
             {campaign.status !== 'draft' ? (
               <div className="flex gap-4">
                 <div>
@@ -101,6 +102,9 @@ function CampaignCard({ campaign, index }: { campaign: CampaignRow; index: numbe
 export default function Dashboard() {
   const [campaigns, setCampaigns] = useState<CampaignRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [visibleCount, setVisibleCount] = useState(6);
+  const [showScrollTop, setShowScrollTop] = useState(false);
 
   useEffect(() => {
     async function fetchCampaigns() {
@@ -119,30 +123,53 @@ export default function Dashboard() {
     fetchCampaigns();
   }, []);
 
+  useEffect(() => {
+    const onScroll = () => setShowScrollTop(window.scrollY > 400);
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
+  const scrollToTop = () => {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const filteredCampaigns = campaigns.filter(
+    (c) =>
+      c.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      c.brief?.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  const displayedCampaigns = filteredCampaigns.slice(0, visibleCount);
+  const hasMore = visibleCount < filteredCampaigns.length;
+
+  useEffect(() => {
+    setVisibleCount(6);
+  }, [searchQuery]);
+
   if (loading) {
     return (
-      <div className="min-h-screen bg-[#0E0E11] pt-20 flex items-center justify-center">
+      <div className="min-h-screen pt-20 flex items-center justify-center">
         <Navbar />
-        <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: "linear" }} className="w-10 h-10 border-4 border-indigo-500/30 border-t-indigo-500 rounded-full" />
+        <Loader text="Loading Campaigns..." subtext="Fetching from Autoreach API" />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-[#0E0E11] pt-20 pb-20 px-4">
+    <div className="min-h-screen pt-20 pb-20 px-4">
       <Navbar />
 
       <div className="max-w-7xl mx-auto">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-12 mt-8">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-8 mt-8">
           <div>
-            <motion.h1 
+            <motion.h1
               initial={{ opacity: 0, x: -20 }}
               animate={{ opacity: 1, x: 0 }}
               className="text-4xl lg:text-5xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-white to-gray-400 tracking-tight mb-2"
             >
               Campaigns
             </motion.h1>
-            <motion.p 
+            <motion.p
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               transition={{ delay: 0.1 }}
@@ -151,7 +178,7 @@ export default function Dashboard() {
               Manage, analyze, and optimize your BFSI marketing deployments.
             </motion.p>
           </div>
-          
+
           <Link href="/dashboard/new-campaign">
             <motion.button
               whileHover={{ scale: 1.05 }}
@@ -162,6 +189,35 @@ export default function Dashboard() {
               New Campaign
             </motion.button>
           </Link>
+        </div>
+
+        {/* ── Search Bar ── */}
+        <div
+          className="mb-8 flex items-center gap-3 px-4 py-3 rounded-xl"
+          style={{
+            background: "rgba(255,255,255,0.02)",
+            border: "1px solid rgba(255,255,255,0.08)",
+          }}
+        >
+          <svg className="w-5 h-5 text-gray-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+          </svg>
+          <input
+            type="text"
+            placeholder="Search campaigns by name or brief..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="flex-1 bg-transparent text-white placeholder-gray-600 outline-none"
+            style={{ fontSize: "0.95rem" }}
+          />
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery("")}
+              className="text-gray-500 hover:text-white transition-colors text-sm font-medium"
+            >
+              Clear
+            </button>
+          )}
         </div>
 
         {campaigns.length === 0 ? (
@@ -175,14 +231,67 @@ export default function Dashboard() {
               </button>
             </Link>
           </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {campaigns.map((campaign, i) => (
-              <CampaignCard key={campaign.id} campaign={campaign} index={i} />
-            ))}
+        ) : filteredCampaigns.length === 0 ? (
+          <div className="text-center py-20 rounded-3xl border border-white/5 bg-white/[0.02] text-gray-400">
+            No campaigns match "{searchQuery}"
           </div>
+        ) : (
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {displayedCampaigns.map((campaign, i) => (
+                <CampaignCard key={campaign.id} campaign={campaign} index={i} />
+              ))}
+            </div>
+
+            {/* View More / View Less */}
+            {filteredCampaigns.length > 6 && (
+              <div className="flex items-center justify-center gap-4 mt-10">
+                {hasMore && (
+                  <button
+                    onClick={() => setVisibleCount((prev) => prev + 6)}
+                    className="flex items-center gap-2 px-6 py-3 rounded-xl text-indigo-400 font-medium transition-all hover:bg-indigo-500/10"
+                    style={{
+                      background: "rgba(99,102,241,0.08)",
+                      border: "1px solid rgba(99,102,241,0.2)",
+                    }}
+                  >
+                    <Activity className="w-4 h-4" />
+                    View More ({filteredCampaigns.length - visibleCount} remaining)
+                  </button>
+                )}
+                {visibleCount > 6 && (
+                  <button
+                    onClick={() => setVisibleCount(6)}
+                    className="flex items-center gap-2 px-6 py-3 rounded-xl text-gray-400 font-medium transition-all hover:bg-white/5"
+                    style={{
+                      background: "rgba(255,255,255,0.03)",
+                      border: "1px solid rgba(255,255,255,0.08)",
+                    }}
+                  >
+                    View Less
+                  </button>
+                )}
+              </div>
+            )}
+          </>
         )}
       </div>
+
+      {showScrollTop && (
+        <button
+          onClick={scrollToTop}
+          className="fixed bottom-8 right-8 z-40 w-12 h-12 rounded-full flex items-center justify-center shadow-lg transition-all hover:scale-110"
+          style={{
+            background: "linear-gradient(135deg, #7c3aed, #ec4899)",
+            boxShadow: "0 4px 20px rgba(139,92,246,0.4)",
+          }}
+          aria-label="Return to top"
+        >
+          <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 10l7-7m0 0l7 7m-7-7v18"></path>
+          </svg>
+        </button>
+      )}
     </div>
   );
 }

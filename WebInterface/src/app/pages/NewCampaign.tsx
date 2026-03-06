@@ -6,7 +6,7 @@ import { useState, useEffect } from "react";
 import {
   Send, Sliders, RefreshCw, CheckCircle, Clock, Users,
   ArrowRight, ChevronLeft, Sparkles, Zap, Target,
-  Calendar, Mail, MessageSquare, Info,
+  Calendar, Mail, MessageSquare, Info, Cpu, ChevronDown,
 } from "lucide-react";
 import { Navbar } from "../components/Navbar";
 import { AIProcessing } from "../components/AIProcessing";
@@ -17,11 +17,7 @@ import { getCustomerCohort, sendCampaign } from "../../lib/campaignx-api";
 import { generateCampaignContent } from "../../lib/gemini";
 import { runCampaignAgent } from "../../lib/langgraph";
 
-const EXAMPLE_BRIEFS = [
-  "Run email campaign for launching XDeposit, a flagship term deposit product from SuperBFSI, that gives 1 percentage point higher returns than its competitors. Announce an additional 0.25 percentage point higher returns for female senior citizens. Optimise for open rate and click rate. Don't skip emails to customers marked 'inactive'. Include the call to action: https://superbfsi.com/xdeposit/explore/",
-  "Launch a targeted re-engagement campaign for inactive customers promoting XDeposit. Emphasize urgency and exclusive offer. Target 18-45 age group. Focus on digital-first messaging.",
-  "Create a professional email campaign for senior citizens (55+) promoting XDeposit's safety and higher returns. Use formal tone, no emojis. Highlight RBI regulation and guaranteed returns.",
-];
+const DEFAULT_BRIEF = "Run email campaign for launching XDeposit, a flagship term deposit product from SuperBFSI, that gives 1 percentage point higher returns than its competitors. Announce an additional 0.25 percentage point higher returns for female senior citizens. Optimise for open rate and click rate. Don't skip emails to customers marked 'inactive'. Include the call to action: https://superbfsi.com/xdeposit/explore/";
 
 const STEPS = [
   { id: 1, label: "Campaign Brief" },
@@ -83,7 +79,7 @@ function mapGeneratedVariantToCard(
 export default function NewCampaign() {
   const router = useRouter();
   const [step, setStep] = useState(1);
-  const [brief, setBrief] = useState("");
+  const [brief, setBrief] = useState(DEFAULT_BRIEF);
   const [agentSteps, setAgentSteps] = useState<{ step: string; agent: string }[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingDone, setProcessingDone] = useState(false);
@@ -113,6 +109,7 @@ export default function NewCampaign() {
   const [cohortData, setCohortData] = useState<{ active: number; inactive: number; total: number } | null>(null);
   const [selectedModel, setSelectedModel] = useState("gemini-2.5-flash");
   const [availableModels, setAvailableModels] = useState<{ id: string; name: string; isDefault: boolean }[]>([]);
+  const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
 
   // Fetch available models
   useEffect(() => {
@@ -125,7 +122,7 @@ export default function NewCampaign() {
           if (defaultModel) setSelectedModel(defaultModel.id);
         }
       })
-      .catch(() => {});
+      .catch(() => { });
   }, []);
 
   const handleGeneratePlan = async () => {
@@ -251,13 +248,13 @@ export default function NewCampaign() {
 
     try {
       const cohort = await getCustomerCohort();
-      
+
       // Use the AI targeted subset if available, otherwise fallback to the active cohort
       let finalCustomerIds = targetCustomerIds;
       if (!finalCustomerIds || finalCustomerIds.length === 0) {
         finalCustomerIds = cohort.data.map((customer) => customer.customer_id);
       }
-      
+
       setCustomerCohortSize(finalCustomerIds.length);
       setCohortData({
         total: cohort.total_count,
@@ -356,14 +353,14 @@ export default function NewCampaign() {
                     step === s.id
                       ? "rgba(139,92,246,0.2)"
                       : step > s.id
-                      ? "rgba(16,185,129,0.1)"
-                      : "rgba(255,255,255,0.03)",
+                        ? "rgba(16,185,129,0.1)"
+                        : "rgba(255,255,255,0.03)",
                   border:
                     step === s.id
                       ? "1px solid rgba(139,92,246,0.4)"
                       : step > s.id
-                      ? "1px solid rgba(16,185,129,0.3)"
-                      : "1px solid rgba(255,255,255,0.07)",
+                        ? "1px solid rgba(16,185,129,0.3)"
+                        : "1px solid rgba(255,255,255,0.07)",
                 }}
               >
                 <div
@@ -373,8 +370,8 @@ export default function NewCampaign() {
                       step === s.id
                         ? "rgba(139,92,246,0.6)"
                         : step > s.id
-                        ? "rgba(16,185,129,0.6)"
-                        : "rgba(255,255,255,0.1)",
+                          ? "rgba(16,185,129,0.6)"
+                          : "rgba(255,255,255,0.1)",
                     fontSize: "0.65rem",
                     color: "#fff",
                     fontWeight: 700,
@@ -444,30 +441,129 @@ export default function NewCampaign() {
                   <div
                     className="ml-auto flex items-center gap-3"
                   >
-                    {/* Model selector */}
-                    <select
-                      value={selectedModel}
-                      onChange={(e) => setSelectedModel(e.target.value)}
-                      className="px-2 py-1 rounded-lg text-gray-300 outline-none cursor-pointer"
-                      style={{
-                        background: "rgba(255,255,255,0.05)",
-                        border: "1px solid rgba(255,255,255,0.1)",
-                        fontSize: "0.7rem",
-                        appearance: "auto",
-                      }}
-                    >
-                      {availableModels.length > 0
-                        ? availableModels.map((m) => (
-                            <option key={m.id} value={m.id} style={{ background: "#1a1a2e", color: "#e5e7eb" }}>
-                              {m.name}
-                            </option>
-                          ))
-                        : (
-                            <option value="gemini-2.5-flash" style={{ background: "#1a1a2e", color: "#e5e7eb" }}>
-                              Gemini 2.5 Flash
-                            </option>
-                          )}
-                    </select>
+                    {/* Model selector — premium dropdown */}
+                    <div className="relative">
+                      <motion.button
+                        whileHover={{ scale: 1.02 }}
+                        whileTap={{ scale: 0.98 }}
+                        type="button"
+                        onClick={() => setModelDropdownOpen(!modelDropdownOpen)}
+                        className="flex items-center gap-2 px-3 py-1.5 rounded-xl cursor-pointer transition-all"
+                        style={{
+                          background: "linear-gradient(135deg, rgba(139,92,246,0.12), rgba(236,72,153,0.08))",
+                          border: modelDropdownOpen
+                            ? "1px solid rgba(139,92,246,0.5)"
+                            : "1px solid rgba(139,92,246,0.2)",
+                          boxShadow: modelDropdownOpen
+                            ? "0 0 16px rgba(139,92,246,0.15)"
+                            : "none",
+                        }}
+                      >
+                        <Cpu className="w-3.5 h-3.5 text-violet-400" />
+                        <span className="text-violet-300 font-medium" style={{ fontSize: "0.72rem" }}>
+                          {availableModels.find((m) => m.id === selectedModel)?.name ?? "Gemini 2.5 Flash"}
+                        </span>
+                        <ChevronDown
+                          className={`w-3 h-3 text-violet-400 transition-transform duration-200 ${modelDropdownOpen ? "rotate-180" : ""}`}
+                        />
+                      </motion.button>
+
+                      <AnimatePresence>
+                        {modelDropdownOpen && (
+                          <>
+                            <div
+                              className="fixed inset-0 z-40"
+                              onClick={() => setModelDropdownOpen(false)}
+                            />
+                            <motion.div
+                              initial={{ opacity: 0, y: -6, scale: 0.96 }}
+                              animate={{ opacity: 1, y: 0, scale: 1 }}
+                              exit={{ opacity: 0, y: -6, scale: 0.96 }}
+                              transition={{ duration: 0.15, ease: "easeOut" }}
+                              className="absolute right-0 top-full mt-2 z-50 min-w-[220px] rounded-xl overflow-hidden"
+                              style={{
+                                background: "rgba(12, 12, 30, 0.98)",
+                                backdropFilter: "blur(24px)",
+                                border: "1px solid rgba(139,92,246,0.25)",
+                                boxShadow: "0 12px 40px rgba(0,0,0,0.6), 0 0 1px rgba(139,92,246,0.3)",
+                              }}
+                            >
+                              <div
+                                className="px-3.5 py-2.5 flex items-center gap-2"
+                                style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}
+                              >
+                                <Cpu className="w-3 h-3 text-gray-500" />
+                                <span
+                                  className="text-gray-500 uppercase tracking-widest"
+                                  style={{ fontSize: "0.6rem", fontWeight: 700, letterSpacing: "0.12em" }}
+                                >
+                                  AI Model
+                                </span>
+                              </div>
+                              {(availableModels.length > 0
+                                ? availableModels
+                                : [{ id: "gemini-2.5-flash", name: "Gemini 2.5 Flash", isDefault: true }]
+                              ).map((m) => {
+                                const isActive = selectedModel === m.id;
+                                return (
+                                  <button
+                                    key={m.id}
+                                    type="button"
+                                    onClick={() => {
+                                      setSelectedModel(m.id);
+                                      setModelDropdownOpen(false);
+                                    }}
+                                    className="w-full flex items-center gap-3 px-3.5 py-3 transition-all group"
+                                    style={{
+                                      background: isActive
+                                        ? "linear-gradient(135deg, rgba(139,92,246,0.12), rgba(236,72,153,0.06))"
+                                        : "transparent",
+                                      borderBottom: "1px solid rgba(255,255,255,0.04)",
+                                    }}
+                                  >
+                                    <div
+                                      className="w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0 transition-all"
+                                      style={{
+                                        background: isActive ? "rgba(139,92,246,0.7)" : "rgba(255,255,255,0.06)",
+                                        border: isActive ? "2px solid #a78bfa" : "2px solid rgba(255,255,255,0.12)",
+                                        boxShadow: isActive ? "0 0 8px rgba(139,92,246,0.35)" : "none",
+                                      }}
+                                    >
+                                      {isActive && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                                    </div>
+                                    <div className="flex flex-col items-start gap-0.5">
+                                      <span
+                                        className={`font-medium transition-colors ${isActive ? "text-violet-300" : "text-gray-300 group-hover:text-white"}`}
+                                        style={{ fontSize: "0.78rem" }}
+                                      >
+                                        {m.name}
+                                      </span>
+                                      {m.isDefault && (
+                                        <span
+                                          className="text-violet-500/70"
+                                          style={{ fontSize: "0.58rem", letterSpacing: "0.05em" }}
+                                        >
+                                          RECOMMENDED
+                                        </span>
+                                      )}
+                                    </div>
+                                    {isActive && (
+                                      <motion.div
+                                        initial={{ scale: 0 }}
+                                        animate={{ scale: 1 }}
+                                        className="ml-auto"
+                                      >
+                                        <CheckCircle className="w-3.5 h-3.5 text-violet-400" />
+                                      </motion.div>
+                                    )}
+                                  </button>
+                                );
+                              })}
+                            </motion.div>
+                          </>
+                        )}
+                      </AnimatePresence>
+                    </div>
                     <div
                       className="flex items-center gap-1 px-2 py-0.5 rounded-full"
                       style={{
@@ -503,35 +599,7 @@ export default function NewCampaign() {
                 </div>
               </div>
 
-              {/* Example briefs */}
-              <div className="mb-6">
-                <div className="flex items-center gap-2 mb-3">
-                  <Info className="w-3.5 h-3.5 text-gray-500" />
-                  <span className="text-gray-500" style={{ fontSize: "0.75rem" }}>
-                    Try an example brief:
-                  </span>
-                </div>
-                <div className="space-y-2">
-                  {EXAMPLE_BRIEFS.map((example, i) => (
-                    <motion.button
-                      key={i}
-                      whileHover={{ scale: 1.01, x: 3 }}
-                      whileTap={{ scale: 0.99 }}
-                      onClick={() => setBrief(example)}
-                      className="w-full text-left p-3 rounded-xl text-gray-400 hover:text-gray-300 transition-all"
-                      style={{
-                        background: "rgba(255,255,255,0.02)",
-                        border: "1px solid rgba(255,255,255,0.06)",
-                        fontSize: "0.78rem",
-                        lineHeight: "1.5",
-                      }}
-                    >
-                      <span className="text-violet-400 mr-2">Example {i + 1}:</span>
-                      {example.substring(0, 120)}...
-                    </motion.button>
-                  ))}
-                </div>
-              </div>
+
 
               <div className="flex gap-4">
                 <motion.button
@@ -577,7 +645,7 @@ export default function NewCampaign() {
               <AIProcessing
                 steps={agentSteps}
                 isComplete={processingDone}
-                title="CampaignX Multi-Agent Pipeline"
+                title="Autoreach Multi-Agent Pipeline"
               />
 
               {/* Brief preview */}
@@ -708,6 +776,13 @@ export default function NewCampaign() {
                 selectedVariant={selectedVariant}
                 onSelectVariant={setSelectedVariant}
                 variants={emailVariants}
+                onUpdateVariant={(id, updated) => {
+                  setEmailVariants((prev) =>
+                    prev.map((v) =>
+                      v.id === id ? { ...v, ...updated } : v
+                    )
+                  );
+                }}
               />
 
               <motion.div
@@ -789,7 +864,7 @@ export default function NewCampaign() {
                     Launching Campaign...
                   </div>
                   <div className="text-gray-400" style={{ fontSize: "0.875rem" }}>
-                    Calling CampaignX API · Scheduling emails · Setting up monitoring...
+                    Calling Autoreach API · Scheduling emails · Setting up monitoring...
                   </div>
                   <div className="flex items-center justify-center gap-2 mt-4">
                     {["Validating customer IDs", "Submitting to API", "Setting up tracking"].map(
@@ -985,7 +1060,7 @@ export default function NewCampaign() {
                       </div>
                       <div className="text-yellow-600 mt-1" style={{ fontSize: "0.78rem" }}>
                         By approving, you confirm that the campaign content, target segment, and send time
-                        have been reviewed. The AI agent will then execute the campaign via CampaignX API and
+                        have been reviewed. The AI agent will then execute the campaign via Autoreach API and
                         begin performance monitoring automatically.
                       </div>
                     </div>
@@ -1061,7 +1136,7 @@ export default function NewCampaign() {
                 Campaign Launched! 🚀
               </h2>
               <p className="text-gray-400 mb-2">
-                Campaign submitted to CampaignX API successfully
+                Campaign submitted to Autoreach API successfully
               </p>
               <p className="text-gray-500" style={{ fontSize: "0.8rem" }}>
                 Redirecting to analysis dashboard...

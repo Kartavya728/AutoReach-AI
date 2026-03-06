@@ -17,10 +17,11 @@ import {
 } from "recharts";
 import { Navbar } from "../components/Navbar";
 import { AIProcessing } from "../components/AIProcessing";
+import { Loader } from "../components/Loader";
 import type { CampaignRow, OptimizationSuggestionRow, ComputedAnalysisReport, ImprovementReport } from "../../lib/types";
 
 const ANALYSIS_STEPS = [
-  { step: "Fetching campaign report from CampaignX API...", agent: "Performance-Monitor" },
+  { step: "Fetching campaign report from Autoreach API...", agent: "Performance-Monitor" },
   { step: "Parsing customer interaction records (EO/EC flags)...", agent: "Performance-Monitor" },
   { step: "Calculating open rate across audience...", agent: "Performance-Monitor" },
   { step: "Calculating click rate across audience...", agent: "Performance-Monitor" },
@@ -93,7 +94,7 @@ export default function CampaignAnalysis() {
           throw new Error(`Failed to fetch: ${res.status}`);
         }
         const data = await res.json();
-        
+
         // Cache for next session load
         sessionStorage.setItem(cacheKey, JSON.stringify(data));
 
@@ -160,6 +161,26 @@ export default function CampaignAnalysis() {
       const result = await res.json() as ImprovementReport;
       setImprovementReport(result);
       setShowRelaunching(false);
+
+      // ── Refresh campaign data to show new strategies ──
+      try {
+        const refreshRes = await fetch(`/api/campaigns/${campaignId}`);
+        if (refreshRes.ok) {
+          const refreshData = await refreshRes.json();
+          setCampaign(refreshData.campaign);
+          setReport(refreshData.analysisReport);
+          setSuggestions(refreshData.optimizations || []);
+          setOptimizationHistory(refreshData.optimizationHistory || []);
+          // Reset optimization statuses for the new suggestions
+          const newStatuses: Record<string, "pending" | "approved" | "rejected"> = {};
+          for (const opt of (refreshData.optimizations || [])) {
+            newStatuses[opt.id] = opt.status || "pending";
+          }
+          setOptStatuses(newStatuses);
+        }
+      } catch (refreshErr) {
+        console.warn("Failed to refresh campaign data after optimization:", refreshErr);
+      }
     } catch (err) {
       console.error("Optimization failed:", err);
       setShowRelaunching(false);
@@ -183,7 +204,7 @@ export default function CampaignAnalysis() {
           </div>
           <AIProcessing
             steps={[
-              { step: "Fetching campaign report from CampaignX API...", agent: "Performance-Monitor" },
+              { step: "Fetching campaign report from Autoreach API...", agent: "Performance-Monitor" },
               { step: "Parsing interaction records and identifying performance patterns", agent: "ReAct-Planner" },
               { step: "Generating optimization recommendations with reasoning...", agent: "ReAct-Planner" },
             ]}
@@ -199,7 +220,7 @@ export default function CampaignAnalysis() {
     return (
       <div className="min-h-screen pt-20 pb-16 px-4 flex items-center justify-center">
         <Navbar />
-        
+
         <div className="text-center">
           <AlertTriangle className="w-12 h-12 text-yellow-400 mx-auto mb-4" />
           <div className="text-white mb-2" style={{ fontSize: "1.2rem", fontWeight: 600 }}>Campaign Not Found</div>
@@ -502,26 +523,26 @@ export default function CampaignAnalysis() {
                           <div className="flex-1 h-1.5 rounded-full bg-white/5">
                             <motion.div
                               initial={{ width: 0 }}
-                              animate={{ width: `${(r.openRate / 50) * 100}%` }}
+                              animate={{ width: `${Math.min(100, r.openRate)}%` }}
                               transition={{ duration: 1, delay: 0.5 + i * 0.05 }}
                               className="h-full rounded-full bg-violet-500"
                             />
                           </div>
-                          <span className="text-violet-400 w-10 text-right" style={{ fontSize: "0.7rem" }}>
-                            {r.openRate}%
+                          <span className="text-violet-400 w-14 text-right flex-shrink-0" style={{ fontSize: "0.7rem" }}>
+                            {r.openRate.toFixed(2)}%
                           </span>
                         </div>
                         <div className="flex items-center gap-2">
                           <div className="flex-1 h-1.5 rounded-full bg-white/5">
                             <motion.div
                               initial={{ width: 0 }}
-                              animate={{ width: `${(r.clickRate / 30) * 100}%` }}
+                              animate={{ width: `${Math.min(100, r.clickRate)}%` }}
                               transition={{ duration: 1, delay: 0.5 + i * 0.05 }}
                               className="h-full rounded-full bg-pink-500"
                             />
                           </div>
-                          <span className="text-pink-400 w-10 text-right" style={{ fontSize: "0.7rem" }}>
-                            {r.clickRate}%
+                          <span className="text-pink-400 w-14 text-right flex-shrink-0" style={{ fontSize: "0.7rem" }}>
+                            {r.clickRate.toFixed(2)}%
                           </span>
                         </div>
                       </div>
@@ -581,7 +602,7 @@ export default function CampaignAnalysis() {
                       <div className="flex items-center gap-4">
                         <div>
                           <span className="text-emerald-400 font-semibold" style={{ fontSize: "1rem" }}>
-                            {g.openRate}%
+                            {g.openRate.toFixed(2)}%
                           </span>
                           <span className="text-gray-500 ml-1" style={{ fontSize: "0.72rem" }}>
                             open rate
@@ -589,7 +610,7 @@ export default function CampaignAnalysis() {
                         </div>
                         <div>
                           <span className="text-blue-400 font-semibold" style={{ fontSize: "1rem" }}>
-                            {g.clickRate}%
+                            {g.clickRate.toFixed(2)}%
                           </span>
                           <span className="text-gray-500 ml-1" style={{ fontSize: "0.72rem" }}>
                             click rate
@@ -651,7 +672,7 @@ export default function CampaignAnalysis() {
                     Previous Optimization Rounds
                   </h2>
                 </div>
-                
+
                 <div className="space-y-4">
                   {optimizationHistory.map((hist: any, idx: number) => (
                     <motion.div
@@ -669,16 +690,16 @@ export default function CampaignAnalysis() {
                         </div>
                         <div className="flex items-center gap-4 text-sm">
                           <div className="px-3 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
-                            <span className="text-gray-500 text-xs mr-2">Open Rate</span> 
+                            <span className="text-gray-500 text-xs mr-2">Open Rate</span>
                             <span className="text-emerald-400 font-bold">{hist.previous_open_rate ?? 'N/A'}%</span>
                           </div>
                           <div className="px-3 py-1 rounded-lg bg-blue-500/10 border border-blue-500/20">
-                            <span className="text-gray-500 text-xs mr-2">Click Rate</span> 
+                            <span className="text-gray-500 text-xs mr-2">Click Rate</span>
                             <span className="text-blue-400 font-bold">{hist.previous_click_rate ?? 'N/A'}%</span>
                           </div>
                         </div>
                       </div>
-                      
+
                       {hist.applied_optimizations && hist.applied_optimizations.length > 0 && (
                         <div className="mt-3">
                           <div className="text-xs text-violet-400 mb-2 font-semibold uppercase tracking-wider">Applied Optimizations</div>
@@ -773,14 +794,14 @@ export default function CampaignAnalysis() {
                           status === "approved"
                             ? "rgba(16,185,129,0.05)"
                             : status === "rejected"
-                            ? "rgba(107,114,128,0.05)"
-                            : "rgba(255,255,255,0.02)",
+                              ? "rgba(107,114,128,0.05)"
+                              : "rgba(255,255,255,0.02)",
                         border:
                           status === "approved"
                             ? "1px solid rgba(16,185,129,0.3)"
                             : status === "rejected"
-                            ? "1px solid rgba(107,114,128,0.2)"
-                            : "1px solid rgba(255,255,255,0.07)",
+                              ? "1px solid rgba(107,114,128,0.2)"
+                              : "1px solid rgba(255,255,255,0.07)",
                       }}
                     >
                       <div
@@ -1030,20 +1051,7 @@ export default function CampaignAnalysis() {
             style={{ background: "rgba(0,0,0,0.8)", backdropFilter: "blur(8px)" }}
           >
             <div className="text-center">
-              <motion.div
-                animate={{ rotate: 360 }}
-                transition={{ duration: 1.5, repeat: Infinity, ease: "linear" }}
-                className="w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6"
-                style={{ background: "linear-gradient(135deg, #7c3aed, #ec4899)" }}
-              >
-                <RefreshCw className="w-10 h-10 text-white" />
-              </motion.div>
-              <div className="text-white mb-2" style={{ fontSize: "1.3rem", fontWeight: 700 }}>
-                Applying Optimizations...
-              </div>
-              <div className="text-gray-400">
-                Modifying campaign approach based on approved suggestions
-              </div>
+              <Loader text="Applying Optimizations..." subtext="Modifying campaign approach based on approved suggestions" />
             </div>
           </motion.div>
         )}
