@@ -26,8 +26,8 @@ const SETUP_STEPS = [
         free: true,
       },
       {
-        name: "CampaignX API Key",
-        desc: "Register your team at CampaignX",
+        name: "Autoreach API Key",
+        desc: "Register your team at Autoreach AI",
         link: "https://campaignx.inxiteout.ai",
         envVar: "CAMPAIGNX_API_KEY",
         free: true,
@@ -78,7 +78,7 @@ LANGCHAIN_PROJECT=campaignx-ai`,
   },
   {
     step: 4,
-    title: "Register with CampaignX",
+    title: "Register with Autoreach AI",
     icon: Mail,
     color: "#d97706",
     description: "Get your API key for email campaign execution",
@@ -100,7 +100,7 @@ curl -X POST https://campaignx.inxiteout.ai/api/v1/signup \\
     color: "#ec4899",
     description: "Verify Next.js API routes are active",
     items: [
-      { name: "/app/api/campaignx/*", desc: "Server routes proxy all CampaignX calls using CAMPAIGNX_API_KEY" },
+      { name: "/app/api/campaignx/*", desc: "Server routes proxy all Autoreach API calls using CAMPAIGNX_API_KEY" },
       { name: "/app/api/gemini/*", desc: "Gemini generation/analyze routes use GEMINI_API_KEY" },
       { name: "/app/api/agent/run", desc: "LangGraph + LangChain.js orchestration endpoint" },
       { name: "/src/lib/server/langsmith.ts", desc: "LangSmith tracing configured from environment variables" },
@@ -141,7 +141,7 @@ const ARCHITECTURE = [
   },
   {
     layer: "Backend APIs",
-    items: ["CampaignX API (send/report)", "Supabase DB + Auth", "pgvector (RAG search)", "LangSmith Tracing"],
+    items: ["Autoreach API (send/report)", "Supabase DB + Auth", "pgvector (RAG search)", "LangSmith Tracing"],
     color: "#d97706",
   },
 ];
@@ -210,7 +210,7 @@ export default function HowToUse() {
                 WebkitTextFillColor: "transparent",
               }}
             >
-              CampaignX
+              Autoreach AI
             </span>
           </h1>
           <p className="text-gray-400 max-w-2xl mx-auto" style={{ fontSize: "1rem", lineHeight: "1.7" }}>
@@ -219,31 +219,7 @@ export default function HowToUse() {
           </p>
         </motion.div>
 
-        {/* Current state notice */}
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.1 }}
-          className="p-4 rounded-2xl mb-12 flex items-start gap-3"
-          style={{
-            background: "rgba(234,179,8,0.05)",
-            border: "1px solid rgba(234,179,8,0.2)",
-          }}
-        >
-          <div className="w-6 h-6 rounded-full bg-yellow-400/20 flex items-center justify-center flex-shrink-0 mt-0.5">
-            <span style={{ fontSize: "0.8rem" }}>⚠️</span>
-          </div>
-          <div>
-            <div className="text-yellow-400 mb-1" style={{ fontSize: "0.875rem", fontWeight: 600 }}>
-              Currently running in Demo Mode (Hardcoded Data)
-            </div>
-            <div className="text-yellow-600" style={{ fontSize: "0.78rem", lineHeight: "1.6" }}>
-              All API calls are currently stubbed with mock data. Follow this guide to connect real APIs.
-              The UI, flows, and agent reasoning are fully functional — only live API connections need to be enabled.
-              All API stub files are located in <code className="text-yellow-400">/src/lib/</code>.
-            </div>
-          </div>
-        </motion.div>
+
 
         {/* Setup Steps */}
         <div className="space-y-8 mb-16">
@@ -517,8 +493,8 @@ export default function HowToUse() {
               { num: "01", title: "Write Campaign Brief", desc: "Go to New Campaign. Write a natural language brief describing your product, goals, and audience. The AI parses this automatically.", icon: FileText },
               { num: "02", title: "AI Plans the Campaign", desc: "LangGraph ReAct agent retrieves BFSI best practices via RAG, generates segmentation strategy, calculates optimal send time, and creates 3 A/B content variants.", icon: Brain },
               { num: "03", title: "Review & Customize", desc: "Review the 3 generated email variants. Use Customize Parameters to adjust emojis, temperature, tone, and other settings. Regenerate if needed.", icon: Cpu },
-              { num: "04", title: "Human Approval", desc: "Review the campaign brief, selected content, customer count, and send time. Approve to execute — this triggers the CampaignX API call.", icon: Shield },
-              { num: "05", title: "Monitor & Analyze", desc: "After launch, the Performance Monitor agent fetches open/click data from CampaignX API. Charts and segment breakdowns are generated automatically.", icon: BarChart3 },
+              { num: "04", title: "Human Approval", desc: "Review the campaign brief, selected content, customer count, and send time. Approve to execute — this triggers the Autoreach API call.", icon: Shield },
+              { num: "05", title: "Monitor & Analyze", desc: "After launch, the Performance Monitor agent fetches open/click data from Autoreach API. Charts and segment breakdowns are generated automatically.", icon: BarChart3 },
               { num: "06", title: "Optimize & Relaunch", desc: "The Optimization Agent analyzes results, suggests data-backed improvements with full reasoning. Approve suggestions and relaunch — the loop continues.", icon: Target },
             ].map((flow, i) => (
               <motion.div
@@ -579,7 +555,7 @@ export default function HowToUse() {
             Ready to Get Started?
           </h2>
           <p className="text-gray-400 mb-8">
-            The demo is fully functional with hardcoded data. Follow the guide above to connect live APIs.
+            Start using the platform with live APIs and unlock the agentic pipeline.
           </p>
           <div className="flex flex-wrap gap-4 justify-center">
             <Link href="/dashboard/new-campaign">

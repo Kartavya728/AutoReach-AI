@@ -51,9 +51,13 @@ export async function runOptimizationAgent(
         campaign.external_campaign_id
       );
       if (reportResp.data && reportResp.data.length > 0) {
+        // Fetch CRM customers for data-driven breakdowns
+        const crmCustomers = await serverGetCustomers();
         analysisReport = computeAnalysisFromReport(
           campaign.external_campaign_id,
-          reportResp.data
+          reportResp.data,
+          campaign,
+          crmCustomers
         );
         // Fire and forget the weight optimizer
         if (analysisReport) {
@@ -141,46 +145,46 @@ export async function runOptimizationAgent(
   // 3b. Logic for Audience Selection
   const allCustomers = await serverGetCustomers();
   let validCustomers = allCustomers.filter(c => (c as any).status !== "inactive");
-  
+
   if (campaign.target_customer_ids && campaign.target_customer_ids.length > 0) {
     // Only optimize targeting for customers who were originally mailed
     validCustomers = validCustomers.filter(c => campaign.target_customer_ids!.includes(c.customer_id));
   }
-  
+
   const targetWeightKey = parsedResult.targetWeight || "w1";
   const demoRules = parsedResult.demographics || {};
   const demoKeys = Object.keys(demoRules);
-  
+
   const scored = validCustomers.map(c => {
     // 65% weight (normalize to 1.0 logic, assuming max integer scale is around 10)
     const rawWeight = Number(c[targetWeightKey as keyof typeof c]) || 0.5;
     const wScore = Math.min(1.0, rawWeight / 10.0) * 0.65;
-    
+
     // 35% strategy matching
     let dScore = 0;
     if (demoKeys.length > 0) {
       let matches = 0;
       for (const key of demoKeys) {
         if (String(c[key as keyof typeof c]).toLowerCase() === String(demoRules[key]).toLowerCase()) {
-           matches++;
+          matches++;
         }
       }
       dScore = (matches / demoKeys.length) * 0.35;
     } else {
       dScore = 0.35; // Default if no demographics specified
     }
-    
+
     return { id: c.customer_id, score: wScore + dScore };
   });
 
   // Sort by highest score
-  scored.sort((a,b) => b.score - a.score);
-  
+  scored.sort((a, b) => b.score - a.score);
+
   // Reduce audience to only the people who opened the previous mail:
   // Using the totalOpened count from the analysis report to simulate opens
   const openedCount = analysisReport?.totalOpened ?? Math.max(1, Math.floor(validCustomers.length * 0.52));
   const newTotal = Math.min(scored.length, openedCount);
-  
+
   const finalIds = scored.slice(0, newTotal).map(x => x.id);
 
   // Send the actual campaign to CampaignX in staggered time batches
@@ -200,34 +204,34 @@ export async function runOptimizationAgent(
 
   let newExternalId = campaign.external_campaign_id;
   try {
-     // Split the finalIds into chunks of 100, stagger each chunk by 30 minutes
-     const BATCH_SIZE = 100;
-     const now = new Date();
-     
-     for (let i = 0; i < finalIds.length; i += BATCH_SIZE) {
-       const chunkIds = finalIds.slice(i, i + BATCH_SIZE);
-       
-       // Calculate staggered time: current time + (chunkIndex * 30 minutes)
-       const sendDate = new Date(now.getTime() + (i / BATCH_SIZE) * 0.5 * 60 * 60 * 1000);
-       // CampaignX expects DD:MM:YY HH:MM:SS — NOT ISO format
-       const sendTimeStr = toCampaignXFormat(sendDate);
-       
-       console.log(`[Optimize] Sending batch ${i / BATCH_SIZE + 1}: ${chunkIds.length} customers at ${sendTimeStr}`);
-       
-       const sendRes = await sendCampaignToCampaignX({
-         subject: updatedSubject,
-         body: updatedBody,
-         list_customer_ids: chunkIds,
-         send_time: sendTimeStr
-       });
-       
-       // Save the first successful campaign ID as the parent external tracker if we don't have one
-       if (i === 0) {
-         newExternalId = sendRes.campaign_id;
-       }
-     }
-  } catch(e) {
-     console.warn("[Optimize] Failed to resend batched campaign to CampaignX API", e);
+    // Split the finalIds into chunks of 100, stagger each chunk by 30 minutes
+    const BATCH_SIZE = 100;
+    const now = new Date();
+
+    for (let i = 0; i < finalIds.length; i += BATCH_SIZE) {
+      const chunkIds = finalIds.slice(i, i + BATCH_SIZE);
+
+      // Calculate staggered time: current time + (chunkIndex * 30 minutes)
+      const sendDate = new Date(now.getTime() + (i / BATCH_SIZE) * 0.5 * 60 * 60 * 1000);
+      // CampaignX expects DD:MM:YY HH:MM:SS — NOT ISO format
+      const sendTimeStr = toCampaignXFormat(sendDate);
+
+      console.log(`[Optimize] Sending batch ${i / BATCH_SIZE + 1}: ${chunkIds.length} customers at ${sendTimeStr}`);
+
+      const sendRes = await sendCampaignToCampaignX({
+        subject: updatedSubject,
+        body: updatedBody,
+        list_customer_ids: chunkIds,
+        send_time: sendTimeStr
+      });
+
+      // Save the first successful campaign ID as the parent external tracker if we don't have one
+      if (i === 0) {
+        newExternalId = sendRes.campaign_id;
+      }
+    }
+  } catch (e) {
+    console.warn("[Optimize] Failed to resend batched campaign to CampaignX API", e);
   }
 
   const newRound = (campaign.optimization_round ?? 1) + 1;
@@ -244,7 +248,7 @@ export async function runOptimizationAgent(
     applied_optimizations: approvedSuggestions.map(s => s.title),
     expected_improvements: parsedResult.expectedImprovements || []
   };
-  
+
   // Persist the history trace immediately
   try {
     await serverSaveOptimizationHistory(latestRoundLog);
@@ -252,7 +256,7 @@ export async function runOptimizationAgent(
     console.error("[Optimize] Failed to insert into campaign_optimization_history table", err);
   }
 
-  const updatedStrategyReasoning = (campaign.strategy_reasoning || "") + 
+  const updatedStrategyReasoning = (campaign.strategy_reasoning || "") +
     `\n\n--- Optimization Round ${newRound} ---\n` +
     `Focused audience from ${latestRoundLog.previous_audience_size} down to ${latestRoundLog.new_audience_size} engaged users.\n` +
     `Improvements Expected: ${(parsedResult.expectedImprovements || []).join(", ")}`;
@@ -410,16 +414,16 @@ export async function runWeightOptimizationAgent(
 ) {
   // 1. Get current customers and their weights
   const customers = await serverGetCustomers();
-  
+
   // Create a fast lookup
   const customerMap = new Map(customers.map(c => [c.customer_id, c]));
 
   // 2. Identify who we emailed and who engaged
   const openedOrClicked = analysisReport.segmentPerformance.map(s => s.segment).filter(Boolean);
-  
+
   // We'll simplify this for the hackathon by asking the LLM how to shift weights generally,
   // then applying it to the users who engaged.
-  
+
   const model = getGeminiModel();
   const promptText = [
     "You are a BFSI AI that optimizes targeting weights.",
@@ -454,10 +458,10 @@ export async function runWeightOptimizationAgent(
   // This is a naive implementation; in reality, we'd cross-reference the report's exact customer IDs.
   // We'll simulate by updating anyone whose ID appears in the report data (which we'd need to fetch fully or pass in).
   // For the sake of the hackathon, we'll arbitrarily update a subset or just return the logic.
-  
+
   // We will assume `analysisReport.segmentPerformance` gives us clues, but without the full report rows here, 
   // we'll fetch them from supabase or campaignX if needed. To keep it fast, we'll just return the suggested adjustment.
   console.log(`[WeightAgent] Suggested: increase ${increaseWeight}, decrease ${decreaseWeight} by ${adjustmentAmount}`);
-  
+
   return parsed;
 }
