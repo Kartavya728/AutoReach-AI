@@ -1,11 +1,13 @@
 import { NextResponse } from "next/server";
-import { runOptimizationAgent } from "@/src/lib/server/optimize";
-import { configureLangSmithTracing } from "@/src/lib/server/langsmith";
+import { getServerConfig } from "@/src/lib/server/env";
 import type { OptimizeRequest } from "@/src/lib/types";
 
+/**
+ * Optimization endpoint — proxies to the Python FastAPI agent service.
+ * Runs the optimization loop on an existing campaign.
+ */
 export async function POST(request: Request) {
   try {
-    configureLangSmithTracing();
     const payload = (await request.json()) as OptimizeRequest;
 
     if (!payload.campaignId) {
@@ -25,11 +27,28 @@ export async function POST(request: Request) {
       );
     }
 
-    const report = await runOptimizationAgent(
-      payload.campaignId,
-      payload.approvedSuggestions
-    );
+    const config = getServerConfig();
+    const pythonUrl = config.pythonAgentUrl;
 
+    // Proxy to the Python FastAPI service
+    const response = await fetch(`${pythonUrl}/optimize_campaign`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        campaignId: payload.campaignId,
+        approvedSuggestions: payload.approvedSuggestions,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      return NextResponse.json(
+        { error: "Python optimization agent failed", message: errorText },
+        { status: response.status }
+      );
+    }
+
+    const report = await response.json();
     return NextResponse.json(report);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";

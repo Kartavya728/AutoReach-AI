@@ -1,5 +1,6 @@
 const DEFAULT_CAMPAIGNX_BASE_URL = "https://campaignx.inxiteout.ai";
 const DEFAULT_LANGCHAIN_ENDPOINT = "https://api.smith.langchain.com";
+const DEFAULT_PYTHON_AGENT_URL = "http://localhost:8000";
 
 function getEnv(name: string, fallback?: string): string | undefined {
   const value = process.env[name];
@@ -31,6 +32,7 @@ export function getServerConfig() {
     supabaseUrl: getEnv("NEXT_PUBLIC_SUPABASE_URL"),
     supabaseAnonKey: getEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY"),
     supabaseServiceRoleKey: getEnv("SUPABASE_SERVICE_ROLE_KEY"),
+    pythonAgentUrl: getEnv("PYTHON_AGENT_URL", DEFAULT_PYTHON_AGENT_URL)!,
   };
 }
 

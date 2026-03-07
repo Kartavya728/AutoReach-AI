@@ -1,0 +1,136 @@
+"""
+Cohort Agent — LangGraph Node
+=============================
+Fetches the full customer CRM from Supabase AND the CampaignX API,
+condenses it to targeting fields, and runs the segment engine.
+
+This agent does NOT use an LLM — it's a pure data-fetching + segmentation node.
+
+Corresponds to: `load_cohort` node in langgraph.js
+"""
+
+from __future__ import annotations
+import asyncio
+from agents.state import WorkflowState, CustomerRecord
+from agents.supabase_client import get_customers
+from agents.segment_engine import segment_customers
+
+
+def _fetch_from_supabase() -> list[dict]:
+    """Fetch customer data from Supabase."""
+    try:
+        return get_customers()
+    except Exception as e:
+        print(f"[Cohort Agent] Supabase fetch failed: {e}")
+        return []
+
+
+async def _fetch_from_api() -> list[dict]:
+    """Fetch customer cohort from CampaignX API (richer data)."""
+    try:
+        from agents.campaignx_api import fetch_customer_cohort
+        response = await fetch_customer_cohort()
+        return response.get("data", [])
+    except Exception as e:
+        print(f"[Cohort Agent] CampaignX API fetch failed: {e}")
+        return []
+
+
+def _merge_and_condense(sb_customers: list[dict], api_customers: list[dict]) -> list[CustomerRecord]:
+    """
+    Merge Supabase + API data and condense to targeting fields.
+    API data has richer demographics; Supabase has weights.
+    """
+    # Build lookup from Supabase by customer_id
+    sb_lookup = {c.get("customer_id", ""): c for c in sb_customers}
+
+    # Build lookup from API by customer_id
+    api_lookup = {c.get("customer_id", ""): c for c in api_customers}
+
+    # Merge: prefer API demographics + Supabase weights
+    all_ids = set(list(sb_lookup.keys()) + list(api_lookup.keys()))
+    all_ids.discard("")
+
+    records: list[CustomerRecord] = []
+    for cid in sorted(all_ids):
+        sb = sb_lookup.get(cid, {})
+        api = api_lookup.get(cid, {})
+
+        records.append({
+            "id": cid,
+            "age": api.get("Age") or sb.get("age"),
+            "gender": api.get("Gender") or sb.get("gender"),
+            "occupation": api.get("Occupation") or sb.get("occupation"),
+            "income": api.get("Monthly_Income") or sb.get("monthly_income"),
+            "city": api.get("City") or sb.get("city"),
+            "marital_status": api.get("Marital_Status") or sb.get("marital_status"),
+            "credit_score": api.get("Credit score") or sb.get("credit_score"),
+            "kyc_status": api.get("KYC status") or sb.get("kyc_status"),
+            "app_installed": api.get("App_Installed") or sb.get("app_installed"),
+            "existing_customer": api.get("Existing Customer") or sb.get("existing_customer"),
+            "social_media_active": api.get("Social_Media_Active") or sb.get("social_media_active"),
+            "family_size": api.get("Family_Size") or sb.get("family_size"),
+            "kids": api.get("Kids_in_Household") or sb.get("kids"),
+            "w1": float(sb.get("w1", 0) or 0),
+            "w2": float(sb.get("w2", 0) or 0),
+            "w3": float(sb.get("w3", 0) or 0),
+        })
+
+    return records
+
+
+async def load_cohort(state: WorkflowState) -> dict:
+    """
+    LangGraph node: Fetch CRM from both sources, merge, condense, and segment.
+    
+    - Fetches from Supabase (weights) + CampaignX API (demographics)
+    - Merges and condenses to essential targeting fields
+    - Runs segment engine to create 5 micro-segments
+    - Sets crm_data, customer_count, segments
+    """
+    from agents.log_store import emit_in_pipeline
+    session_id = state.get("session_id", "")
+
+    print(f"[Cohort Agent] Starting — brief: {state.get('brief', '')[:80]}...")
+    
+    emit_in_pipeline(session_id, "Cohort-Agent", "Reading brief and fetching initial audience cohort", "Starting CRM sync")
+
+    # Fetch from both sources in parallel
+    sb_customers = _fetch_from_supabase()
+    api_customers = await _fetch_from_api()
+
+    print(f"[Cohort Agent] Supabase: {len(sb_customers)} records, API: {len(api_customers)} records")
+
+    # Merge and condense
+    crm_data = _merge_and_condense(sb_customers, api_customers)
+    customer_count = len(crm_data)
+
+    if not crm_data:
+        print("[Cohort Agent] WARNING: Fetched 0 customers!")
+        
+    emit_in_pipeline(session_id, "Cohort-Agent", f"Fetched {customer_count} complete profiles (Supabase + API)", "Analyzing audience to detect micro-segments")
+
+    # Run segment engine
+    segments = await segment_customers(crm_data, state.get('brief', ''))
+
+    print(f"[Cohort Agent] Finished — {customer_count} customers, {len(segments)} segments")
+    
+    emit_in_pipeline(session_id, "Cohort-Agent", f"Segmentation complete. Created {len(segments)} hyper-targeted groups.", "Passing segments to Strategy Agent")
+
+    return {
+        "brief": state.get("brief", ""),
+        "strategy": state.get("strategy", ""),
+        "strategy_reasoning": state.get("strategy_reasoning", ""),
+        "content_variants": state.get("content_variants", []),
+        "crm_data": crm_data,
+        "customer_count": customer_count,
+        "target_customer_ids": [c["id"] for c in crm_data],
+        "segments": segments,
+        "segment_variants": state.get("segment_variants", {}),
+        "steps": [
+            {
+                "agent": "Cohort-Agent",
+                "step": f"Fetched {customer_count} customers (Supabase + API), created {len(segments)} segments.",
+            }
+        ],
+    }
