@@ -1,7 +1,7 @@
-# 🚀 CampaignX — AI Multi-Agent Marketing Automation
+# 🚀 AutoReach AI — Autonomous Multi-Agent Marketing Automation
 
-> **FrostHack | XPECTO 2026 – Hackathon by InXiteOut @ IIT Mandi**  
-> Build an autonomous AI-agent system to plan, launch, monitor, and optimize email marketing campaigns for **SuperBFSI**, an Indian BFSI service provider.
+> **AI-Powered Campaign Orchestration Platform**  
+> Build an autonomous AI-agent system to plan, launch, monitor, and optimize email marketing campaigns for a financial services provider.
 
 ---
 
@@ -14,7 +14,7 @@
 6. [LangSmith Integration](#langsmith-integration)
 7. [Tech Stack Options — Pros & Cons](#tech-stack-options--pros--cons)
 8. [Required APIs](#required-apis)
-9. [CampaignX API Reference](#campaignx-api-reference)
+9. [Platform API Reference](#platform-api-reference)
 10. [Deployment Strategy](#deployment-strategy)
 11. [Evaluation Criteria](#evaluation-criteria)
 12. [Submission Checklist](#submission-checklist)
@@ -23,7 +23,7 @@
 
 ## 📌 Project Overview
 
-**CampaignX** is an AI-powered, fully autonomous multi-agent web application designed to manage end-to-end digital marketing campaigns. The system takes a **natural language campaign brief** from a human marketer, orchestrates a network of AI agents to:
+**AutoReach AI** is an AI-powered, fully autonomous multi-agent web application designed to manage end-to-end digital marketing campaigns. The system takes a **natural language campaign brief** from a human marketer, orchestrates a network of AI agents to:
 
 - Segment and profile customers from a live cohort
 - Generate optimized, personalized email content (subject + body)
@@ -33,19 +33,17 @@
 
 The system includes a **Human-in-the-Loop (HiTL)** approval gate before any campaign is dispatched.
 
-**Competition URL:** `https://campaignx.inxiteout.ai`
-
 ---
 
 ## 🎯 Core Problem Statement
 
-Build an AI Agent solution for **SuperBFSI** to launch its new **XDeposit Term Deposit product**:
+Build an AI Agent solution for a BFSI client to launch a new **Term Deposit product**:
 
 - Parse free-form natural language marketing briefs
 - Identify best campaign strategy (optimal open rate & click rate)
 - Generate personalized email content per micro-segment
 - Request human approval before campaign execution
-- Execute campaigns via the CampaignX API
+- Execute campaigns via the platform REST API
 - Analyze performance, auto-optimize, and re-launch (A/B testing loop)
 - **Avoid all deterministic/hardcoded API calls** — use dynamic API doc discovery for tool calling
 
@@ -68,16 +66,15 @@ Build an AI Agent solution for **SuperBFSI** to launch its new **XDeposit Term D
 └──────┬────────────┬─────────────┬───────────┬──────────┬──────────┘
        ▼            ▼             ▼           ▼          ▼
   ┌─────────┐ ┌──────────┐ ┌──────────┐ ┌─────────┐ ┌──────────┐
-  │ Cohort  │ │ Strategy │ │ Content  │ │ Campaign│ │ Analyst  │
-  │  Agent  │ │  Agent   │ │  Agent   │ │ Executor│ │  Agent   │
+  │ Cohort  │ │ Strategy │ │ Content  │ │Campaign │ │ Analyst  │
+  │  Agent  │ │  Agent   │ │  Agent   │ │Executor │ │  Agent   │
   └────┬────┘ └────┬─────┘ └────┬─────┘ └────┬────┘ └────┬─────┘
        │           │            │             │           │
        └───────────┴────────────┴─────────────┴───────────┘
                                 │
                    ┌────────────┴──────────────┐
-                   │   CampaignX REST API       │
-                   │  (InXiteOut Platform)      │
-                   │  Base: campaignx.inxiteout │
+                   │   Platform REST API        │
+                   │  (Marketing Automation)    │
                    └───────────────────────────┘
 ```
 
@@ -119,7 +116,7 @@ Repeat until full cohort coverage
 - **Length variants**: Short (punchy, 100 words) vs. Long (detailed, 300 words)
 - **Emoji usage**: Selective for consumer segments (✅💰📈), avoided for formal segments
 - **Personalization**: Name, location, demographic-specific benefits
-- **CTA**: `https://superbfsi.com/xdeposit/explore/` embedded contextually
+- **CTA**: Product landing URL embedded contextually
 
 ### 4. Optimal Send Time Strategy
 - Morning (8–10 AM IST): Professionals checking emails
@@ -171,7 +168,7 @@ Campaign Brief (NLP Input)
 
 ## 🔍 LangSmith Integration
 
-[LangSmith](https://smith.langchain.com) is used for **full observability** of all LLM/agent calls — a key bonus criterion for judges ("Logging of agent interaction / decision / reasoning data").
+[LangSmith](https://smith.langchain.com) is used for **full observability** of all LLM/agent calls — tracking agent interaction, decision, and reasoning data.
 
 ### Setup
 
@@ -184,7 +181,7 @@ pip install langsmith langchain langchain-google-genai
 LANGCHAIN_TRACING_V2=true
 LANGCHAIN_ENDPOINT=https://api.smith.langchain.com
 LANGCHAIN_API_KEY=your_langsmith_api_key
-LANGCHAIN_PROJECT=CampaignX
+LANGCHAIN_PROJECT=AutoReachAI
 ```
 
 ### What LangSmith Tracks
@@ -204,9 +201,9 @@ from langchain.callbacks import LangChainTracer
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 os.environ["LANGCHAIN_TRACING_V2"] = "true"
-os.environ["LANGCHAIN_PROJECT"] = "CampaignX"
+os.environ["LANGCHAIN_PROJECT"] = "AutoReachAI"
 
-tracer = LangChainTracer(project_name="CampaignX")
+tracer = LangChainTracer(project_name="AutoReachAI")
 
 llm = ChatGoogleGenerativeAI(
     model="gemini-1.5-flash",
@@ -290,7 +287,7 @@ llm = ChatGoogleGenerativeAI(
 
 ## 🔑 Required APIs
 
-### 1. CampaignX API (InXiteOut — PROVIDED)
+### 1. Marketing Automation Platform API (PROVIDED)
 | API | Purpose | Auth |
 |-----|---------|------|
 | `POST /api/v1/signup` | Register team, receive API key | None |
@@ -298,7 +295,6 @@ llm = ChatGoogleGenerativeAI(
 | `POST /api/v1/send_campaign` | Schedule email campaign | `X-API-Key` |
 | `GET /api/v1/get_report` | Fetch campaign performance metrics | `X-API-Key` |
 
-**Base URL**: `https://campaignx.inxiteout.ai`  
 **Rate Limit**: 100 requests/day per team  
 **Header**: `X-API-Key: <your_api_key>`
 
@@ -330,7 +326,7 @@ llm = ChatGoogleGenerativeAI(
 
 ---
 
-## 📡 CampaignX API Reference
+## 📡 Platform API Reference
 
 ### Authentication
 ```
@@ -399,7 +395,7 @@ Response: {
 | Innovation & creativity | 15% |
 
 ### Bonus Points
-- ✅ LangSmith agent interaction logging ← **Use this!**
+- ✅ LangSmith agent interaction logging
 - ✅ Real-time campaign metrics dashboard
 - ✅ Cloud deployment
 
@@ -412,18 +408,18 @@ Response: {
 - [ ] Implement HiTL approval UI
 - [ ] Implement A/B testing optimization loop
 - [ ] Integrate LangSmith for observability
-- [ ] Run full campaign during **Test Phase (14–16 March 2026)**
+- [ ] Run full campaign during test phase
 - [ ] Record screen demo (< 3 mins)
-- [ ] Retrieve **new** customer cohort on 14 March (cohort changes!)
+- [ ] Retrieve **new** customer cohort on launch day (cohort changes!)
 - [ ] Push code to public GitHub repo
-- [ ] Email submission to `campaignx@inxiteout.ai` by 14 March 11:59 PM
+- [ ] Submit via email before deadline
 
 ---
 
 ## 📁 Recommended Project Structure
 
 ```
-campaignx/
+autoreach-ai/
 ├── backend/
 │   ├── agents/
 │   │   ├── cohort_agent.py
@@ -434,9 +430,9 @@ campaignx/
 │   ├── orchestrator/
 │   │   └── graph.py          # LangGraph workflow
 │   ├── tools/
-│   │   └── campaignx_tools.py # Dynamic API tool discovery
+│   │   └── platform_tools.py  # Dynamic API tool discovery
 │   ├── api/
-│   │   └── routes.py         # FastAPI routes
+│   │   └── routes.py          # FastAPI routes
 │   ├── utils/
 │   │   └── langsmith_setup.py
 │   └── main.py
@@ -457,9 +453,9 @@ campaignx/
 ## ⚙️ Environment Variables
 
 ```env
-# CampaignX API
-CAMPAIGNX_API_KEY=your_campaignx_api_key
-CAMPAIGNX_BASE_URL=https://campaignx.inxiteout.ai
+# Platform API
+PLATFORM_API_KEY=your_platform_api_key
+PLATFORM_BASE_URL=https://your-platform-base-url
 
 # LLM APIs
 GEMINI_API_KEY=your_gemini_key
@@ -471,9 +467,9 @@ GITHUB_TOKEN=your_github_pat
 LANGCHAIN_TRACING_V2=true
 LANGCHAIN_ENDPOINT=https://api.smith.langchain.com
 LANGCHAIN_API_KEY=your_langsmith_key
-LANGCHAIN_PROJECT=CampaignX
+LANGCHAIN_PROJECT=AutoReachAI
 ```
 
 ---
 
-*Built for FrostHack | XPECTO 2026 | InXiteOut × IIT Mandi*
+*AutoReach AI — Autonomous Multi-Agent Email Campaign Orchestration*
