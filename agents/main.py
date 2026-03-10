@@ -94,13 +94,13 @@ async def send_segment(
     variant: dict,
     customer_ids: list[str],
     send_time_str: str,
-) -> str | None:
-    """Send a campaign for one segment, return external campaign_id."""
+) -> list[str]:
+    """Send a campaign for one segment, return a list of external campaign_ids."""
     if not customer_ids:
-        return None
+        return []
 
-    BATCH_SIZE = 5000
-    campaign_id = None
+    BATCH_SIZE = 1000
+    campaign_ids = []
     total_batches = (len(customer_ids) + BATCH_SIZE - 1) // BATCH_SIZE
 
     for i in range(0, len(customer_ids), BATCH_SIZE):
@@ -115,13 +115,13 @@ async def send_segment(
                 send_time=send_time_str,
             )
             cid = resp.get("campaign_id")
-            if i == 0 and cid:
-                campaign_id = cid
+            if cid:
+                campaign_ids.append(cid)
             print(f"    ✅ Batch {batch_num}/{total_batches}: {len(chunk)} routed via API (id: {cid})")
         except Exception as e:
             print(f"    ❌ Batch {batch_num}/{total_batches}: {e}")
 
-    return campaign_id
+    return campaign_ids
 
 
 # ════════════════════════════════════════════════════════════════
@@ -129,63 +129,55 @@ async def send_segment(
 # ════════════════════════════════════════════════════════════════
 
 from agents.personalization import personalization_engine
-from agents.bandit import bandit_engine
 
 async def fetch_segment_metrics(
     segment_name: str,
     segment_id: str,
-    campaign_id: str | None,
+    campaign_ids: list[str],
     customer_ids: list[str],
     variant: dict,
 ) -> SegmentResult:
-    """Fetch real EO/EC from CampaignX API and update Contextual Bandit (RL)."""
+    """Fetch real EO/EC from CampaignX API."""
     records = []
     expected_count = len(customer_ids)
     
-    if campaign_id:
+    if campaign_ids:
         max_retries = 15
-        for attempt in range(max_retries):
-            try:
-                resp = await fetch_campaign_report(campaign_id)
-                records = resp.get("data", [])
-                
-                if len(records) >= expected_count:
-                    break
-                else:
-                    print(f"    ⏳ {segment_name}: Waiting for CampaignX processing... ({len(records)}/{expected_count} processed)")
-                    await asyncio.sleep(3)
+        for campaign_id in campaign_ids:
+            batch_records = []
+            # Calculate proportion of expected count for this batch for logging
+            # (Though keeping it simple by checking total accumulated records vs expected_count is also fine)
+            for attempt in range(max_retries):
+                try:
+                    resp = await fetch_campaign_report(campaign_id)
+                    batch_records = resp.get("data", [])
                     
-            except Exception as e:
-                # Break early on rate limits
-                if "429" in str(e):
-                    print(f"    ⚠️  Rate limit (429) hit for {segment_name}. Falling back.")
-                    break
-                print(f"    ⚠️  Report fetch failed for {segment_name}: {e}")
-                await asyncio.sleep(3)
+                    if batch_records:
+                        records.extend(batch_records)
+                        break
+                    else:
+                        print(f"    ⏳ {segment_name} ({campaign_id}): Waiting for CampaignX processing...")
+                        await asyncio.sleep(3)
+                        
+                except Exception as e:
+                    # Break early on rate limits for this batch
+                    if "429" in str(e):
+                        print(f"    ⚠️  Rate limit (429) hit for {segment_name} ({campaign_id}). Falling back.")
+                        break
+                    print(f"    ⚠️  Report fetch failed for {segment_name} ({campaign_id}): {e}")
+                    await asyncio.sleep(3)
 
-    if not records:
-        # Fallback to generate stubs if API rate limits us (429)
+    if not records and expected_count > 0:
+        # Fallback to generate stubs if API rate limits us (429) for all batches
         records = [{"customer_id": cid, "EO": "N", "EC": "N"} for cid in customer_ids]
 
-    analysis = compute_analysis(campaign_id or segment_id, records)
-
-    # REINFORCEMENT LEARNING UPDATE
-    tier = variant.get("tags", ["Reactivate"])[0] if variant.get("tags") else "Reactivate"
-    angle = variant.get("tone", "curiosity")
-    
-    if tier in ["Diamond", "Gold", "Silver", "Reactivate"]:
-        successes = analysis["total_clicked"]
-        failures = analysis["total_sent"] - successes
-        if tier in bandit_engine.state and angle in bandit_engine.state[tier]:
-            bandit_engine.state[tier][angle]["alpha"] += successes
-            bandit_engine.state[tier][angle]["beta"] += failures
-            bandit_engine._save_state()
-            print(f"    🧠 [RL Bandit] Updated Posterior for {tier} -> {angle}: {successes} wins, {failures} losses")
+    first_cid = campaign_ids[0] if campaign_ids else segment_id
+    analysis = compute_analysis(first_cid, records)
 
     return {
         "segment_id": segment_id,
         "segment_name": segment_name,
-        "campaign_id": campaign_id,
+        "campaign_ids": campaign_ids,
         "customer_ids": customer_ids,
         "total_sent": analysis["total_sent"],
         "total_opened": analysis["total_opened"],
@@ -230,20 +222,18 @@ async def run_full_pipeline(brief: str, rounds: int = 1) -> dict:
 
     print(f"\n📝 Agent Steps:")
     for step in result.get("steps", []):
-        print(f"  [{step['agent']}] {step['step']}")
+        print(f"  [{step.get('agent', 'System')}] {step.get('step', '')}")
 
     # ── STEP 2: Send different emails to different segments ──
     print_header("STEP 2: Sending Segment Campaigns to CampaignX API")
 
-    segment_campaign_ids: dict[str, str | None] = {}
+    segment_campaign_ids: dict[str, list[str]] = {}
     master_segment_results: list[SegmentResult] = []
 
-    for seg in segments:
-        if seg["size"] == 0:
-            continue
+    async def _send_to_segment(seg):
         variant = segment_variants.get(seg["segment_id"])
         if not variant:
-            continue
+            return seg["segment_id"], []
 
         print(f"\n  📤 {seg['segment_name']} — {seg['size']} customers")
         
@@ -252,54 +242,52 @@ async def run_full_pipeline(brief: str, rounds: int = 1) -> dict:
         now_utc = datetime.now(timezone.utc)
         
         if 'professional' in segment_name_lower or 'earner' in segment_name_lower:
-            # Send at 6 PM IST (12:30 PM UTC)
             sto_time = now_utc.replace(hour=12, minute=30, second=0)
         elif 'senior' in segment_name_lower or 'retired' in segment_name_lower:
-            # Send at 9 AM IST (3:30 AM UTC)
             sto_time = now_utc.replace(hour=3, minute=30, second=0)
         elif 'young' in segment_name_lower or 'digital' in segment_name_lower:
-            # Send at 9 PM IST (15:30 UTC)
             sto_time = now_utc.replace(hour=15, minute=30, second=0)
         else:
-            # Default to +5 mins
             sto_time = now_utc + timedelta(minutes=5)
             
-        # If the scheduled time has already passed today, schedule it for tomorrow
         if sto_time < now_utc:
             sto_time += timedelta(days=1)
             
-        # Ensure at least a 5 min buffer if it's very close
         if sto_time < now_utc + timedelta(minutes=5):
             sto_time = now_utc + timedelta(minutes=5)
             
         sto_time_str = format_time(sto_time)
         print(f"    🕒 [Send-Time Optimizer] Scheduled Delivery: {sto_time_str} IST")
             
-        cid = await send_segment(
+        cids = await send_segment(
             seg["segment_name"], variant, seg["customer_ids"], sto_time_str,
         )
-        segment_campaign_ids[seg["segment_id"]] = cid
+        return seg["segment_id"], cids
+
+    valid_segments = [seg for seg in segments if seg["size"] > 0]
+    send_results = await asyncio.gather(*[_send_to_segment(seg) for seg in valid_segments])
+
+    for seg_id, cids in send_results:
+        segment_campaign_ids[seg_id] = cids
 
     total_sent = sum(s["size"] for s in segments if s["size"] > 0)
-    campaigns_created = sum(1 for v in segment_campaign_ids.values() if v)
+    campaigns_created = sum(len(v) for v in segment_campaign_ids.values())
     print(f"\n🔗 {campaigns_created} segment campaigns created, {total_sent} total emails sent")
 
     # ── STEP 3: Fetch REAL metrics per segment ──
     print_header("STEP 3: Fetching REAL Engagement Metrics (EO/EC)")
 
     segment_results: list[SegmentResult] = []
-    for seg in segments:
-        if seg["size"] == 0:
-            continue
+    async def _fetch_metrics(seg):
         variant = segment_variants.get(seg["segment_id"], {})
-        cid = segment_campaign_ids.get(seg["segment_id"])
-
-        sr = await fetch_segment_metrics(
+        cids = segment_campaign_ids.get(seg["segment_id"], [])
+        return await fetch_segment_metrics(
             seg["segment_name"], seg["segment_id"],
-            cid, seg["customer_ids"], variant,
+            cids, seg["customer_ids"], variant,
         )
-        segment_results.append(sr)
-        master_segment_results.append(sr)
+
+    segment_results = await asyncio.gather(*[_fetch_metrics(seg) for seg in valid_segments])
+    master_segment_results.extend(segment_results)
 
     print_header("ROUND 1 — Per-Segment REAL Metrics")
     overall_open, overall_click = print_segment_metrics(segment_results)
@@ -361,11 +349,11 @@ async def run_full_pipeline(brief: str, rounds: int = 1) -> dict:
                 "emoji_level": "heavy",
             })
 
-        # Generate re-targeting content with LLM
+        # Generate re-targeting content with LLM and dispatch in parallel
         retarget_results: list[SegmentResult] = []
         send_time_str = format_time(datetime.now(timezone.utc) + timedelta(minutes=5))
 
-        for group in retarget_groups:
+        async def _process_retarget(group):
             print(f"\n  📧 Generating re-target email: {group['name']} ({len(group['ids'])} customers)")
 
             fake_segment = {
@@ -380,18 +368,22 @@ async def run_full_pipeline(brief: str, rounds: int = 1) -> dict:
             }
 
             variant = await generate_segment_variant(brief, str(result["strategy"]), fake_segment)
-            print(f"    Subject: {variant['subject'][:70]}...")
+            print(f"    Subject ({group['name'][:20]}...): {variant['subject'][:60]}...")
 
             # Send
-            cid = await send_segment(group["name"], variant, group["ids"], send_time_str)
+            cids = await send_segment(group["name"], variant, group["ids"], send_time_str)
 
             # Wait and fetch real metrics
             sr = await fetch_segment_metrics(
                 group["name"], f"retarget_r{round_num + 1}",
-                cid, group["ids"], variant,
+                cids, group["ids"], variant,
             )
-            retarget_results.append(sr)
-            master_segment_results.append(sr)
+            return sr
+
+        if retarget_groups:
+            r_results = await asyncio.gather(*[_process_retarget(g) for g in retarget_groups])
+            retarget_results.extend(r_results)
+            master_segment_results.extend(r_results)
 
         print_header(f"ROUND {round_num + 1} — Re-targeting REAL Metrics")
         r_open, r_click = print_segment_metrics(retarget_results)
@@ -439,7 +431,7 @@ async def run_full_pipeline(brief: str, rounds: int = 1) -> dict:
         first = all_round_metrics[0]
         last = all_round_metrics[-1]
         print(f"\n  📊 Progression:")
-        print(f"     Round 1 (5000 cold): {first['open_rate']}% open, {first['click_rate']}% click")
+        print(f"     Round 1 (1000 cold): {first['open_rate']}% open, {first['click_rate']}% click")
         print(f"     Round {last['round']} (warm re-target): {last['open_rate']}% open, {last['click_rate']}% click")
         
     print(f"\n  🎯 Cumulative Pipeline Performance (Unique Customers Reached):")
@@ -491,4 +483,6 @@ async def main():
 
 
 if __name__ == "__main__":
+    if sys.platform == 'win32':
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     asyncio.run(main())

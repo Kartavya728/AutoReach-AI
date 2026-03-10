@@ -163,7 +163,7 @@ async def generate_dynamic_segments(brief: str, crm_data: list[CustomerRecord]) 
 
 STEP 1: Read the Campaign Brief and identify what types of customers to prioritize.
 STEP 2: Study the REAL DATA PROFILE below to understand the actual distribution of customer attributes.
-STEP 3: Design 3-5 segments using ONLY the available CRM fields and realistic value thresholds based on the data profile.
+STEP 3: Design a MINIMUM of 4 distinct segments, but dynamically create as many as needed based on the mathematical clustering in the provided real data profile to maximize reach.
 
 {data_profile}
 

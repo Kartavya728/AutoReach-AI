@@ -11,6 +11,7 @@ Corresponds to: `generate_content` node in langgraph.js (upgraded)
 """
 
 from __future__ import annotations
+import asyncio
 import json
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -70,7 +71,6 @@ def _parse_single_variant(text: str, segment_name: str) -> EmailVariant | None:
     return None
 
 
-from agents.bandit import bandit_engine
 from agents.twin_simulator import twin_engine
 from agents.war_room import war_room
 
@@ -99,9 +99,15 @@ async def generate_segment_variant(
         else:
             tier = 'Reactivate'
         
-    # 2. Contextual Bandit chooses the best Angle for this Tier
-    angle = bandit_engine.select_action(tier)
-    print(f"      [Bandit] Selected Angle: {angle.upper()} for Tier: {tier}")
+    # 2. Heuristic chooses the best Angle for this Tier (Bandit removed)
+    angle_map = {
+        "Diamond": "authority",
+        "Gold": "social_proof",
+        "Silver": "curiosity",
+        "Reactivate": "urgency"
+    }
+    angle = angle_map.get(tier, "curiosity")
+    print(f"      [Heuristic] Selected Angle: {angle.upper()} for Tier: {tier}")
     
     # 3. War Room generates and Digital Twin tests (Loop up to 3 times)
     variant = None
@@ -157,16 +163,18 @@ async def generate_content(state: WorkflowState) -> dict:
     all_variants: list[EmailVariant] = []
     segment_variant_map: dict[str, EmailVariant] = {}
 
-    for seg in segments:
-        if seg["size"] == 0:
-            continue
-
-        print(f"  [Orchestrator] Processing Segment: {seg['segment_name']} ({seg['size']} customers)")
+    async def _process_segment(seg):
+        print(f"  [Orchestrator] Processing Segment (Parallel): {seg['segment_name']} ({seg['size']} customers)")
         variant = await generate_segment_variant(brief, strategy, seg)
+        print(f"    ✅ FINAL Subject ({seg['segment_name'][:20]}...): {variant['subject'][:60]}...")
+        return seg["segment_id"], variant
+
+    valid_segments = [seg for seg in segments if seg["size"] > 0]
+    results = await asyncio.gather(*[_process_segment(seg) for seg in valid_segments])
+
+    for seg_id, variant in results:
         all_variants.append(variant)
-        segment_variant_map[seg["segment_id"]] = variant
-        
-        print(f"    ✅ FINAL Subject: {variant['subject'][:60]}...")
+        segment_variant_map[seg_id] = variant
 
     print(f"\n[Autonomous Growth Engine] Finished — {len(all_variants)} winning variants deployed.")
 
@@ -177,7 +185,7 @@ async def generate_content(state: WorkflowState) -> dict:
         "steps": [
             {
                 "agent": "Autonomous-Growth-Engine",
-                "step": f"Generated {len(all_variants)} segment variants using War Room + Bandit + Twin Simulator.",
+                "step": f"Generated {len(all_variants)} segment variants using War Room + Heuristic + Twin Simulator.",
             }
         ],
     }

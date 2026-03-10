@@ -85,9 +85,9 @@ def increment_customer_metrics(
         new_topics.append(topic)
 
     client.table("customers").update({
-        "emails_sent": existing["emails_sent"] + sent,
-        "emails_opened": existing["emails_opened"] + opened,
-        "emails_clicked": existing["emails_clicked"] + clicked,
+        "emails_sent": (existing.get("emails_sent") or 0) + sent,
+        "emails_opened": (existing.get("emails_opened") or 0) + opened,
+        "emails_clicked": (existing.get("emails_clicked") or 0) + clicked,
         "topics_list": new_topics,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }).eq("customer_id", customer_id).execute()
