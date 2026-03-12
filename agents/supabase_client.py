@@ -11,7 +11,7 @@ Handles:
 from __future__ import annotations
 from datetime import datetime, timezone
 from supabase import create_client, Client
-from agents.config import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+from .config import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
 
 
 def _get_client() -> Client:

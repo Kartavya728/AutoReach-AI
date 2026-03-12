@@ -15,11 +15,14 @@ Corresponds to: `runOptimizationAgent()` in optimize.ts
 from __future__ import annotations
 import json
 import math
+import asyncio
+import random
+import re
 from datetime import datetime, timedelta, timezone
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage
-from agents.config import GEMINI_API_KEY, GEMINI_MODEL
-from agents.supabase_client import (
+from .config import GEMINI_API_KEY, GEMINI_MODEL
+from .supabase_client import (
     get_campaign_by_id,
     update_campaign,
     save_variants,
@@ -27,8 +30,9 @@ from agents.supabase_client import (
     save_optimization_history,
     get_customers,
 )
-from agents.campaignx_api import fetch_campaign_report, send_campaign
-from agents.analysis_agent import compute_analysis
+from .campaignx_api import fetch_campaign_report, send_campaign
+from .analysis_agent import compute_analysis
+from .personalization import personalization_engine
 
 
 def _get_model() -> ChatGoogleGenerativeAI:
@@ -47,6 +51,12 @@ def _to_campaignx_time(dt: datetime) -> str:
     ist = timezone(timedelta(hours=5, minutes=30))
     dt_ist = dt.astimezone(ist)
     return dt_ist.strftime("%d:%m:%y %H:%M:%S")
+
+
+def _normalize_demo_key(key: str) -> str:
+    key = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", key or "")
+    key = key.replace(" ", "_").replace("-", "_")
+    return key.strip("_").lower()
 
 
 async def run_optimization_agent(
@@ -117,23 +127,33 @@ async def run_optimization_agent(
         "Return a JSON object with keys:",
         '- "strategy": Explanation of the targeting logic',
         '- "targetWeight": "w1", "w2", or "w3" depending on the financial product',
-        '- "demographics": a JSON object with exact string matches to filter users '
-        '(e.g. {"Occupation": "Data Analyst", "Gender": "Male", "Marital_Status": "Single"}). '
+        '- "demographics": a JSON object with exact string matches using ONLY these customer keys: '
+        'occupation, gender, marital_status, city, existing_customer, app_installed, social_media_active, kyc_status. '
+        'Example: {"occupation": "Data Analyst", "gender": "Male", "marital_status": "Single"}. '
         'Use 2-4 strict criteria based on the brief.',
         '- "variants": array of 1 email variant, each with keys: subject, body, variant, tone, tags',
         '- "expectedImprovements": array of strings describing expected improvements',
         "Return JSON only, no markdown.",
     ])
 
-    try:
-        result = await model.ainvoke(
-            [HumanMessage(content=prompt_text)],
-            config={"tags": ["Optimization-Agent"]},
-        )
-        result_text = str(result.content).strip()
-    except Exception as e:
-        print(f"[Optimize] LLM generation failed: {e}")
+    async def _invoke_with_retry(messages):
+        for i in range(5):
+            try:
+                return await model.ainvoke(messages, config={"tags": ["Optimization-Agent"]})
+            except Exception as e:
+                if "429" in str(e) and i < 4:
+                    wait = (2 ** i) + random.random()
+                    print(f"\n      [Backoff] Rate limit (429) hit. Retrying in {wait:.1f}s...")
+                    await asyncio.sleep(wait)
+                    continue
+                raise e
+        return None
+
+    result = await _invoke_with_retry([HumanMessage(content=prompt_text)])
+    if not result:
         result_text = "fallback error trigger"
+    else:
+        result_text = str(result.content).strip()
 
     try:
         json_start = result_text.index("{")
@@ -153,7 +173,7 @@ async def run_optimization_agent(
 
     # ── 4. Score & filter customers ──
     all_customers = get_customers()
-    valid_customers = [c for c in all_customers if c.get("status") != "inactive"]
+    valid_customers = list(all_customers)
 
     # Constrain to original target set if it exists
     original_target_ids = campaign.get("target_customer_ids") or []
@@ -161,8 +181,19 @@ async def run_optimization_agent(
         target_set = set(original_target_ids)
         valid_customers = [c for c in valid_customers if c["customer_id"] in target_set]
 
+    customer_lookup = {
+        customer["customer_id"]: customer
+        for customer in all_customers
+        if customer.get("customer_id")
+    }
+
     target_weight_key = parsed_result.get("targetWeight", "w1")
-    demo_rules = parsed_result.get("demographics", {})
+    raw_demo_rules = parsed_result.get("demographics", {})
+    demo_rules = {
+        _normalize_demo_key(str(key)): value
+        for key, value in raw_demo_rules.items()
+        if _normalize_demo_key(str(key))
+    }
     demo_keys = list(demo_rules.keys())
 
     scored = []
@@ -192,7 +223,7 @@ async def run_optimization_agent(
         or max(1, int(len(valid_customers) * 0.52))
     )
     new_total = min(len(scored), opened_count)
-    final_ids = [x["id"] for x in scored[:new_total]]
+    final_ids = list(dict.fromkeys(x["id"] for x in scored[:new_total]))
 
     # ── 5. Batch send to CampaignX API ──
     updated_subject = (
@@ -203,6 +234,11 @@ async def run_optimization_agent(
         (parsed_result.get("variants") or [{}])[0].get("body")
         or campaign.get("body", "")
     )
+    outbound_template = {
+        "subject": updated_subject,
+        "body": updated_body,
+    }
+    outbound_angle = ((parsed_result.get("variants") or [{}])[0].get("tone") or "professional")
 
     BATCH_SIZE = 100
     new_external_id = external_id
@@ -211,6 +247,16 @@ async def run_optimization_agent(
     try:
         for i in range(0, len(final_ids), BATCH_SIZE):
             chunk_ids = final_ids[i : i + BATCH_SIZE]
+            recipients = [
+                customer_lookup[cid]
+                for cid in chunk_ids
+                if cid in customer_lookup
+            ]
+            compiled_variant = personalization_engine.compile_email(
+                outbound_template,
+                recipients,
+                outbound_angle,
+            )
             send_date = now + timedelta(minutes=30 * (i // BATCH_SIZE))
             send_time_str = _to_campaignx_time(send_date)
 
@@ -219,8 +265,8 @@ async def run_optimization_agent(
                 f"{len(chunk_ids)} customers at {send_time_str}"
             )
             send_resp = await send_campaign(
-                subject=updated_subject,
-                body=updated_body,
+                subject=compiled_variant["subject"],
+                body=compiled_variant["body"],
                 customer_ids=chunk_ids,
                 send_time=send_time_str,
             )

@@ -8,11 +8,12 @@ Corresponds to: `plan_strategy` node in langgraph.js
 """
 
 from __future__ import annotations
-import json
+import asyncio
+import random
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage
-from agents.state import WorkflowState
-from agents.config import GEMINI_API_KEY, GEMINI_MODEL
+from .state import WorkflowState
+from .config import GEMINI_API_KEY, GEMINI_MODEL
 
 
 def _get_model() -> ChatGoogleGenerativeAI:
@@ -49,29 +50,50 @@ async def plan_strategy(state: WorkflowState) -> dict:
         for s in segments
     )
 
-    response = await llm.ainvoke([
-        SystemMessage(content=(
-            "You are a BFSI AI targeting strategist. "
-            "Analyze the brief and the customer segments below. "
-            "For each segment, explain WHY this segment should receive this campaign "
-            "and what angle would resonate most with them. "
-            "Return JSON with: "
-            "1. `strategy`: 4-6 bullet points covering the overall multi-segment strategy. "
-            "2. `strategyReasoning`: Detailed explanation of the targeting approach. "
-            "3. `segmentPriority`: array of segment IDs ordered by expected conversion (highest first)."
-        )),
-        HumanMessage(content=(
-            f"Campaign brief:\n{state.get('brief', '')}\n\n"
-            f"Customer Segments:\n{segment_summary}\n\n"
-            f"Total customers: {len(crm_data)}\n"
-            f"Return strict JSON."
-        )),
+    async def _invoke_with_retry(model, messages):
+        for i in range(5):
+            try:
+                return await model.ainvoke(messages)
+            except Exception as e:
+                if "429" in str(e) and i < 4:
+                    wait = (2 ** i) + random.random()
+                    print(f"\n      [Backoff] Rate limit (429) hit. Retrying in {wait:.1f}s...")
+                    await asyncio.sleep(wait)
+                    continue
+                raise e
+        return None
+
+    sys_prompt = (
+        "You are a BFSI AI targeting strategist. "
+        "Analyze the brief and the customer segments below. "
+        "For each segment, explain WHY this segment should receive this campaign "
+        "and what angle would resonate most with them. "
+        "Return JSON with: "
+        "1. `strategy`: 4-6 bullet points covering the overall multi-segment strategy. "
+        "2. `strategyReasoning`: Detailed explanation of the targeting approach. "
+        "3. `segmentPriority`: array of segment IDs ordered by expected conversion (highest first)."
+    )
+    user_prompt = (
+        f"Campaign brief:\n{state.get('brief', '')}\n\n"
+        f"Customer Segments:\n{segment_summary}\n\n"
+        f"Total customers: {len(crm_data)}\n"
+        f"Return strict JSON."
+    )
+
+    response = await _invoke_with_retry(llm, [
+        SystemMessage(content=sys_prompt),
+        HumanMessage(content=user_prompt)
     ])
+    if not response:
+        # Fallback if all retries fail
+        return state
 
     output = response.content if isinstance(response.content, str) else str(response.content)
 
     try:
-        parsed = _parse_json(output)
+        start = output.find("{")
+        end = output.rfind("}")
+        parsed = _parse_json(output[start:end+1])
     except Exception:
         parsed = {
             "strategy": "* Target all segments with personalized content\n* Prioritize high-value professionals\n* Use segment-specific tones\n* Monitor per-segment engagement",

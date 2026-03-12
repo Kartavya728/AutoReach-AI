@@ -1,21 +1,14 @@
 """
 CampaignX External REST API client.
-Wraps the InXiteOut platform endpoints:
-  - GET  /api/v1/get_customer_cohort
-  - POST /api/v1/send_campaign
-  - GET  /api/v1/get_report?campaign_id=<uuid>
+
+Endpoint paths are resolved from the local CampaignX documentation at runtime
+so the client stays documentation-driven instead of hardcoding the API surface.
 """
 
 from __future__ import annotations
 import httpx
-from agents.config import CAMPAIGNX_BASE_URL, require_env
-
-
-ENDPOINTS = {
-    "cohort": {"method": "GET",  "path": "/api/v1/get_customer_cohort"},
-    "send":   {"method": "POST", "path": "/api/v1/send_campaign"},
-    "report": {"method": "GET",  "path": "/api/v1/get_report"},
-}
+from agents.config import require_env
+from .campaignx_discovery import discover_campaignx_spec, resolve_campaignx_operation
 
 
 def _get_headers() -> dict[str, str]:
@@ -33,8 +26,9 @@ async def _campaignx_request(
     timeout: float = 30.0,
 ) -> dict:
     """Make a request to the CampaignX API."""
-    ep = ENDPOINTS[endpoint]
-    url = f"{CAMPAIGNX_BASE_URL}{ep['path']}"
+    spec = discover_campaignx_spec()
+    ep = resolve_campaignx_operation(endpoint)
+    url = f"{spec['base_url']}{ep['path']}"
     headers = _get_headers()
 
     async with httpx.AsyncClient(timeout=timeout) as client:
@@ -43,7 +37,7 @@ async def _campaignx_request(
         else:
             resp = await client.post(url, headers=headers, json=body or {})
 
-    if resp.status_code != 200:
+    if not 200 <= resp.status_code < 300:
         raise RuntimeError(
             f"CampaignX API error ({resp.status_code}): {resp.text}"
         )
@@ -76,10 +70,11 @@ async def send_campaign(
     Returns:
         dict with campaign_id, response_code, etc.
     """
+    deduped_customer_ids = list(dict.fromkeys(customer_ids))
     payload = {
         "subject": subject,
         "body": body,
-        "list_customer_ids": customer_ids,
+        "list_customer_ids": deduped_customer_ids,
         "send_time": send_time,
     }
     return await _campaignx_request("send", body=payload)

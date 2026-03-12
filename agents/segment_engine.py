@@ -9,10 +9,15 @@ from __future__ import annotations
 import json
 import operator
 from collections import Counter
+import numpy as np
+import asyncio
+import random
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage
-from agents.state import CustomerRecord, CustomerSegment
-from agents.config import GEMINI_API_KEY, GEMINI_MODEL
+from .state import CustomerRecord, CustomerSegment
+from .config import GEMINI_API_KEY, GEMINI_MODEL
 
 
 def _get_model() -> ChatGoogleGenerativeAI:
@@ -21,6 +26,104 @@ def _get_model() -> ChatGoogleGenerativeAI:
         model=GEMINI_MODEL or "gemini-2.5-flash",
         temperature=0.2,
     )
+
+
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        if value in (None, ""):
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_text(value) -> str:
+    if value is None:
+        return ""
+    return str(value).strip().lower()
+
+
+def _binary_flag(value) -> float:
+    normalized = _normalize_text(value)
+    return 1.0 if normalized in {"y", "yes", "true", "1", "installed", "active", "verified"} else 0.0
+
+
+def _top_categories(crm_data: list[CustomerRecord], field: str, limit: int) -> list[str]:
+    counter: Counter = Counter()
+    for customer in crm_data:
+        normalized = _normalize_text(customer.get(field))
+        if normalized:
+            counter[normalized] += 1
+    return [value for value, _ in counter.most_common(limit)]
+
+
+def _encode_top_category(value, vocabulary: list[str]) -> list[float]:
+    normalized = _normalize_text(value)
+    return [1.0 if normalized == entry else 0.0 for entry in vocabulary]
+
+
+def _build_feature_matrix(
+    crm_data: list[CustomerRecord],
+) -> tuple[np.ndarray, list[CustomerRecord], dict[str, list[str]]]:
+    category_vocab = {
+        "occupation": _top_categories(crm_data, "occupation", 8),
+        "occupation_type": _top_categories(crm_data, "occupation_type", 4),
+        "city": _top_categories(crm_data, "city", 6),
+        "marital_status": _top_categories(crm_data, "marital_status", 4),
+        "gender": _top_categories(crm_data, "gender", 3),
+    }
+
+    features: list[list[float]] = []
+    valid_crm: list[CustomerRecord] = []
+
+    for customer in crm_data:
+        customer_id = customer.get("id") or customer.get("customer_id")
+        if not customer_id:
+            continue
+
+        age = _safe_float(customer.get("age"), 35.0)
+        income = _safe_float(customer.get("income"), 50000.0)
+        credit_score = _safe_float(customer.get("credit_score"), 650.0)
+        family_size = _safe_float(customer.get("family_size"), 2.0)
+        dependent_count = _safe_float(customer.get("dependent_count"), family_size)
+        kids = _safe_float(customer.get("kids"), 0.0)
+        w1 = _safe_float(customer.get("w1"), 0.5)
+        w2 = _safe_float(customer.get("w2"), 0.5)
+        w3 = _safe_float(customer.get("w3"), 0.5)
+        propensity_score = _safe_float(customer.get("propensity_score"), 0.5)
+        engagement_score = _safe_float(customer.get("engagement_score"), 0.0)
+        app_installed = _binary_flag(customer.get("app_installed"))
+        existing_customer = _binary_flag(customer.get("existing_customer"))
+        social_media_active = _binary_flag(customer.get("social_media_active"))
+        kyc_verified = _binary_flag(customer.get("kyc_status"))
+        has_children = 1.0 if (kids > 0 or dependent_count > 0) else 0.0
+
+        row = [
+            age,
+            income,
+            credit_score,
+            family_size,
+            dependent_count,
+            kids,
+            w1,
+            w2,
+            w3,
+            propensity_score,
+            engagement_score,
+            app_installed,
+            existing_customer,
+            social_media_active,
+            kyc_verified,
+            has_children,
+        ]
+
+        for field, vocabulary in category_vocab.items():
+            row.extend(_encode_top_category(customer.get(field), vocabulary))
+
+        features.append(row)
+        valid_crm.append(customer)
+
+    return np.array(features, dtype=float), valid_crm, category_vocab
 
 
 # ══════════════════════════════════════════════════════════════
@@ -94,9 +197,30 @@ def _build_field_profile(crm_data: list[CustomerRecord]) -> str:
         return "No data available."
 
     # Fields to profile
-    numeric_fields = ["age", "income", "credit_score", "family_size", "kids", "w1", "w2", "w3"]
-    categorical_fields = ["gender", "occupation", "city", "marital_status", "kyc_status",
-                          "app_installed", "existing_customer", "social_media_active"]
+    numeric_fields = [
+        "age",
+        "income",
+        "credit_score",
+        "family_size",
+        "dependent_count",
+        "kids",
+        "propensity_score",
+        "engagement_score",
+        "w1",
+        "w2",
+        "w3",
+    ]
+    categorical_fields = [
+        "gender",
+        "occupation",
+        "occupation_type",
+        "city",
+        "marital_status",
+        "kyc_status",
+        "app_installed",
+        "existing_customer",
+        "social_media_active",
+    ]
 
     lines = []
     lines.append("=== CRM DATA PROFILE (from real customer records) ===")
@@ -142,149 +266,118 @@ def _build_field_profile(crm_data: list[CustomerRecord]) -> str:
 #  DYNAMIC SEGMENT GENERATOR (Single LLM call)
 # ══════════════════════════════════════════════════════════════
 
-async def generate_dynamic_segments(brief: str, crm_data: list[CustomerRecord]) -> list[dict]:
-    """
-    Single-call approach: Gemini sees the brief + real data profile + sample records,
-    then identifies key factors AND generates segments in one shot.
-    """
-    llm = _get_model()
-
-    # Build the data profile from ALL records
-    data_profile = _build_field_profile(crm_data)
-
-    # Send 3 sample records as JSON (with real values)
-    sample_records = []
-    for c in crm_data[:3]:
-        sample_records.append({k: v for k, v in c.items() if k != "id"})
-
-    fields = list(crm_data[0].keys()) if crm_data else []
-
-    sys_prompt = f"""You are an elite Growth AI creating customer micro-segments for a targeted email campaign.
-
-STEP 1: Read the Campaign Brief and identify what types of customers to prioritize.
-STEP 2: Study the REAL DATA PROFILE below to understand the actual distribution of customer attributes.
-STEP 3: Design a MINIMUM of 4 distinct segments, but dynamically create as many as needed based on the mathematical clustering in the provided real data profile to maximize reach.
-
-{data_profile}
-
-SAMPLE RECORDS (3 real customers):
-{json.dumps(sample_records, indent=2, default=str)}
-
-Available CRM fields for logic rules: {fields}
-
-CRITICAL RULES:
-- Use ONLY field names that exist in the CRM data above
-- Use value thresholds that are WITHIN the min/max ranges shown in the data profile
-- Do NOT use abstract concepts as field names. Map your targeting intent to real CRM columns.
-- Ensure segments cover the ENTIRE audience (last segment must be a catch-all with empty logic)
-
-Output a raw JSON array (no markdown). Each object:
-{{
-  "segment_id": "short_name",
-  "segment_name": "Display Name with Emoji",
-  "criteria": "Human readable criteria",
-  "tone": "Target tone for the copywriter",
-  "focus": "Main value proposition to focus on",
-  "emoji_level": "none" | "moderate" | "heavy",
-  "tier": "Diamond" | "Gold" | "Silver" | "Reactivate",
-  "logic": [
-     {{"AND": [{{"field": "age", "op": ">", "value": 50}}, {{"field": "income", "op": ">", "value": 200000}}]}}
-  ]
-}}
-
-"tier" must be one of: Diamond (highest value), Gold (medium-high), Silver (medium), Reactivate (lowest).
-"logic" is a list of condition blocks. Customer matches if ANY block evaluates to True (OR of AND/OR blocks).
-Allowed ops: "==", "!=", ">", "<", ">=", "<=", "contains".
-Last segment MUST have empty "logic": [] as a catch-all.
-"""
-
-    resp = await llm.ainvoke([
-        SystemMessage(content=sys_prompt),
-        HumanMessage(content=f"Campaign Brief: {brief}\n\nAnalyze the data profile, identify key factors, and design the segments (JSON Array).")
-    ])
-
-    content = str(resp.content).strip()
-
-    try:
-        start = content.find("[")
-        end = content.rfind("]")
-        if start != -1 and end > start:
-            segments = json.loads(content[start:end + 1])
-            return segments
-    except Exception as e:
-        print(f"⚠️ Error parsing LLM segments: {e}")
-
-    return []
-
-
-# ══════════════════════════════════════════════════════════════
-#  MAIN SEGMENTATION FUNCTION
-# ══════════════════════════════════════════════════════════════
-
 async def segment_customers(crm_data: list[CustomerRecord], brief: str = "") -> list[CustomerSegment]:
-    """Assign each customer to a dynamic, data-aware segment."""
-    assigned: set[str] = set()
+    """Assign each customer to a dynamic, data-aware ML segment using K-Means."""
+    if not crm_data:
+        return []
+
+    print("\n[Segment Engine] Running ML K-Means clustering on enriched cohort features...")
+
+    # 1. Feature Extraction & Scaling
+    X, valid_crm, category_vocab = _build_feature_matrix(crm_data)
+    if not valid_crm:
+        return []
+
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+
+    # 2. KMeans Clustering (richer cohorts benefit from one extra segment when scale allows)
+    target_clusters = 5 if len(valid_crm) >= 700 else 4 if len(valid_crm) >= 200 else 3
+    n_clusters = min(max(2, target_clusters), len(valid_crm))
+    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=20)
+    clusters = kmeans.fit_predict(X_scaled)
+
+    # Group customers by cluster
+    clustered_groups = {i: [] for i in range(n_clusters)}
+    for idx, cluster_id in enumerate(clusters):
+        clustered_groups[cluster_id].append(valid_crm[idx])
+
+    print(
+        f"[Segment Engine] K-Means formed {n_clusters} clusters using {X.shape[1]} features "
+        f"and category vocabularies {category_vocab}. Asking LLM to interpret and name them..."
+    )
+    
+    # 3. Ask LLM to define the segments based on the grouped data
     segments: list[CustomerSegment] = []
+    llm = _get_model()
+    
+    for cluster_id, group in clustered_groups.items():
+        if not group: continue
+        
+        # Profile this specific cluster
+        profile = _build_field_profile(group)
+        
+        sys_prompt = f"""You are a Growth AI interpreting a data cluster to name a segment.
+We ran K-Means clustering. This group has {len(group)} users.
+Here is the profile of THIS specific group:
+{profile}
 
-    print("\n[Segment Engine] Profiling customer data and asking LLM to generate targeting logic...")
-    dynamic_defs = await generate_dynamic_segments(brief, crm_data)
+Identify who these people are and create a marketing profile for them.
+Output ONLY a JSON object:
+{{
+  "segment_id": "cluster_{cluster_id}",
+  "segment_name": "Display Name with Emoji",
+  "criteria": "Explain precisely who these people are based on the data",
+  "tone": "Target tone for copy",
+  "focus": "Main value prop focus",
+  "emoji_level": "none" | "moderate" | "heavy",
+  "tier": "Diamond" | "Gold" | "Silver" | "Reactivate"
+}}
+"""
+        async def _invoke_with_retry(prompt):
+            for i in range(5):
+                try:
+                    return await llm.ainvoke([HumanMessage(content=prompt)])
+                except Exception as e:
+                    if "429" in str(e) and i < 4:
+                        wait = (2 ** i) + random.random()
+                        print(f"\n      [Backoff] Rate limit (429) hit. Retrying in {wait:.1f}s...")
+                        await asyncio.sleep(wait)
+                        continue
+                    raise e
+            return None
 
-    if not dynamic_defs:
-        print("[Segment Engine] ⚠️ Dynamic generation failed, falling back to all-inclusive segment.")
-        dynamic_defs = [{
-            "segment_id": "all",
-            "segment_name": "🎯 Target Audience",
-            "criteria": "All customers",
+        resp = await _invoke_with_retry(sys_prompt)
+        if not resp: continue
+        content = str(resp.content).strip()
+        try:
+            start = content.find("{")
+            end = content.rfind("}")
+            seg_def = json.loads(content[start:end + 1])
+            
+            segment: CustomerSegment = {
+                "segment_id": seg_def.get("segment_id", f"cluster_{cluster_id}"),
+                "segment_name": seg_def.get("segment_name", f"Cluster {cluster_id}"),
+                "customer_ids": [c.get("id") or c.get("customer_id") for c in group],
+                "size": len(group),
+                "criteria": seg_def.get("criteria", ""),
+                "tone": seg_def.get("tone", ""),
+                "focus": seg_def.get("focus", ""),
+                "emoji_level": seg_def.get("emoji_level", "moderate"),
+            }
+            segment["tier"] = seg_def.get("tier", "Silver") # type: ignore
+            segments.append(segment)
+        except Exception as e:
+            print(f"⚠️ Error parsing LLM segment for cluster {cluster_id}: {e}")
+            
+    # Add any un-clustered (due to missing ID etc) to a fallback
+    assigned_ids = {cid for s in segments for cid in s["customer_ids"]}
+    unassigned = [c for c in crm_data if (c.get("id") or c.get("customer_id")) not in assigned_ids]
+    if unassigned:
+        segments.append({
+            "segment_id": "unassigned",
+            "segment_name": "👥 General Audience",
+            "customer_ids": [c.get("id") or c.get("customer_id") for c in unassigned],
+            "size": len(unassigned),
+            "criteria": "Catch-all for remaining customers",
             "tone": "persuasive",
-            "focus": "Campaign offer",
+            "focus": "General Product Benefits",
             "emoji_level": "moderate",
-            "tier": "Reactivate",
-            "logic": []
-        }]
+            "tier": "Reactivate", # type: ignore
+        })
 
-    # Print the factors the LLM identified
-    for seg_def in dynamic_defs:
-        tier = seg_def.get("tier", "Reactivate")
-        print(f"    📌 {seg_def.get('segment_name', '?')} → Tier: {tier} | Logic: {len(seg_def.get('logic', []))} rules")
 
-    for seg_def in dynamic_defs:
-        customer_ids = []
-        logic_blocks = seg_def.get("logic", [])
 
-        for c in crm_data:
-            cid = c.get("id", "")
-            if not cid and c.get("customer_id"):
-                cid = c.get("customer_id")
-            if not cid or cid in assigned:
-                continue
-
-            # Evaluate logic
-            matched = False
-            if not logic_blocks:  # Empty list = catch-all
-                matched = True
-            else:
-                for block in logic_blocks:
-                    if _evaluate_condition(block, c):
-                        matched = True
-                        break
-
-            if matched:
-                customer_ids.append(cid)
-                assigned.add(cid)
-
-        segment: CustomerSegment = {
-            "segment_id": seg_def.get("segment_id", "seg"),
-            "segment_name": seg_def.get("segment_name", "Segment"),
-            "customer_ids": customer_ids,
-            "size": len(customer_ids),
-            "criteria": seg_def.get("criteria", ""),
-            "tone": seg_def.get("tone", ""),
-            "focus": seg_def.get("focus", ""),
-            "emoji_level": seg_def.get("emoji_level", "moderate"),
-        }
-        # Stash tier for content_agent to use
-        segment["tier"] = seg_def.get("tier", "Reactivate")  # type: ignore
-        segments.append(segment)
 
     total = sum(s["size"] for s in segments)
     print(f"\n[Segment Engine] Dynamically segmented {total} customers into {len(segments)} groups:")
@@ -297,11 +390,20 @@ async def segment_customers(crm_data: list[CustomerRecord], brief: str = "") -> 
 
 def get_segment_profile(segment: CustomerSegment) -> str:
     """Build a compact text profile of a segment for prompting the LLM."""
-    return (
-        f"Segment: {segment['segment_name']}\n"
-        f"Size: {segment['size']} customers\n"
-        f"Target Criteria: {segment['criteria']}\n"
-        f"Recommended Tone: {segment['tone']}\n"
-        f"Value Prop Focus: {segment['focus']}\n"
-        f"Emoji Density: {segment['emoji_level']}"
-    )
+    lines = [
+        f"Segment: {segment['segment_name']}",
+        f"Size: {segment['size']} customers",
+        f"Target Criteria: {segment['criteria']}",
+        f"Recommended Tone: {segment['tone']}",
+        f"Value Prop Focus: {segment['focus']}",
+        f"Emoji Density: {segment['emoji_level']}",
+    ]
+    if segment.get("tier"):
+        lines.append(f"Tier: {segment['tier']}")
+    if segment.get("retarget_stage"):
+        lines.append(f"Re-target Stage: {segment['retarget_stage']}")
+    if segment.get("priority_score") is not None:
+        lines.append(f"Priority Score: {segment['priority_score']}")
+    if segment.get("send_window"):
+        lines.append(f"Preferred Send Window: {segment['send_window']}")
+    return "\n".join(lines)

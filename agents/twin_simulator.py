@@ -4,9 +4,11 @@ Provides a generative AI persona representing the user, and tests campaigns on t
 to gauge predicted engagement before real-world sending.
 """
 
+import asyncio
+import random
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage
-from agents.config import GEMINI_API_KEY, GEMINI_MODEL
+from .config import GEMINI_API_KEY, GEMINI_MODEL
 import json
 
 def _get_model() -> ChatGoogleGenerativeAI:
@@ -46,10 +48,25 @@ DECISION: <TOKEN>
 """
         user_prompt = f"You received this email:\n\nSubject: {subject}\n\nBody:\n{body}\n\nWhat is your reaction?"
 
-        response = await self.llm.ainvoke([
+        async def _invoke_with_retry(messages):
+            for i in range(5):
+                try:
+                    return await self.llm.ainvoke(messages)
+                except Exception as e:
+                    if "429" in str(e) and i < 4:
+                        wait = (2 ** i) + random.random()
+                        print(f"\n      [Backoff] Rate limit (429) hit. Retrying in {wait:.1f}s...")
+                        await asyncio.sleep(wait)
+                        continue
+                    raise e
+            return None
+
+        response = await _invoke_with_retry([
             SystemMessage(content=system_prompt),
             HumanMessage(content=user_prompt)
         ])
+        if not response:
+            return {"decision": "IGNORE", "monologue": "API Rate limit hit."}
         
         reply = str(response.content).strip()
         decision = "IGNORE"

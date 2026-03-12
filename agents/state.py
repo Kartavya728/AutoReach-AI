@@ -5,6 +5,7 @@ This is the shared state that flows between all graph nodes.
 
 from __future__ import annotations
 from typing import TypedDict, Annotated
+from typing_extensions import NotRequired
 
 
 class AgentStep(TypedDict):
@@ -25,9 +26,11 @@ class EmailVariant(TypedDict):
 class CustomerRecord(TypedDict, total=False):
     """Condensed CRM record passed to agents."""
     id: str
+    name: str | None
     age: int | None
     gender: str | None
     occupation: str | None
+    occupation_type: str | None
     income: float | None
     city: str | None
     marital_status: str | None
@@ -37,10 +40,13 @@ class CustomerRecord(TypedDict, total=False):
     existing_customer: str | None
     social_media_active: str | None
     family_size: int | None
+    dependent_count: int | None
     kids: int | None
     w1: float
     w2: float
     w3: float
+    propensity_score: float
+    engagement_score: float
 
 
 class CustomerSegment(TypedDict):
@@ -53,6 +59,10 @@ class CustomerSegment(TypedDict):
     tone: str                 # Recommended tone for this segment
     focus: str                # Key messaging focus
     emoji_level: str          # "none", "moderate", "heavy"
+    tier: NotRequired[str]
+    retarget_stage: NotRequired[str]
+    priority_score: NotRequired[float]
+    send_window: NotRequired[str]
 
 
 class SegmentResult(TypedDict):
@@ -66,9 +76,12 @@ class SegmentResult(TypedDict):
     total_clicked: int
     open_rate: float
     click_rate: float
+    click_to_open_rate: NotRequired[float]
     opened_ids: list[str]       # Customer IDs that opened
     clicked_ids: list[str]      # Customer IDs that clicked
     variant_used: EmailVariant
+    campaign_ids: NotRequired[list[str]]
+    tier: NotRequired[str]
 
 
 def _merge_steps(current: list[AgentStep], update: list[AgentStep] | None) -> list[AgentStep]:

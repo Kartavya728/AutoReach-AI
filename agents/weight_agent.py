@@ -11,10 +11,12 @@ Corresponds to: `runWeightOptimizationAgent()` in optimize.ts
 
 from __future__ import annotations
 import json
+import asyncio
+import random
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage
-from agents.config import GEMINI_API_KEY, GEMINI_MODEL
-from agents.supabase_client import get_customers, update_customer_weights
+from .config import GEMINI_API_KEY, GEMINI_MODEL
+from .supabase_client import get_customers, update_customer_weights
 
 
 def _get_model() -> ChatGoogleGenerativeAI:
@@ -58,10 +60,22 @@ async def run_weight_optimization(
         "JSON:",
     ])
 
-    result = await model.ainvoke(
-        [HumanMessage(content=prompt_text)],
-        config={"tags": ["Weight-Agent"]},
-    )
+    async def _invoke_with_retry(messages):
+        for i in range(5):
+            try:
+                return await model.ainvoke(messages, config={"tags": ["Weight-Agent"]})
+            except Exception as e:
+                if "429" in str(e) and i < 4:
+                    wait = (2 ** i) + random.random()
+                    print(f"\n      [Backoff] Rate limit (429) hit. Retrying in {wait:.1f}s...")
+                    await asyncio.sleep(wait)
+                    continue
+                raise e
+        return None
+
+    result = await _invoke_with_retry([HumanMessage(content=prompt_text)])
+    if not result:
+        return False
 
     try:
         text = str(result.content).strip()

@@ -3,7 +3,7 @@ Propensity Scoring Model
 Predicts the likelihood of open/click and computes the engagement score based on user demographics and memory.
 """
 
-from agents.memory import memory_db
+from .memory import memory_db
 
 def normalize(val, min_val, max_val):
     if max_val <= min_val: return 0

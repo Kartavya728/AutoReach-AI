@@ -13,12 +13,12 @@ import uuid
 import time
 from langgraph.graph import StateGraph, START, END
 
-from agents.state import WorkflowState
-from agents.cohort_agent import load_cohort
-from agents.strategy_agent import plan_strategy
-from agents.content_agent import generate_content
-from agents.langsmith_config import configure_tracing
-from agents.supabase_client import persist_agent_trace
+from .state import WorkflowState
+from .cohort_agent import load_cohort
+from .strategy_agent import plan_strategy
+from .content_agent import generate_content
+from .langsmith_config import configure_tracing
+from .supabase_client import persist_agent_trace
 
 
 def build_graph() -> StateGraph:

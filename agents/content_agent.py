@@ -13,11 +13,16 @@ Corresponds to: `generate_content` node in langgraph.js (upgraded)
 from __future__ import annotations
 import asyncio
 import json
+import random
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage
-from agents.state import WorkflowState, EmailVariant, CustomerSegment
-from agents.config import GEMINI_API_KEY, GEMINI_MODEL
-from agents.segment_engine import get_segment_profile
+from .state import WorkflowState, EmailVariant, CustomerSegment
+from .config import GEMINI_API_KEY, GEMINI_MODEL
+from .segment_engine import get_segment_profile
+from .twin_simulator import twin_engine
+from .war_room import war_room
+from .memory import memory_db
+from .personalization import personalization_engine
 
 
 def _get_model() -> ChatGoogleGenerativeAI:
@@ -71,8 +76,57 @@ def _parse_single_variant(text: str, segment_name: str) -> EmailVariant | None:
     return None
 
 
-from agents.twin_simulator import twin_engine
-from agents.war_room import war_room
+def _stage_copy_guidance(segment: CustomerSegment) -> str:
+    stage = segment.get("retarget_stage", "")
+    if stage == "warm_convert":
+        return (
+            "Retargeting goal: maximize clicks from customers who opened but did not click.\n"
+            "- Keep the subject calm and specific.\n"
+            "- Put the main benefit and CTA in the first 2-3 lines.\n"
+            "- Use one proof point or trust cue.\n"
+            "- Use exactly one CTA."
+        )
+    if stage == "warm_resolve":
+        return (
+            "Retargeting goal: remove hesitation for customers who opened but did not click.\n"
+            "- Answer one likely objection.\n"
+            "- Use one concrete BFSI-safe benefit.\n"
+            "- Avoid hype, heavy FOMO, or multiple asks.\n"
+            "- Use exactly one CTA."
+        )
+    if stage == "cold_subject_refresh":
+        return (
+            "Retargeting goal: recover customers who never opened.\n"
+            "- Change the subject line materially.\n"
+            "- Keep the body shorter than the original send.\n"
+            "- Lead with one clear benefit and one CTA.\n"
+            "- Do not optimize for curiosity alone; optimize for clicks."
+        )
+    if stage == "cold_benefit_reminder":
+        return (
+            "Retargeting goal: make the message easier to evaluate for customers who still did not open.\n"
+            "- Keep the subject fresh but credible.\n"
+            "- Use one concrete reason to click.\n"
+            "- Keep the body simple and trust-oriented.\n"
+            "- Use exactly one CTA."
+        )
+    return (
+        "Optimize for clicks, not just opens.\n"
+        "- Use one clear value proposition.\n"
+        "- Keep the CTA easy to find.\n"
+        "- Avoid unsupported urgency."
+    )
+
+
+def _build_generation_brief(brief: str, strategy: str, segment: CustomerSegment) -> str:
+    parts = [
+        brief.strip(),
+        f"Campaign strategy context:\n{str(strategy).strip()}",
+        f"Segment profile:\n{get_segment_profile(segment)}",
+        f"Copy instructions for this segment:\n{_stage_copy_guidance(segment)}",
+    ]
+    return "\n\n".join(part for part in parts if part)
+
 
 async def generate_segment_variant(
     brief: str,
@@ -80,7 +134,8 @@ async def generate_segment_variant(
     segment: CustomerSegment,
 ) -> EmailVariant:
     """Generate a high-performing email variant using the Multi-Agent War Room, Bandit, and Sim."""
-    
+    generation_brief = _build_generation_brief(brief, strategy, segment)
+
     # 1. Get tier from segment (set by the data-aware segment engine)
     #    Falls back to keyword heuristic if tier not present
     tier = segment.get('tier', '')
@@ -99,43 +154,74 @@ async def generate_segment_variant(
         else:
             tier = 'Reactivate'
         
-    # 2. Heuristic chooses the best Angle for this Tier (Bandit removed)
-    angle_map = {
-        "Diamond": "authority",
-        "Gold": "social_proof",
-        "Silver": "curiosity",
-        "Reactivate": "urgency"
-    }
-    angle = angle_map.get(tier, "curiosity")
-    print(f"      [Heuristic] Selected Angle: {angle.upper()} for Tier: {tier}")
+    # 2. Epsilon-Greedy Bandit for Content Angle Optimization
     
-    # 3. War Room generates and Digital Twin tests (Loop up to 3 times)
+    # Epsilon-Greedy Bandit: 20% explore, 80% exploit
+    if random.random() < 0.2:
+        angle = random.choice(["urgency", "curiosity", "authority", "social_proof"])
+        print(f"      [Bandit] 🎲 Exploring random angle: {angle.upper()} for Tier: {tier}")
+    else:
+        # Exploit: Aggregate memory psychographics for this segment
+        tag_scores = {"urgency": 0.0, "curiosity": 0.0, "authority": 0.0, "social_proof": 0.0}
+        cids = segment.get("customer_ids", [])
+        if cids:
+            for cid in cids:
+                user_tags = memory_db.get_user(cid).get("psychographic_tags", {})
+                for t, score in user_tags.items():
+                    tag_scores[t] = tag_scores.get(t, 0.0) + score
+            angle = max(tag_scores, key=tag_scores.get)
+        else:
+            angle_map = {
+                "Diamond": "authority",
+                "Gold": "social_proof",
+                "Silver": "curiosity",
+                "Reactivate": "urgency"
+            }
+            angle = angle_map.get(tier, "curiosity")
+        print(f"      [Bandit] 🎯 Exploiting best angle: {angle.upper()} for Tier: {tier}")
+    
+    # 3. War Room generates and Digital Twin tests (Loop up to 5 times)
     variant = None
-    for attempt in range(3):
+    for attempt in range(5):
         print(f"      [War Room] Generating draft {attempt+1}...")
-        draft_variant = await war_room.generate_variants(brief, tier, angle)
+        draft_variant = await war_room.generate_variants(generation_brief, tier, angle)
         
-        # Test draft using Digital Twin Simulation on 5 synthentic personas
+        draft_subject, draft_body = personalization_engine.sanitize_campaign_copy(
+            draft_variant.get("subject", ""),
+            draft_variant.get("body", ""),
+        )
+        draft_variant["subject"] = draft_subject
+        draft_variant["body"] = draft_body
+
+        if not draft_subject or not draft_body:
+            print("      [Filter] Draft failed compliance validation. Regenerating.")
+            continue
+        
+        # 3b. Test draft using Digital Twin Simulation on 2 synthentic personas (to avoid 15RPM limit)
         twin_results = []
-        for sim_idx in range(5):
+        import asyncio
+        for sim_idx in range(2):
             mock_user = {"name": f"Mock_{sim_idx}", "age": 35, "occupation": "Professional", "city": "Delhi", "family_size": 2, "credit_score": 700}
             sim = await twin_engine.simulate_reaction(mock_user, draft_variant["subject"], draft_variant["body"])
             twin_results.append(sim)
+            await asyncio.sleep(2)
         
         clicks = sum(1 for r in twin_results if r["decision"] == "CLICK")
         opens = sum(1 for r in twin_results if r["decision"] == "OPEN")
         
-        print(f"      [Simulator] Twin Test: {clicks} Clicks, {opens} Opens out of 5")
+        print(f"      [Simulator] Twin Test: {clicks} Clicks, {opens} Opens out of 2")
         
-        if not twin_engine.bayesian_kill_rule(twin_results):
+        # simplified check since we reduced samples
+        if clicks > 0 or opens > 0 or not twin_engine.bayesian_kill_rule(twin_results):
             # Survived the kill rule!
             variant = draft_variant
             break
         else:
             print("      [Simulator] Kill Rule triggered. Variant failed test. Regenerating.")
+            await asyncio.sleep(2)
             
     if not variant:
-        # Fallback if all 3 attempts failed the simulator (unlikely)
+        # Fallback if all 5 attempts failed the simulator or keyword filter
         variant = draft_variant
 
     if "tags" not in variant:
@@ -170,7 +256,13 @@ async def generate_content(state: WorkflowState) -> dict:
         return seg["segment_id"], variant
 
     valid_segments = [seg for seg in segments if seg["size"] > 0]
-    results = await asyncio.gather(*[_process_segment(seg) for seg in valid_segments])
+    
+    # Process sequentially to avoid Gemini API Rate Limits (15 RPM)
+    results = []
+    for seg in valid_segments:
+        res = await _process_segment(seg)
+        results.append(res)
+        await asyncio.sleep(2)  # Give the API a breather
 
     for seg_id, variant in results:
         all_variants.append(variant)
