@@ -9,7 +9,7 @@ import { fetchCampaignReportFromCampaignX } from "@/src/lib/server/campaignx";
 import { computeAnalysisFromReport } from "@/src/lib/server/analysis";
 import { serverGetCustomers } from "@/src/lib/server/customers";
 import { generateOptimizationSuggestions } from "@/src/lib/server/optimize";
-import { configureLangSmithTracing } from "@/src/lib/server/langsmith";
+
 import type { UpdateCampaignPayload, OptimizationSuggestionRow } from "@/src/lib/types";
 
 export async function GET(
@@ -17,7 +17,7 @@ export async function GET(
   { params }: { params: { id: string } }
 ) {
   try {
-    configureLangSmithTracing();
+
     const campaign = await serverGetCampaignById(params.id);
     if (!campaign) {
       return NextResponse.json(

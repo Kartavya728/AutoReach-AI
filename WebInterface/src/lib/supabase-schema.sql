@@ -131,7 +131,7 @@ CREATE TABLE IF NOT EXISTS optimization_suggestions (
 );
 
 -- ─────────────────────────────────────────────────────────────
--- TABLE: agent_traces (LangSmith-style logging)
+-- TABLE: agent_traces
 -- ─────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS agent_traces (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),

@@ -4,7 +4,7 @@ import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { randomUUID } from "crypto";
 import { serverGetCustomers } from "@/src/lib/server/customers";
 import { getServerConfig } from "@/src/lib/server/env";
-import { configureLangSmithTracing } from "@/src/lib/server/langsmith";
+
 import { persistAgentTrace } from "@/src/lib/server/supabase";
 
 const WorkflowState = Annotation.Root({
@@ -252,11 +252,6 @@ function buildGraph() {
 }
 
 export async function runCampaignLangGraph(brief) {
-  try {
-    configureLangSmithTracing();
-  } catch (e) {
-    console.warn("[LangSmith] Tracing setup failed, continuing without tracing:", e);
-  }
 
   const startedAt = Date.now();
   const runId = randomUUID();

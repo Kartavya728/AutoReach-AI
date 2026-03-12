@@ -39,13 +39,7 @@ const SETUP_STEPS = [
         envVar: "NEXT_PUBLIC_SUPABASE_URL + NEXT_PUBLIC_SUPABASE_ANON_KEY",
         free: true,
       },
-      {
-        name: "LangSmith API Key",
-        desc: "For agent observability tracing",
-        link: "https://smith.langchain.com",
-        envVar: "LANGSMITH_API_KEY",
-        free: true,
-      },
+
     ],
   },
   {
@@ -59,9 +53,7 @@ GEMINI_API_KEY=your_gemini_key_here
 CAMPAIGNX_API_KEY=your_campaignx_key
 NEXT_PUBLIC_SUPABASE_URL=https://xxx.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your_anon_key
-LANGSMITH_API_KEY=ls__your_key
-LANGCHAIN_TRACING_V2=true
-LANGCHAIN_PROJECT=campaignx-ai`,
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your_anon_key`,
   },
   {
     step: 3,
@@ -103,7 +95,7 @@ curl -X POST https://campaignx.inxiteout.ai/api/v1/signup \\
       { name: "/app/api/campaignx/*", desc: "Server routes proxy all Autoreach API calls using CAMPAIGNX_API_KEY" },
       { name: "/app/api/gemini/*", desc: "Gemini generation/analyze routes use GEMINI_API_KEY" },
       { name: "/app/api/agent/run", desc: "LangGraph + LangChain.js orchestration endpoint" },
-      { name: "/src/lib/server/langsmith.ts", desc: "LangSmith tracing configured from environment variables" },
+
       { name: "/src/lib/supabase.ts", desc: "Supabase client reads NEXT_PUBLIC_* keys" },
     ],
   },
@@ -118,7 +110,6 @@ npm install @langchain/langgraph
 npm install @langchain/google-genai
 npm install @langchain/core
 npm install @supabase/supabase-js
-npm install langsmith
 npm install @langchain/community`,
   },
 ];
@@ -141,7 +132,7 @@ const ARCHITECTURE = [
   },
   {
     layer: "Backend APIs",
-    items: ["Autoreach API (send/report)", "Supabase DB + Auth", "pgvector (RAG search)", "LangSmith Tracing"],
+    items: ["Autoreach API (send/report)", "Supabase DB + Auth", "pgvector (RAG search)"],
     color: "#d97706",
   },
 ];
@@ -215,7 +206,7 @@ export default function HowToUse() {
           </h1>
           <p className="text-gray-400 max-w-2xl mx-auto" style={{ fontSize: "1rem", lineHeight: "1.7" }}>
             Complete guide to set up the AI multi-agent marketing platform with
-            Gemini, LangGraph, Supabase, and LangSmith.
+            Gemini, LangGraph, and Supabase.
           </p>
         </motion.div>
 
