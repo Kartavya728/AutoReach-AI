@@ -124,6 +124,34 @@ export interface AgentDraftCard {
   approved?: boolean;
 }
 
+export type AgentTwinPersonaDecision = "pending" | "open" | "click" | "ignore";
+export type AgentTwinCardStage = "queued" | "testing" | "passed" | "retrying" | "fallback";
+
+export interface AgentTwinPersonaCard {
+  personaId: string;
+  name: string;
+  occupation?: string;
+  city?: string;
+  decision: AgentTwinPersonaDecision;
+  monologue?: string;
+}
+
+export interface AgentTwinCard {
+  segmentId: string;
+  segmentName: string;
+  size: number;
+  attempt: number;
+  maxAttempts: number;
+  stage: AgentTwinCardStage;
+  subject: string;
+  body: string;
+  ctaLink?: string;
+  openVotes: number;
+  clickVotes: number;
+  ignoreVotes: number;
+  personas: AgentTwinPersonaCard[];
+}
+
 export interface AgentPausePayload {
   pauseType: AgentPauseType;
   title?: string;

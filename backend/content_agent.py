@@ -15,6 +15,7 @@ import asyncio
 import json
 import re
 import sys
+from typing import Any, Callable
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from backend.state import WorkflowState, EmailVariant, CustomerSegment
@@ -84,6 +85,7 @@ from backend.war_room import war_room
 from backend.bandit import bandit_engine
 
 URL_RE = re.compile(r"https?://[^\s<>\"]+")
+TwinProgressEmitter = Callable[[dict[str, Any]], None]
 
 
 def _extract_cta_link(brief: str) -> str:
@@ -102,10 +104,96 @@ def _ensure_variant_has_cta_link(variant: EmailVariant, cta_link: str) -> EmailV
     variant["cta_link"] = cta_link
     return variant
 
+
+def _build_twin_personas(tier: str) -> list[dict[str, Any]]:
+    base_personas = [
+        {"persona_id": "persona-1", "name": "Aarav", "age": 29, "occupation": "Product Manager", "city": "Bengaluru", "family_size": 2, "credit_score": 742},
+        {"persona_id": "persona-2", "name": "Meera", "age": 41, "occupation": "School Principal", "city": "Pune", "family_size": 4, "credit_score": 781},
+        {"persona_id": "persona-3", "name": "Rohan", "age": 35, "occupation": "Chartered Accountant", "city": "Mumbai", "family_size": 3, "credit_score": 756},
+        {"persona_id": "persona-4", "name": "Ananya", "age": 58, "occupation": "Retired Banker", "city": "Chennai", "family_size": 2, "credit_score": 804},
+        {"persona_id": "persona-5", "name": "Kabir", "age": 32, "occupation": "Startup Founder", "city": "Hyderabad", "family_size": 3, "credit_score": 719},
+    ]
+
+    if tier == "Diamond":
+        base_personas[0]["occupation"] = "Wealth Manager"
+        base_personas[2]["occupation"] = "Investment Advisor"
+    elif tier == "Gold":
+        base_personas[1]["occupation"] = "Operations Head"
+        base_personas[4]["occupation"] = "Business Owner"
+    elif tier == "Silver":
+        base_personas[0]["occupation"] = "Software Engineer"
+        base_personas[4]["occupation"] = "Consultant"
+    elif tier == "Reactivate":
+        base_personas[3]["occupation"] = "Former Relationship Manager"
+        base_personas[4]["credit_score"] = 690
+
+    return base_personas
+
+
+def _normalize_twin_decision(raw_decision: str) -> str:
+    decision = str(raw_decision or "").upper()
+    if decision == "CLICK":
+        return "click"
+    if decision == "OPEN":
+        return "open"
+    if decision == "IGNORE":
+        return "ignore"
+    return "pending"
+
+
+def _emit_twin_progress(
+    emit_progress: TwinProgressEmitter | None,
+    *,
+    segment: CustomerSegment,
+    attempt: int,
+    max_attempts: int,
+    stage: str,
+    draft_variant: EmailVariant,
+    personas: list[dict[str, Any]],
+    twin_results: list[dict[str, Any]],
+    cta_link: str,
+):
+    if not emit_progress:
+        return
+
+    persona_cards: list[dict[str, Any]] = []
+    for index, persona in enumerate(personas):
+        result = twin_results[index] if index < len(twin_results) else None
+        persona_cards.append(
+            {
+                "personaId": str(persona.get("persona_id", f"persona-{index + 1}")),
+                "name": str(persona.get("name", f"Persona {index + 1}")),
+                "occupation": str(persona.get("occupation", "")),
+                "city": str(persona.get("city", "")),
+                "decision": _normalize_twin_decision(result.get("decision", "")) if result else "pending",
+                "monologue": str(result.get("monologue", "")) if result else "",
+            }
+        )
+
+    emit_progress(
+        {
+            "segmentId": str(segment.get("segment_id", "")),
+            "segmentName": str(segment.get("segment_name", "Segment")),
+            "size": int(segment.get("size", 0)),
+            "attempt": attempt,
+            "maxAttempts": max_attempts,
+            "stage": stage,
+            "subject": str(draft_variant.get("subject", "")),
+            "body": str(draft_variant.get("body", "")),
+            "ctaLink": cta_link,
+            "openVotes": sum(1 for item in twin_results if str(item.get("decision", "")).upper() == "OPEN"),
+            "clickVotes": sum(1 for item in twin_results if str(item.get("decision", "")).upper() == "CLICK"),
+            "ignoreVotes": sum(1 for item in twin_results if str(item.get("decision", "")).upper() == "IGNORE"),
+            "personas": persona_cards,
+        }
+    )
+
 async def generate_segment_variant(
     brief: str,
     strategy: str,
     segment: CustomerSegment,
+    cta_link: str = "",
+    emit_progress: TwinProgressEmitter | None = None,
 ) -> EmailVariant:
     """Generate a high-performing email variant using the Multi-Agent War Room, Bandit, and Sim."""
     
@@ -131,18 +219,44 @@ async def generate_segment_variant(
     angle = bandit_engine.select_action(tier)
     _safe_print(f"      [Bandit] Selected Angle: {angle.upper()} for Tier: {tier}")
     
+    personas = _build_twin_personas(tier)
+
     # 3. War Room generates and Digital Twin tests (Loop up to 3 times)
     variant = None
-    for attempt in range(3):
-        _safe_print(f"      [War Room] Generating draft {attempt+1}...")
+    max_attempts = 3
+    for attempt_index in range(max_attempts):
+        attempt = attempt_index + 1
+        _safe_print(f"      [War Room] Generating draft {attempt}...")
         draft_variant = await war_room.generate_variants(brief, tier, angle)
+        draft_variant = _ensure_variant_has_cta_link(draft_variant, cta_link)
         
         # Test draft using Digital Twin Simulation on 5 synthentic personas
         twin_results = []
-        for sim_idx in range(5):
-            mock_user = {"name": f"Mock_{sim_idx}", "age": 35, "occupation": "Professional", "city": "Delhi", "family_size": 2, "credit_score": 700}
-            sim = await twin_engine.simulate_reaction(mock_user, draft_variant["subject"], draft_variant["body"])
+        _emit_twin_progress(
+            emit_progress,
+            segment=segment,
+            attempt=attempt,
+            max_attempts=max_attempts,
+            stage="testing",
+            draft_variant=draft_variant,
+            personas=personas,
+            twin_results=twin_results,
+            cta_link=cta_link,
+        )
+        for persona in personas:
+            sim = await twin_engine.simulate_reaction(persona, draft_variant["subject"], draft_variant["body"])
             twin_results.append(sim)
+            _emit_twin_progress(
+                emit_progress,
+                segment=segment,
+                attempt=attempt,
+                max_attempts=max_attempts,
+                stage="testing",
+                draft_variant=draft_variant,
+                personas=personas,
+                twin_results=twin_results,
+                cta_link=cta_link,
+            )
         
         clicks = sum(1 for r in twin_results if r["decision"] == "CLICK")
         opens = sum(1 for r in twin_results if r["decision"] == "OPEN")
@@ -153,16 +267,49 @@ async def generate_segment_variant(
             # Survived the kill rule!
             bandit_engine.update_reward(tier, angle, max(1, clicks))
             variant = draft_variant
+            _emit_twin_progress(
+                emit_progress,
+                segment=segment,
+                attempt=attempt,
+                max_attempts=max_attempts,
+                stage="passed",
+                draft_variant=draft_variant,
+                personas=personas,
+                twin_results=twin_results,
+                cta_link=cta_link,
+            )
             break
         else:
             _safe_print("      [Simulator] Kill Rule triggered. Variant failed test. Regenerating.")
             bandit_engine.update_reward(tier, angle, 0)
+            _emit_twin_progress(
+                emit_progress,
+                segment=segment,
+                attempt=attempt,
+                max_attempts=max_attempts,
+                stage="retrying",
+                draft_variant=draft_variant,
+                personas=personas,
+                twin_results=twin_results,
+                cta_link=cta_link,
+            )
             angle = bandit_engine.select_action(tier)
             _safe_print(f"      [Bandit] Retrying with Angle: {angle.upper()}")
             
     if not variant:
         # Fallback if all 3 attempts failed the simulator (unlikely)
         variant = draft_variant
+        _emit_twin_progress(
+            emit_progress,
+            segment=segment,
+            attempt=max_attempts,
+            max_attempts=max_attempts,
+            stage="fallback",
+            draft_variant=variant,
+            personas=personas,
+            twin_results=twin_results,
+            cta_link=cta_link,
+        )
 
     if "tags" not in variant:
         variant["tags"] = []
@@ -173,7 +320,10 @@ async def generate_segment_variant(
         
     return variant
 
-async def generate_content(state: WorkflowState) -> dict:
+async def generate_content(
+    state: WorkflowState,
+    emit_progress: TwinProgressEmitter | None = None,
+) -> dict:
     """
     LangGraph node: Generate one tailored email per segment using Autonomous Growth Engine.
     """
@@ -192,7 +342,25 @@ async def generate_content(state: WorkflowState) -> dict:
 
     async def _process_segment(seg):
         _safe_print(f"  [Orchestrator] Processing Segment (Parallel): {seg['segment_name']} ({seg['size']} customers)")
-        variant = await generate_segment_variant(brief, strategy, seg)
+        if emit_progress:
+            emit_progress(
+                {
+                    "segmentId": str(seg.get("segment_id", "")),
+                    "segmentName": str(seg.get("segment_name", "Segment")),
+                    "size": int(seg.get("size", 0)),
+                    "attempt": 0,
+                    "maxAttempts": 3,
+                    "stage": "queued",
+                    "subject": "",
+                    "body": "",
+                    "ctaLink": cta_link,
+                    "openVotes": 0,
+                    "clickVotes": 0,
+                    "ignoreVotes": 0,
+                    "personas": [],
+                }
+            )
+        variant = await generate_segment_variant(brief, strategy, seg, cta_link=cta_link, emit_progress=emit_progress)
         variant = _ensure_variant_has_cta_link(variant, cta_link)
         _safe_print(f"    [OK] Final Subject ({seg['segment_name'][:20]}...): {variant['subject'][:60]}...")
         return seg["segment_id"], variant

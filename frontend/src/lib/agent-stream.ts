@@ -4,6 +4,7 @@ import type {
   AgentRoundComplete,
   AgentRunResult,
   AgentThinkingStep,
+  AgentTwinCard,
   GeneratedEmailVariant,
 } from "@/src/lib/types";
 
@@ -17,6 +18,7 @@ export interface StreamCampaignAgentOptions {
   onHeartbeat?: () => void;
   onThinking?: (step: AgentThinkingStep) => void;
   onPause?: (pause: AgentPausePayload, respond: AgentPauseResponder) => void;
+  onTwinUpdate?: (card: AgentTwinCard) => void;
   onLiveMetrics?: (metrics: AgentLiveMetrics) => void;
   onRoundComplete?: (round: AgentRoundComplete) => void;
   onTerminal?: (text: string) => void;
@@ -118,6 +120,40 @@ function normalizeMetricsProgression(raw: unknown): AgentRunResult["metricsProgr
       predictedClickRate: Number(safe.predictedClickRate ?? safe.predicted_click_rate ?? 0) || 0,
     };
   });
+}
+
+function normalizeTwinCard(raw: unknown): AgentTwinCard | null {
+  if (!isRecord(raw)) {
+    return null;
+  }
+
+  const personas = Array.isArray(raw.personas) ? raw.personas : [];
+
+  return {
+    segmentId: String(raw.segmentId ?? raw.segment_id ?? ""),
+    segmentName: String(raw.segmentName ?? raw.segment_name ?? "Segment"),
+    size: Number(raw.size ?? 0) || 0,
+    attempt: Number(raw.attempt ?? 1) || 1,
+    maxAttempts: Number(raw.maxAttempts ?? raw.max_attempts ?? 3) || 3,
+    stage: String(raw.stage ?? "queued") as AgentTwinCard["stage"],
+    subject: String(raw.subject ?? ""),
+    body: String(raw.body ?? ""),
+    ctaLink: raw.ctaLink ? String(raw.ctaLink) : raw.cta_link ? String(raw.cta_link) : undefined,
+    openVotes: Number(raw.openVotes ?? raw.open_votes ?? 0) || 0,
+    clickVotes: Number(raw.clickVotes ?? raw.click_votes ?? 0) || 0,
+    ignoreVotes: Number(raw.ignoreVotes ?? raw.ignore_votes ?? 0) || 0,
+    personas: personas.map((persona, index) => {
+      const safe = isRecord(persona) ? persona : {};
+      return {
+        personaId: String(safe.personaId ?? safe.persona_id ?? `persona-${index + 1}`),
+        name: String(safe.name ?? `Persona ${index + 1}`),
+        occupation: safe.occupation ? String(safe.occupation) : undefined,
+        city: safe.city ? String(safe.city) : undefined,
+        decision: String(safe.decision ?? "pending") as AgentTwinCard["personas"][number]["decision"],
+        monologue: safe.monologue ? String(safe.monologue) : undefined,
+      };
+    }),
+  };
 }
 
 function normalizeRunResult(raw: unknown): AgentRunResult {
@@ -366,6 +402,15 @@ export async function streamCampaignAgent(
           respond({ continueOptimization: false });
         } else {
           respond({ approved: true });
+        }
+        return;
+      }
+
+      if (event === "digital_twin") {
+        options?.onHeartbeat?.();
+        const card = normalizeTwinCard(data);
+        if (card) {
+          options?.onTwinUpdate?.(card);
         }
         return;
       }

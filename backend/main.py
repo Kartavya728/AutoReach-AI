@@ -821,7 +821,10 @@ async def run_react_planner_executor(
     channel.log("Action: generate_emails")
     channel.log("Action Input: {\"optimizer\": [\"war_room\", \"twin_simulator\", \"bandit\"]}")
 
-    content_state = await generate_content(state)
+    content_state = await generate_content(
+        state,
+        emit_progress=lambda payload: channel.emit_event("digital_twin", payload),
+    )
     segment_variants = content_state.get("segment_variants", {}) or {}
     state["segment_variants"] = segment_variants
     state["content_variants"] = content_state.get("content_variants", []) or []
@@ -1120,7 +1123,13 @@ async def run_react_planner_executor(
                 "emoji_level": "moderate",
                 "tier": "Gold",
             }
-            warm_variant = await generate_segment_variant(brief, str(state.get("strategy", "")), warm_segment)
+            warm_variant = await generate_segment_variant(
+                brief,
+                str(state.get("strategy", "")),
+                warm_segment,
+                cta_link=str(state.get("cta_link", "")),
+                emit_progress=lambda payload: channel.emit_event("digital_twin", payload),
+            )
             warm_variant = ensure_variant_has_link(warm_variant, str(state.get("cta_link", "")))
             next_groups.append(
                 {
@@ -1147,7 +1156,13 @@ async def run_react_planner_executor(
                 "emoji_level": "moderate",
                 "tier": "Reactivate",
             }
-            cold_variant = await generate_segment_variant(brief, str(state.get("strategy", "")), cold_segment)
+            cold_variant = await generate_segment_variant(
+                brief,
+                str(state.get("strategy", "")),
+                cold_segment,
+                cta_link=str(state.get("cta_link", "")),
+                emit_progress=lambda payload: channel.emit_event("digital_twin", payload),
+            )
             cold_variant = ensure_variant_has_link(cold_variant, str(state.get("cta_link", "")))
             next_groups.append(
                 {

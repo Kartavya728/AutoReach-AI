@@ -27,16 +27,21 @@ import type {
   AgentRunResult,
   AgentSegmentCard,
   AgentThinkingStep,
+  AgentTwinCard,
+  AgentTwinCardStage,
+  AgentTwinPersonaDecision,
 } from "../../lib/types";
 
 const DEFAULT_BRIEF =
   "Run email campaign for launching XDeposit, a flagship term deposit product from SuperBFSI, that gives 1 percentage point higher returns than its competitors. Announce an additional 0.25 percentage point higher returns for female senior citizens. Optimise for open rate and click rate. Do not skip emails to customers marked inactive.";
 const DEFAULT_CTA_LINK = "https://superbfsi.com/xdeposit/explore/";
 const MAX_INTERACTIVE_OPTIMIZATION_ROUNDS = 10;
+const INITIAL_VISIBLE_TWIN_CARDS = 3;
 
 type RunPhase = "idle" | "running" | "paused" | "complete" | "error";
 type MessageRole = "user" | "agent" | "system";
 type RunMode = "initial" | "optimization";
+type ApprovalDecision = "pending" | "approved" | "rejected";
 
 interface ChatMessage {
   id: string;
@@ -90,6 +95,117 @@ function ensureDraftContainsLink(body: string, ctaLink: string) {
     return cleanBody;
   }
   return `${cleanBody}\n\nExplore now: ${cleanLink}`.trim();
+}
+
+function statusStyles(status: ApprovalDecision | "generating") {
+  if (status === "approved") {
+    return {
+      label: "Accepted",
+      background: "rgba(22,163,74,0.18)",
+      border: "1px solid rgba(34,197,94,0.35)",
+      color: "#dcfce7",
+    };
+  }
+  if (status === "rejected") {
+    return {
+      label: "Rejected",
+      background: "rgba(220,38,38,0.18)",
+      border: "1px solid rgba(248,113,113,0.35)",
+      color: "#fee2e2",
+    };
+  }
+  if (status === "generating") {
+    return {
+      label: "Generating",
+      background: "rgba(14,116,144,0.18)",
+      border: "1px solid rgba(34,211,238,0.28)",
+      color: "#cffafe",
+    };
+  }
+  return {
+    label: "Awaiting Review",
+    background: "rgba(245,158,11,0.14)",
+    border: "1px solid rgba(251,191,36,0.28)",
+    color: "#fde68a",
+  };
+}
+
+function twinStageStyles(stage: AgentTwinCardStage) {
+  if (stage === "passed") {
+    return {
+      label: "Passed Twin Check",
+      background: "rgba(22,163,74,0.18)",
+      border: "1px solid rgba(34,197,94,0.35)",
+      color: "#dcfce7",
+    };
+  }
+  if (stage === "retrying") {
+    return {
+      label: "Retrying Draft",
+      background: "rgba(234,88,12,0.18)",
+      border: "1px solid rgba(251,146,60,0.35)",
+      color: "#fed7aa",
+    };
+  }
+  if (stage === "fallback") {
+    return {
+      label: "Using Last Draft",
+      background: "rgba(148,163,184,0.18)",
+      border: "1px solid rgba(148,163,184,0.35)",
+      color: "#e2e8f0",
+    };
+  }
+  if (stage === "testing") {
+    return {
+      label: "Personas Reviewing",
+      background: "rgba(14,116,144,0.18)",
+      border: "1px solid rgba(34,211,238,0.28)",
+      color: "#cffafe",
+    };
+  }
+  return {
+    label: "Queued",
+    background: "rgba(51,65,85,0.35)",
+    border: "1px solid rgba(100,116,139,0.35)",
+    color: "#cbd5e1",
+  };
+}
+
+function personaStyles(decision: AgentTwinPersonaDecision) {
+  if (decision === "click") {
+    return {
+      verdict: "Approved Click",
+      detail: "Would click",
+      background: "rgba(22,163,74,0.18)",
+      border: "1px solid rgba(34,197,94,0.35)",
+      color: "#dcfce7",
+    };
+  }
+  if (decision === "open") {
+    return {
+      verdict: "Approved Open",
+      detail: "Would open",
+      background: "rgba(56,189,248,0.18)",
+      border: "1px solid rgba(56,189,248,0.32)",
+      color: "#dbeafe",
+    };
+  }
+  if (decision === "ignore") {
+    return {
+      verdict: "Declined",
+      detail: "Would ignore",
+      background: "rgba(220,38,38,0.18)",
+      border: "1px solid rgba(248,113,113,0.35)",
+      color: "#fee2e2",
+    };
+  }
+  return {
+    verdict: "Reviewing",
+    detail: "Pending",
+    background: "rgba(245,158,11,0.14)",
+    border: "1px solid rgba(251,191,36,0.28)",
+    color: "#fde68a",
+  };
 }
 
 function toSegmentCardsFromResult(result: AgentRunResult | null): AgentSegmentCard[] {
@@ -212,8 +328,10 @@ export default function NewCampaign() {
   const [completedMessageIds, setCompletedMessageIds] = useState<Set<string>>(new Set());
   const [baselineMetrics, setBaselineMetrics] = useState({ sent: 0, opened: 0, clicked: 0 });
   const baselineMetricsRef = useRef({ sent: 0, opened: 0, clicked: 0 });
-  const [segmentApprovalStatus, setSegmentApprovalStatus] = useState<Record<string, boolean>>({});
-  const [draftApprovalStatus, setDraftApprovalStatus] = useState<Record<string, boolean>>({});
+  const [segmentApprovalStatus, setSegmentApprovalStatus] = useState<Record<string, ApprovalDecision>>({});
+  const [draftApprovalStatus, setDraftApprovalStatus] = useState<Record<string, ApprovalDecision>>({});
+  const [twinCards, setTwinCards] = useState<Record<string, AgentTwinCard>>({});
+  const [visibleTwinCards, setVisibleTwinCards] = useState(INITIAL_VISIBLE_TWIN_CARDS);
 
   const thinkingMessages = useMemo(() => [
     "Agent thinking",
@@ -280,6 +398,8 @@ export default function NewCampaign() {
     setApprovalError(null);
     setSegmentApprovalStatus({});
     setDraftApprovalStatus({});
+    setTwinCards({});
+    setVisibleTwinCards(INITIAL_VISIBLE_TWIN_CARDS);
     
     setLatestMetrics((currentMetrics) => {
       if (isOptimization) {
@@ -330,7 +450,7 @@ export default function NewCampaign() {
     if (pendingPause.pauseType === "segment_approval") {
       const segmentApprovals = segmentCards.map((segment) => ({
         segmentId: segment.segmentId,
-        approved: segmentApprovalStatus[segment.segmentId] ?? true,
+        approved: segmentApprovalStatus[segment.segmentId] !== "rejected",
       }));
       submitPauseResponse({
         approved: segmentApprovals.some((item) => item.approved),
@@ -344,7 +464,7 @@ export default function NewCampaign() {
       const sourceDrafts = editingDrafts ? editedDrafts : draftCards;
       const variantApprovals = sourceDrafts.map((draft) => ({
         segmentId: draft.segmentId,
-        approved: draftApprovalStatus[draft.segmentId] ?? true,
+        approved: draftApprovalStatus[draft.segmentId] !== "rejected",
         subject: draft.subject,
         body: ensureDraftContainsLink(draft.body, effectiveCtaLink),
       }));
@@ -404,12 +524,12 @@ export default function NewCampaign() {
     });
   }, []);
 
-  const toggleSegmentApproval = useCallback((segmentId: string, approved: boolean) => {
-    setSegmentApprovalStatus((current) => ({ ...current, [segmentId]: approved }));
+  const toggleSegmentApproval = useCallback((segmentId: string, decision: ApprovalDecision) => {
+    setSegmentApprovalStatus((current) => ({ ...current, [segmentId]: decision }));
   }, []);
 
-  const toggleDraftApproval = useCallback((segmentId: string, approved: boolean) => {
-    setDraftApprovalStatus((current) => ({ ...current, [segmentId]: approved }));
+  const toggleDraftApproval = useCallback((segmentId: string, decision: ApprovalDecision) => {
+    setDraftApprovalStatus((current) => ({ ...current, [segmentId]: decision }));
   }, []);
 
   const runAgent = useCallback(async (prompt: string, mode: RunMode) => {
@@ -440,7 +560,10 @@ export default function NewCampaign() {
             setSegmentCards(pause.segments);
             setSegmentApprovalStatus(
               Object.fromEntries(
-                pause.segments.map((segment) => [segment.segmentId, segment.approved ?? true])
+                pause.segments.map((segment) => [
+                  segment.segmentId,
+                  segment.approved === false ? "rejected" : "pending",
+                ])
               )
             );
           }
@@ -448,7 +571,10 @@ export default function NewCampaign() {
             setDraftCards(pause.variants);
             setDraftApprovalStatus(
               Object.fromEntries(
-                pause.variants.map((draft) => [draft.segmentId, draft.approved ?? true])
+                pause.variants.map((draft) => [
+                  draft.segmentId,
+                  draft.approved === false ? "rejected" : "pending",
+                ])
               )
             );
           }
@@ -458,6 +584,12 @@ export default function NewCampaign() {
             kind: "pause",
             text: pause.message || "Approval required to continue.",
           });
+        },
+        onTwinUpdate: (card) => {
+          setTwinCards((current) => ({
+            ...current,
+            [card.segmentId]: card,
+          }));
         },
         onLiveMetrics: (metrics) => {
           setLatestMetrics((previous) => {
@@ -589,6 +721,66 @@ export default function NewCampaign() {
   }, [phase]);
 
   const approvalDrafts = editingDrafts ? editedDrafts : draftCards;
+  const digitalTwinCards = useMemo(() => {
+    const rejectedSegmentIds = new Set(
+      Object.entries(segmentApprovalStatus)
+        .filter(([, decision]) => decision === "rejected")
+        .map(([segmentId]) => segmentId)
+    );
+
+    const cards = segmentCards
+      .filter((segment) => segment.approved !== false && !rejectedSegmentIds.has(segment.segmentId))
+      .map((segment) => {
+      const matchedDraft =
+        approvalDrafts.find((draft) => draft.segmentId === segment.segmentId) ||
+        approvalDrafts.find((draft) => draft.segmentName === segment.name);
+      const twinCard = twinCards[segment.segmentId];
+      return {
+        segment,
+        draft: matchedDraft,
+        twin:
+          twinCard ??
+          {
+            segmentId: segment.segmentId,
+            segmentName: segment.name,
+            size: segment.size,
+            attempt: 0,
+            maxAttempts: 3,
+            stage: "queued" as const,
+            subject: matchedDraft?.subject || "",
+            body: matchedDraft?.body || "",
+            ctaLink: matchedDraft?.ctaLink || pendingPause?.ctaLink || latestCtaLink || ctaLink,
+            openVotes: 0,
+            clickVotes: 0,
+            ignoreVotes: 0,
+            personas: [],
+          },
+      };
+    });
+
+    const knownIds = new Set(cards.map((entry) => entry.segment.segmentId));
+    Object.values(twinCards).forEach((card) => {
+      if (knownIds.has(card.segmentId) || rejectedSegmentIds.has(card.segmentId)) {
+        return;
+      }
+      cards.push({
+        segment: {
+          segmentId: card.segmentId,
+          name: card.segmentName,
+          size: card.size,
+          approved: true,
+        },
+        draft: approvalDrafts.find((draft) => draft.segmentId === card.segmentId),
+        twin: card,
+      });
+    });
+
+    return cards;
+  }, [approvalDrafts, ctaLink, latestCtaLink, pendingPause?.ctaLink, segmentApprovalStatus, segmentCards, twinCards]);
+  const visibleDigitalTwinCards = useMemo(
+    () => digitalTwinCards.slice(0, visibleTwinCards),
+    [digitalTwinCards, visibleTwinCards]
+  );
   
   let activeSent = latestMetrics?.sent || 0;
   let activeTotalOpened = latestMetrics?.opened || 0;
@@ -838,10 +1030,10 @@ export default function NewCampaign() {
                             <p className="text-slate-300 mt-1" style={{ fontSize: "0.74rem" }}>{segment.criteria || segment.focus || "Segment details available."}</p>
                             <div className="flex gap-2 mt-3">
                               <button
-                                onClick={() => toggleSegmentApproval(segment.segmentId, true)}
+                                onClick={() => toggleSegmentApproval(segment.segmentId, "approved")}
                                 className="px-2.5 py-1 rounded-lg text-xs"
                                 style={{
-                                  background: (segmentApprovalStatus[segment.segmentId] ?? true) ? "rgba(22,163,74,0.22)" : "rgba(15,23,42,0.8)",
+                                  background: (segmentApprovalStatus[segment.segmentId] ?? "pending") === "approved" ? "rgba(22,163,74,0.22)" : "rgba(15,23,42,0.8)",
                                   border: "1px solid rgba(34,197,94,0.35)",
                                   color: "#dcfce7",
                                 }}
@@ -849,10 +1041,10 @@ export default function NewCampaign() {
                                 Approve
                               </button>
                               <button
-                                onClick={() => toggleSegmentApproval(segment.segmentId, false)}
+                                onClick={() => toggleSegmentApproval(segment.segmentId, "rejected")}
                                 className="px-2.5 py-1 rounded-lg text-xs"
                                 style={{
-                                  background: !(segmentApprovalStatus[segment.segmentId] ?? true) ? "rgba(220,38,38,0.22)" : "rgba(15,23,42,0.8)",
+                                  background: (segmentApprovalStatus[segment.segmentId] ?? "pending") === "rejected" ? "rgba(220,38,38,0.22)" : "rgba(15,23,42,0.8)",
                                   border: "1px solid rgba(248,113,113,0.35)",
                                   color: "#fee2e2",
                                 }}
@@ -902,10 +1094,10 @@ export default function NewCampaign() {
                             </div>
                             <div className="flex gap-2 mt-3">
                               <button
-                                onClick={() => toggleDraftApproval(draft.segmentId, true)}
+                                onClick={() => toggleDraftApproval(draft.segmentId, "approved")}
                                 className="px-2.5 py-1 rounded-lg text-xs"
                                 style={{
-                                  background: (draftApprovalStatus[draft.segmentId] ?? true) ? "rgba(22,163,74,0.22)" : "rgba(15,23,42,0.8)",
+                                  background: (draftApprovalStatus[draft.segmentId] ?? "pending") === "approved" ? "rgba(22,163,74,0.22)" : "rgba(15,23,42,0.8)",
                                   border: "1px solid rgba(34,197,94,0.35)",
                                   color: "#dcfce7",
                                 }}
@@ -913,10 +1105,10 @@ export default function NewCampaign() {
                                 Approve
                               </button>
                               <button
-                                onClick={() => toggleDraftApproval(draft.segmentId, false)}
+                                onClick={() => toggleDraftApproval(draft.segmentId, "rejected")}
                                 className="px-2.5 py-1 rounded-lg text-xs"
                                 style={{
-                                  background: !(draftApprovalStatus[draft.segmentId] ?? true) ? "rgba(220,38,38,0.22)" : "rgba(15,23,42,0.8)",
+                                  background: (draftApprovalStatus[draft.segmentId] ?? "pending") === "rejected" ? "rgba(220,38,38,0.22)" : "rgba(15,23,42,0.8)",
                                   border: "1px solid rgba(248,113,113,0.35)",
                                   color: "#fee2e2",
                                 }}
@@ -1021,6 +1213,174 @@ export default function NewCampaign() {
                   <div className="text-slate-400" style={{ fontSize: "0.72rem" }}>Unique Clicks</div>
                   <div className="text-white mt-1" style={{ fontSize: "1.3rem", fontWeight: 700 }}>{formatCount(activeUniqueClicked)}</div>
                 </div>
+              </div>
+            )}
+
+            {digitalTwinCards.length > 0 && (
+              <div className="mt-4 rounded-[24px] p-4" style={{ background: "rgba(8,18,33,0.96)", border: "1px solid rgba(148,163,184,0.2)" }}>
+                <div className="flex items-center justify-between gap-3 mb-4">
+                  <div>
+                    <div className="text-white" style={{ fontSize: "0.95rem", fontWeight: 700 }}>Digital Twin Review</div>
+                    <div className="text-slate-400 mt-1" style={{ fontSize: "0.76rem" }}>
+                      Each category card shows the current email draft plus live persona approvals or declines while the Digital Twin simulator runs.
+                    </div>
+                  </div>
+                  <div className="text-slate-400" style={{ fontSize: "0.76rem" }}>
+                    {formatCount(digitalTwinCards.length)} categories
+                  </div>
+                </div>
+
+                <div className="grid md:grid-cols-2 gap-3">
+                  {visibleDigitalTwinCards.map(({ segment, draft, twin }) => {
+                    const badge = twinStageStyles(twin.stage);
+                    const activeDraft = draft ?? {
+                      subject: twin.subject,
+                      body: twin.body,
+                      ctaLink: twin.ctaLink,
+                    };
+                    const personaApprovals = twin.personas.filter((persona) => persona.decision === "open" || persona.decision === "click").length;
+                    return (
+                      <div
+                        key={segment.segmentId}
+                        className="rounded-2xl p-4"
+                        style={{
+                          background: "rgba(15,23,42,0.75)",
+                          border: "1px solid rgba(148,163,184,0.18)",
+                        }}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="text-white" style={{ fontSize: "0.84rem", fontWeight: 700 }}>
+                              {segment.name}
+                            </div>
+                            <div className="text-slate-400 mt-1" style={{ fontSize: "0.72rem" }}>
+                              {formatCount(segment.size)} customers
+                            </div>
+                          </div>
+                          <div
+                            className="px-2 py-1 rounded-full"
+                            style={{
+                              fontSize: "0.68rem",
+                              fontWeight: 700,
+                              background: badge.background,
+                              border: badge.border,
+                              color: badge.color,
+                            }}
+                          >
+                            {badge.label}
+                          </div>
+                        </div>
+
+                        <div className="mt-3">
+                          <div className="text-slate-500" style={{ fontSize: "0.66rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                            Subject
+                          </div>
+                          <div className="text-slate-100 mt-1" style={{ fontSize: "0.78rem", fontWeight: 600 }}>
+                            {activeDraft.subject || "Digital Twin is waiting for the first draft..."}
+                          </div>
+                        </div>
+
+                        <div className="mt-3">
+                          <div className="text-slate-500" style={{ fontSize: "0.66rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                            Email
+                          </div>
+                          <div className="text-slate-300 mt-1" style={{ fontSize: "0.75rem", lineHeight: 1.55 }}>
+                            {activeDraft.body || "The simulator will show the generated email here as soon as this category enters review."}
+                          </div>
+                        </div>
+
+                        <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                          <div className="px-2 py-1 rounded-full" style={{ background: "rgba(56,189,248,0.12)", border: "1px solid rgba(56,189,248,0.22)", color: "#bae6fd" }}>
+                            Attempt {Math.max(twin.attempt, 1)} / {twin.maxAttempts}
+                          </div>
+                          <div className="px-2 py-1 rounded-full" style={{ background: "rgba(34,197,94,0.12)", border: "1px solid rgba(34,197,94,0.22)", color: "#dcfce7" }}>
+                            {formatCount(personaApprovals)} approved
+                          </div>
+                          <div className="px-2 py-1 rounded-full" style={{ background: "rgba(248,113,113,0.12)", border: "1px solid rgba(248,113,113,0.22)", color: "#fee2e2" }}>
+                            {formatCount(twin.ignoreVotes)} declined
+                          </div>
+                        </div>
+
+                        <div className="mt-3 text-sky-200" style={{ fontSize: "0.7rem" }}>
+                          CTA link: {activeDraft.ctaLink || twin.ctaLink || pendingPause?.ctaLink || latestCtaLink || ctaLink}
+                        </div>
+
+                        <div className="mt-4">
+                          <div className="text-slate-500" style={{ fontSize: "0.66rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                            Persona Decisions
+                          </div>
+                          {twin.personas.length > 0 ? (
+                            <div className="grid gap-2 mt-2">
+                              {twin.personas.map((persona) => {
+                                const personaBadge = personaStyles(persona.decision);
+                                return (
+                                  <div
+                                    key={persona.personaId}
+                                    className="rounded-xl p-3"
+                                    style={{ background: "rgba(2,6,23,0.65)", border: "1px solid rgba(148,163,184,0.14)" }}
+                                  >
+                                    <div className="flex items-start justify-between gap-3">
+                                      <div>
+                                        <div className="text-slate-100" style={{ fontSize: "0.76rem", fontWeight: 600 }}>
+                                          {persona.name}
+                                        </div>
+                                        <div className="text-slate-400 mt-1" style={{ fontSize: "0.68rem" }}>
+                                          {[persona.occupation, persona.city].filter(Boolean).join(" • ") || "Synthetic persona"}
+                                        </div>
+                                      </div>
+                                      <div
+                                        className="px-2 py-1 rounded-full"
+                                        style={{
+                                          fontSize: "0.64rem",
+                                          fontWeight: 700,
+                                          background: personaBadge.background,
+                                          border: personaBadge.border,
+                                          color: personaBadge.color,
+                                        }}
+                                      >
+                                        {personaBadge.verdict}
+                                      </div>
+                                    </div>
+                                    <div className="text-slate-300 mt-2" style={{ fontSize: "0.71rem", lineHeight: 1.5 }}>
+                                      {persona.monologue || personaBadge.detail}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          ) : (
+                            <div className="text-slate-400 mt-2" style={{ fontSize: "0.74rem" }}>
+                              This category is queued. Persona reactions will appear here as soon as simulation starts.
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {(digitalTwinCards.length > visibleTwinCards || visibleTwinCards > INITIAL_VISIBLE_TWIN_CARDS) && (
+                  <div className="flex justify-center gap-2 mt-4">
+                    {digitalTwinCards.length > visibleTwinCards && (
+                      <button
+                        onClick={() => setVisibleTwinCards((current) => current + INITIAL_VISIBLE_TWIN_CARDS)}
+                        className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-slate-100"
+                        style={{ background: "rgba(30,41,59,0.85)", border: "1px solid rgba(148,163,184,0.28)", fontSize: "0.78rem", fontWeight: 700 }}
+                      >
+                        View more
+                      </button>
+                    )}
+                    {visibleTwinCards > INITIAL_VISIBLE_TWIN_CARDS && (
+                      <button
+                        onClick={() => setVisibleTwinCards(INITIAL_VISIBLE_TWIN_CARDS)}
+                        className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-slate-100"
+                        style={{ background: "rgba(15,23,42,0.85)", border: "1px solid rgba(148,163,184,0.22)", fontSize: "0.78rem", fontWeight: 700 }}
+                      >
+                        View less
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
