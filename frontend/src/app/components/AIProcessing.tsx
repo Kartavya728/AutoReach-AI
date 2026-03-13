@@ -1,7 +1,7 @@
 "use client";
 
 import { motion } from "motion/react";
-import { useEffect, useMemo, useRef, useState, type ElementType } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ElementType } from "react";
 import {
   Activity,
   Brain,
@@ -71,6 +71,52 @@ function Dots({ active }: { active: boolean }) {
   return <span className="inline-block min-w-4 text-left">{active ? frames[index] : ""}</span>;
 }
 
+function AnimatedMessage({
+  text,
+  onComplete,
+  onUpdate,
+}: {
+  text: string;
+  onComplete: () => void;
+  onUpdate?: () => void;
+}) {
+  const [displayedText, setDisplayedText] = useState("");
+  const hasCompleted = useRef(false);
+  const onCompleteRef = useRef(onComplete);
+  const onUpdateRef = useRef(onUpdate);
+
+  useEffect(() => {
+    onCompleteRef.current = onComplete;
+  }, [onComplete]);
+
+  useEffect(() => {
+    onUpdateRef.current = onUpdate;
+  }, [onUpdate]);
+
+  useEffect(() => {
+    let index = 0;
+    
+    // Quick typing effect
+    const interval = setInterval(() => {
+      index += 1; // reveal 1 char at a time for slower speed
+      setDisplayedText(text.slice(0, index));
+      onUpdateRef.current?.();
+      
+      if (index >= text.length) {
+        clearInterval(interval);
+        if (!hasCompleted.current) {
+          hasCompleted.current = true;
+          onCompleteRef.current();
+        }
+      }
+    }, 15);
+
+    return () => clearInterval(interval);
+  }, [text]);
+
+  return <>{displayedText}</>;
+}
+
 export function AIProcessing({
   steps,
   isComplete,
@@ -79,14 +125,34 @@ export function AIProcessing({
 }: AIProcessingProps) {
   const latest = steps[steps.length - 1];
   const scrollAreaRef = useRef<HTMLDivElement>(null);
+  const [completedStepIndices, setCompletedStepIndices] = useState<Set<number>>(new Set());
+
+  const thinkingMessages = useMemo(() => [
+    "Agent thinking",
+    "Revising prompt",
+    "Reviewing tool list",
+    "Analyzing context",
+    "Formulating plan"
+  ], []);
+  const [thinkingMsgIndex, setThinkingMsgIndex] = useState(0);
+
+  const triggerScroll = useCallback(() => {
+    const el = scrollAreaRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, []);
 
   useEffect(() => {
-    const el = scrollAreaRef.current;
-    if (!el || steps.length === 0) return;
-    requestAnimationFrame(() => {
-      el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-    });
-  }, [steps.length]);
+    if (isComplete) return;
+    const interval = setInterval(() => {
+      setThinkingMsgIndex((prev) => (prev + 1) % thinkingMessages.length);
+    }, 8500);
+    return () => clearInterval(interval);
+  }, [isComplete, thinkingMessages]);
+
+  useEffect(() => {
+    triggerScroll();
+  }, [steps.length, triggerScroll]);
 
   return (
     <section
@@ -142,7 +208,7 @@ export function AIProcessing({
                 style={{ background: isComplete ? "#10b981" : "#2dd4bf" }}
               />
               <span style={{ fontSize: "0.74rem", color: isComplete ? "#6ee7b7" : "#99f6e4" }}>
-                {isComplete ? "Run complete" : "Agent thinking"}
+                {isComplete ? "Run complete" : thinkingMessages[thinkingMsgIndex]}
                 {!isComplete && <Dots active={Boolean(isIdle)} />}
               </span>
             </div>
@@ -186,9 +252,13 @@ export function AIProcessing({
         ) : (
           <div className="space-y-3">
             {steps.map((item, idx) => {
+              const previousStepComplete = idx === 0 || completedStepIndices.has(idx - 1);
+              if (!previousStepComplete && idx > 0) return null;
+
               const Icon = agentIcons[item.agent] || Cpu;
               const config = kindConfig[item.kind ?? "status"] || kindConfig.status;
               const isLatest = idx === steps.length - 1 && !isComplete;
+              const isFullyRevealed = completedStepIndices.has(idx);
 
               return (
                 <motion.div
@@ -238,13 +308,21 @@ export function AIProcessing({
                         )}
                       </div>
 
-                      <p className="text-slate-200 leading-6" style={{ fontSize: "0.84rem" }}>
-                        {item.step}
+                      <p className="text-slate-200 leading-6 whitespace-pre-wrap" style={{ fontSize: "0.84rem" }}>
+                        {isFullyRevealed ? (
+                          item.step
+                        ) : (
+                          <AnimatedMessage
+                            text={item.step}
+                            onUpdate={triggerScroll}
+                            onComplete={() => setCompletedStepIndices((prev) => new Set(prev).add(idx))}
+                          />
+                        )}
                       </p>
                     </div>
 
                     <div className="pt-1 flex-shrink-0">
-                      {isLatest ? (
+                      {(isLatest && !isFullyRevealed) ? (
                         <motion.div
                           animate={{ scale: [1, 1.2, 1], opacity: [0.55, 1, 0.55] }}
                           transition={{ duration: 1.2, repeat: Infinity }}

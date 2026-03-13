@@ -1,17 +1,10 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
-$RootDir = Resolve-Path $ScriptDir
+$RootDir = "c:\Users\Japne\OneDrive\Desktop\inx\AutoReach-AI"
 
 function Get-PythonExecutable {
-    foreach ($candidate in 'python3', 'python', 'py') {
-        $cmd = Get-Command $candidate -ErrorAction SilentlyContinue
-        if ($cmd) {
-            return $cmd.Path
-        }
-    }
-    return $null
+    return "C:\Python313\python.exe"
 }
 
 $PythonBin = Get-PythonExecutable
@@ -41,9 +34,9 @@ function Start-AgentPrewarmJob {
         [int]$DelayMs = 1000
     )
 
-    $existing = Get-Job -Name "CampaignXAgentPrewarm" -State "Running","NotStarted" -ErrorAction SilentlyContinue
+    $existing = Get-Job -Name "CampaignXAgentPrewarm" -ErrorAction SilentlyContinue
     if ($existing) {
-        $existing | Stop-Job -Force -ErrorAction SilentlyContinue
+        $existing | Stop-Job -ErrorAction SilentlyContinue
         $existing | Remove-Job -Force -ErrorAction SilentlyContinue
     }
 

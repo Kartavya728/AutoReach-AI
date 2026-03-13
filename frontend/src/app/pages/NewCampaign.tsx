@@ -30,8 +30,8 @@ import type {
 } from "../../lib/types";
 
 const DEFAULT_BRIEF =
-  "Run email campaign for launching XDeposit, a flagship term deposit product from SuperBFSI, that gives 1 percentage point higher returns than its competitors. Announce an additional 0.25 percentage point higher returns for female senior citizens. Optimise for open rate and click rate. Do not skip emails to customers marked inactive. Include the call to action: https://superbfsi.com/xdeposit/explore/";
-const DEFAULT_AUTO_OPTIMIZATION_ROUNDS = 2;
+  "Run email campaign for launching XDeposit, a flagship term deposit product from SuperBFSI, that gives 1 percentage point higher returns than its competitors. Announce an additional 0.25 percentage point higher returns for female senior citizens. Optimise for open rate and click rate. Do not skip emails to customers marked inactive.";
+const DEFAULT_CTA_LINK = "https://superbfsi.com/xdeposit/explore/";
 const MAX_INTERACTIVE_OPTIMIZATION_ROUNDS = 10;
 
 type RunPhase = "idle" | "running" | "paused" | "complete" | "error";
@@ -68,6 +68,30 @@ function formatCount(value?: number | null) {
   return (Number(value ?? 0) || 0).toLocaleString();
 }
 
+function isValidUrl(value: string) {
+  try {
+    const url = new URL(value.trim());
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function buildPromptWithLink(prompt: string, ctaLink: string) {
+  const cleanPrompt = prompt.trim();
+  const cleanLink = ctaLink.trim();
+  return `${cleanPrompt}\n\nRequired CTA Link: ${cleanLink}`;
+}
+
+function ensureDraftContainsLink(body: string, ctaLink: string) {
+  const cleanBody = body.trim();
+  const cleanLink = ctaLink.trim();
+  if (!cleanLink || cleanBody.includes(cleanLink)) {
+    return cleanBody;
+  }
+  return `${cleanBody}\n\nExplore now: ${cleanLink}`.trim();
+}
+
 function toSegmentCardsFromResult(result: AgentRunResult | null): AgentSegmentCard[] {
   if (!result) return [];
   return result.segments.map((segment, index) => ({
@@ -78,6 +102,7 @@ function toSegmentCardsFromResult(result: AgentRunResult | null): AgentSegmentCa
     tone: segment.tone,
     focus: segment.focus,
     tier: index === 0 ? "Priority" : "Active",
+    approved: segment.approved ?? true,
   }));
 }
 
@@ -91,6 +116,8 @@ function toDraftCardsFromResult(result: AgentRunResult | null): AgentDraftCard[]
     body: draft.body,
     tone: draft.tone,
     tags: draft.tags,
+    ctaLink: draft.ctaLink ?? result.ctaLink,
+    approved: true,
   }));
 }
 
@@ -114,6 +141,52 @@ function TypingDots() {
   );
 }
 
+function AnimatedMessage({
+  text,
+  onComplete,
+  onUpdate,
+}: {
+  text: string;
+  onComplete: () => void;
+  onUpdate?: () => void;
+}) {
+  const [displayedText, setDisplayedText] = useState("");
+  const hasCompleted = useRef(false);
+  const onCompleteRef = useRef(onComplete);
+  const onUpdateRef = useRef(onUpdate);
+
+  useEffect(() => {
+    onCompleteRef.current = onComplete;
+  }, [onComplete]);
+
+  useEffect(() => {
+    onUpdateRef.current = onUpdate;
+  }, [onUpdate]);
+
+  useEffect(() => {
+    let index = 0;
+    
+    // Quick typing effect
+    const interval = setInterval(() => {
+      index += 1; // reveal 1 char at a time for slower speed
+      setDisplayedText(text.slice(0, index));
+      onUpdateRef.current?.();
+      
+      if (index >= text.length) {
+        clearInterval(interval);
+        if (!hasCompleted.current) {
+          hasCompleted.current = true;
+          onCompleteRef.current();
+        }
+      }
+    }, 15);
+
+    return () => clearInterval(interval);
+  }, [text]);
+
+  return <>{displayedText}</>;
+}
+
 export default function NewCampaign() {
   const router = useRouter();
   const chatRef = useRef<HTMLDivElement>(null);
@@ -121,6 +194,7 @@ export default function NewCampaign() {
   const latestThinkingRef = useRef<AgentThinkingStep | null>(null);
 
   const [brief, setBrief] = useState("");
+  const [ctaLink, setCtaLink] = useState("");
   const [phase, setPhase] = useState<RunPhase>("idle");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [pendingPause, setPendingPause] = useState<AgentPausePayload | null>(null);
@@ -132,10 +206,47 @@ export default function NewCampaign() {
   const [roundHistory, setRoundHistory] = useState<AgentRoundComplete[]>([]);
   const [result, setResult] = useState<AgentRunResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [approvalError, setApprovalError] = useState<string | null>(null);
   const [latestPrompt, setLatestPrompt] = useState("");
+  const [latestCtaLink, setLatestCtaLink] = useState("");
+  const [completedMessageIds, setCompletedMessageIds] = useState<Set<string>>(new Set());
+  const [baselineMetrics, setBaselineMetrics] = useState({ sent: 0, opened: 0, clicked: 0 });
+  const baselineMetricsRef = useRef({ sent: 0, opened: 0, clicked: 0 });
+  const [segmentApprovalStatus, setSegmentApprovalStatus] = useState<Record<string, boolean>>({});
+  const [draftApprovalStatus, setDraftApprovalStatus] = useState<Record<string, boolean>>({});
+
+  const thinkingMessages = useMemo(() => [
+    "Agent thinking",
+    "Revising prompt",
+    "Reviewing tool list",
+    "Analyzing context",
+    "Formulating plan"
+  ], []);
+  const [thinkingMsgIndex, setThinkingMsgIndex] = useState(0);
+
+  useEffect(() => {
+    if (phase !== "running") {
+      setThinkingMsgIndex(0);
+      return;
+    }
+    const interval = setInterval(() => {
+      setThinkingMsgIndex((prev) => (prev + 1) % thinkingMessages.length);
+    }, 8500);
+    return () => clearInterval(interval);
+  }, [phase, thinkingMessages]);
 
   const hasConversation = messages.length > 0 || phase !== "idle";
-  const canStart = brief.trim().length > 0 && phase !== "running" && phase !== "paused";
+  const canStart =
+    brief.trim().length > 0 &&
+    isValidUrl(ctaLink) &&
+    phase !== "running" &&
+    phase !== "paused";
+
+  const triggerScroll = useCallback(() => {
+    const el = chatRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, []);
 
   useEffect(() => {
     preloadAgentStream().catch(() => {
@@ -144,12 +255,8 @@ export default function NewCampaign() {
   }, []);
 
   useEffect(() => {
-    const el = chatRef.current;
-    if (!el) return;
-    requestAnimationFrame(() => {
-      el.scrollTop = el.scrollHeight;
-    });
-  }, [messages, pendingPause, editingDrafts]);
+    triggerScroll();
+  }, [messages, pendingPause, editingDrafts, triggerScroll]);
 
   const pushMessage = useCallback((message: Omit<ChatMessage, "id" | "timestamp">) => {
     setMessages((current) => [
@@ -162,7 +269,7 @@ export default function NewCampaign() {
     ]);
   }, []);
 
-  const resetRunState = useCallback(() => {
+  const resetRunState = useCallback((isOptimization = false) => {
     pauseResponderRef.current = null;
     latestThinkingRef.current = null;
     setPendingPause(null);
@@ -170,7 +277,28 @@ export default function NewCampaign() {
     setDraftCards([]);
     setEditingDrafts(false);
     setEditedDrafts([]);
-    setLatestMetrics(null);
+    setApprovalError(null);
+    setSegmentApprovalStatus({});
+    setDraftApprovalStatus({});
+    
+    setLatestMetrics((currentMetrics) => {
+      if (isOptimization) {
+        // When optimization starts, currentMetrics is whatever the last round finished at.
+        const newBaseline = {
+          sent: Math.max(baselineMetricsRef.current.sent, currentMetrics?.sent || 0),
+          opened: baselineMetricsRef.current.opened + (currentMetrics?.opened || 0),
+          clicked: baselineMetricsRef.current.clicked + (currentMetrics?.clicked || 0),
+        };
+        baselineMetricsRef.current = newBaseline;
+        setBaselineMetrics(newBaseline);
+      } else {
+        setCompletedMessageIds(new Set());
+        baselineMetricsRef.current = { sent: 0, opened: 0, clicked: 0 };
+        setBaselineMetrics({ sent: 0, opened: 0, clicked: 0 });
+      }
+      return null;
+    });
+
     setRoundHistory([]);
     setResult(null);
     setError(null);
@@ -184,12 +312,14 @@ export default function NewCampaign() {
     setPendingPause(null);
     setEditingDrafts(false);
     setEditedDrafts([]);
+    setApprovalError(null);
     setPhase("running");
     responder(response);
   }, []);
 
   const handleApprove = useCallback(() => {
     if (!pendingPause) return;
+    const effectiveCtaLink = pendingPause.ctaLink || latestCtaLink || ctaLink;
 
     if (pendingPause.pauseType === "next_round") {
       submitPauseResponse({ continueOptimization: true });
@@ -197,22 +327,51 @@ export default function NewCampaign() {
       return;
     }
 
-    if (pendingPause.pauseType === "content_approval" && editingDrafts && editedDrafts.length > 0) {
+    if (pendingPause.pauseType === "segment_approval") {
+      const segmentApprovals = segmentCards.map((segment) => ({
+        segmentId: segment.segmentId,
+        approved: segmentApprovalStatus[segment.segmentId] ?? true,
+      }));
+      submitPauseResponse({
+        approved: segmentApprovals.some((item) => item.approved),
+        segmentApprovals,
+      });
+      pushMessage({ role: "user", text: "Submitted category approvals." });
+      return;
+    }
+
+    if (pendingPause.pauseType === "content_approval") {
+      const sourceDrafts = editingDrafts ? editedDrafts : draftCards;
+      const variantApprovals = sourceDrafts.map((draft) => ({
+        segmentId: draft.segmentId,
+        approved: draftApprovalStatus[draft.segmentId] ?? true,
+        subject: draft.subject,
+        body: ensureDraftContainsLink(draft.body, effectiveCtaLink),
+      }));
+
+      const approvedDrafts = variantApprovals.filter((item) => item.approved);
+      if (approvedDrafts.length === 0) {
+        setApprovalError("Approve at least one email draft to continue.");
+        return;
+      }
+
+      const hasMissingLink = approvedDrafts.some((item) => !item.body.includes(effectiveCtaLink));
+      if (effectiveCtaLink && hasMissingLink) {
+        setApprovalError("Every approved email must contain the required CTA link.");
+        return;
+      }
+
       submitPauseResponse({
         approved: true,
-        editedVariants: editedDrafts.map((draft) => ({
-          segmentId: draft.segmentId,
-          subject: draft.subject,
-          body: draft.body,
-        })),
+        variantApprovals,
       });
-      pushMessage({ role: "user", text: "Approved with edits." });
+      pushMessage({ role: "user", text: editingDrafts ? "Approved email drafts with edits." : "Approved selected email drafts." });
       return;
     }
 
     submitPauseResponse({ approved: true });
     pushMessage({ role: "user", text: "Approved." });
-  }, [editedDrafts, editingDrafts, pendingPause, pushMessage, submitPauseResponse]);
+  }, [ctaLink, draftApprovalStatus, draftCards, editedDrafts, editingDrafts, latestCtaLink, pendingPause, pushMessage, segmentApprovalStatus, segmentCards, submitPauseResponse]);
 
   const handleReject = useCallback(() => {
     if (!pendingPause) return;
@@ -245,20 +404,22 @@ export default function NewCampaign() {
     });
   }, []);
 
+  const toggleSegmentApproval = useCallback((segmentId: string, approved: boolean) => {
+    setSegmentApprovalStatus((current) => ({ ...current, [segmentId]: approved }));
+  }, []);
+
+  const toggleDraftApproval = useCallback((segmentId: string, approved: boolean) => {
+    setDraftApprovalStatus((current) => ({ ...current, [segmentId]: approved }));
+  }, []);
+
   const runAgent = useCallback(async (prompt: string, mode: RunMode) => {
     setPhase("running");
 
     try {
       const finalResult = await streamCampaignAgent(prompt, {
-        rounds:
-          mode === "initial"
-            ? DEFAULT_AUTO_OPTIMIZATION_ROUNDS
-            : MAX_INTERACTIVE_OPTIMIZATION_ROUNDS,
-        interactive: mode === "optimization",
+        rounds: MAX_INTERACTIVE_OPTIMIZATION_ROUNDS,
+        interactive: true,
         onThinking: (step) => {
-          if (mode === "initial" && (step.kind === "metrics" || step.kind === "summary" || step.kind === "decision")) {
-            return;
-          }
           if (sameThinkingStep(latestThinkingRef.current, step)) return;
           latestThinkingRef.current = step;
 
@@ -270,20 +431,26 @@ export default function NewCampaign() {
           });
         },
         onPause: (pause, respond) => {
-          if (mode === "optimization" && pause.pauseType !== "next_round") {
-            respond({ approved: true });
-            return;
-          }
-
           pauseResponderRef.current = respond;
           setPendingPause(pause);
           setPhase("paused");
+          setApprovalError(null);
 
           if (pause.segments && pause.segments.length > 0) {
             setSegmentCards(pause.segments);
+            setSegmentApprovalStatus(
+              Object.fromEntries(
+                pause.segments.map((segment) => [segment.segmentId, segment.approved ?? true])
+              )
+            );
           }
           if (pause.variants && pause.variants.length > 0) {
             setDraftCards(pause.variants);
+            setDraftApprovalStatus(
+              Object.fromEntries(
+                pause.variants.map((draft) => [draft.segmentId, draft.approved ?? true])
+              )
+            );
           }
 
           pushMessage({
@@ -305,10 +472,17 @@ export default function NewCampaign() {
             }
 
             if (mode === "optimization") {
+              const b = baselineMetricsRef.current;
+              const totalSent = Math.max(b.sent, metrics.sent);
+              const totalOpened = b.opened + metrics.uniqueOpened;
+              const totalClicked = b.clicked + metrics.uniqueClicked;
+              const aggOpenRate = totalSent > 0 ? (totalOpened / totalSent) * 100 : 0;
+              const aggClickRate = totalSent > 0 ? (totalClicked / totalSent) * 100 : 0;
+
               pushMessage({
                 role: "system",
                 kind: "metrics",
-                text: `Round ${metrics.round}: sent ${formatCount(metrics.sent)}, open ${formatPercent(metrics.openRate)}, click ${formatPercent(metrics.clickRate)}.`,
+                text: `Round ${metrics.round}: sent ${formatCount(totalSent)}, open ${formatPercent(aggOpenRate)}, click ${formatPercent(aggClickRate)}.`,
               });
             }
             return metrics;
@@ -325,10 +499,22 @@ export default function NewCampaign() {
           });
 
           if (mode === "optimization") {
+            const b = baselineMetricsRef.current;
+            const metrics = round.summary;
+            const openNum = metrics.uniqueOpened ?? Math.floor(metrics.audience * (metrics.openRate / 100));
+            const clickNum = metrics.uniqueClicked ?? Math.floor(metrics.audience * (metrics.clickRate / 100));
+            
+            // `metrics.audience` is the final sum for just that current round that finished
+            const totalSent = Math.max(b.sent, metrics.audience);
+            const totalOpened = b.opened + openNum;
+            const totalClicked = b.clicked + clickNum;
+            const aggOpenRate = totalSent > 0 ? (totalOpened / totalSent) * 100 : 0;
+            const aggClickRate = totalSent > 0 ? (totalClicked / totalSent) * 100 : 0;
+
             pushMessage({
               role: "system",
               kind: "summary",
-              text: `Round ${round.round} complete. Open ${formatPercent(round.summary.openRate)} and click ${formatPercent(round.summary.clickRate)}.`,
+              text: `Round ${round.round} complete. Cumulative open ${formatPercent(aggOpenRate)} and click ${formatPercent(aggClickRate)}.`,
             });
           }
         },
@@ -367,28 +553,32 @@ export default function NewCampaign() {
 
   const handleStart = useCallback(async () => {
     const prompt = brief.trim();
-    if (!prompt || !canStart) return;
+    const link = ctaLink.trim();
+    if (!prompt || !link || !canStart) return;
 
-    resetRunState();
+    resetRunState(false);
     setMessages([]);
     setLatestPrompt(prompt);
-    pushMessage({ role: "user", text: prompt });
-    await runAgent(prompt, "initial");
-  }, [brief, canStart, pushMessage, resetRunState, runAgent]);
+    setLatestCtaLink(link);
+    const finalPrompt = buildPromptWithLink(prompt, link);
+    pushMessage({ role: "user", text: `${prompt}\n\nCTA link: ${link}` });
+    await runAgent(finalPrompt, "initial");
+  }, [brief, canStart, ctaLink, pushMessage, resetRunState, runAgent]);
 
   const handlePerformOptimizationRound = useCallback(async () => {
     const prompt = latestPrompt || brief.trim();
+    const link = latestCtaLink || ctaLink.trim();
     if (!prompt || phase === "running" || phase === "paused") {
       return;
     }
 
-    resetRunState();
+    resetRunState(true);
     pushMessage({
       role: "user",
       text: "Perform an optimization round and ask me before every next round.",
     });
-    await runAgent(prompt, "optimization");
-  }, [brief, latestPrompt, phase, pushMessage, resetRunState, runAgent]);
+    await runAgent(buildPromptWithLink(prompt, link), "optimization");
+  }, [brief, ctaLink, latestCtaLink, latestPrompt, phase, pushMessage, resetRunState, runAgent]);
 
   const statusText = useMemo(() => {
     if (phase === "running") return "Agent is working";
@@ -399,6 +589,28 @@ export default function NewCampaign() {
   }, [phase]);
 
   const approvalDrafts = editingDrafts ? editedDrafts : draftCards;
+  
+  let activeSent = latestMetrics?.sent || 0;
+  let activeTotalOpened = latestMetrics?.opened || 0;
+  let activeTotalClicked = latestMetrics?.clicked || 0;
+  let activeUniqueOpened = latestMetrics?.uniqueOpened || latestMetrics?.opened || 0;
+  let activeUniqueClicked = latestMetrics?.uniqueClicked || latestMetrics?.clicked || 0;
+
+  // Between rounds, or at the end of the very first round, if latestMetrics isn't updating anymore
+  // and we have a final result payload, fallback to calculating it off there so the UI doesn't zero out.
+  if (!latestMetrics && result) {
+    activeSent = result.customerCount;
+    activeTotalOpened = result.finalTotalOpened ?? result.uniqueTotalOpened ?? Math.floor(result.customerCount * (result.finalOpenRate / 100));
+    activeTotalClicked = result.finalTotalClicked ?? result.uniqueTotalClicked ?? Math.floor(result.customerCount * (result.finalClickRate / 100));
+    activeUniqueOpened = result.uniqueTotalOpened ?? result.finalTotalOpened ?? Math.floor(result.customerCount * (result.finalOpenRate / 100));
+    activeUniqueClicked = result.uniqueTotalClicked ?? result.finalTotalClicked ?? Math.floor(result.customerCount * (result.finalClickRate / 100));
+  }
+  
+  const totalSent = Math.max(baselineMetrics.sent, activeSent);
+  const totalOpened = baselineMetrics.opened + activeTotalOpened;
+  const totalClicked = baselineMetrics.clicked + activeTotalClicked;
+  const aggregateOpenRate = totalSent > 0 ? (totalOpened / totalSent) * 100 : 0;
+  const aggregateClickRate = totalSent > 0 ? (totalClicked / totalSent) * 100 : 0;
 
   return (
     <div className="min-h-screen pt-20 pb-10 px-4" style={{ background: "linear-gradient(180deg, #070f19 0%, #0b1624 100%)" }}>
@@ -450,7 +662,7 @@ export default function NewCampaign() {
                   Start with one prompt
                 </h1>
                 <p className="text-slate-300 mt-2" style={{ fontSize: "0.95rem" }}>
-                  Enter your campaign brief and watch the agent thinking and approvals in chat.
+                  Enter your campaign brief, add the required CTA link, and review approvals in chat.
                 </p>
               </div>
 
@@ -463,9 +675,27 @@ export default function NewCampaign() {
                   placeholder="Describe the campaign goal, audience, constraints, and CTA."
                   style={{ fontSize: "0.94rem", lineHeight: 1.65 }}
                 />
+                <div className="px-3 pb-2">
+                  <div className="text-slate-400 mb-1" style={{ fontSize: "0.72rem" }}>Required CTA link</div>
+                  <input
+                    value={ctaLink}
+                    onChange={(event) => setCtaLink(event.target.value)}
+                    className="w-full bg-slate-900/70 text-slate-100 placeholder:text-slate-500 outline-none px-3 py-2 rounded-xl"
+                    placeholder="https://example.com/offer"
+                    style={{ fontSize: "0.86rem", border: "1px solid rgba(148,163,184,0.24)" }}
+                  />
+                  {ctaLink.trim().length > 0 && !isValidUrl(ctaLink) && (
+                    <div className="text-rose-300 mt-1" style={{ fontSize: "0.72rem" }}>
+                      Enter a valid `http` or `https` link.
+                    </div>
+                  )}
+                </div>
                 <div className="flex justify-between items-center px-2 pb-1">
                   <button
-                    onClick={() => setBrief(DEFAULT_BRIEF)}
+                    onClick={() => {
+                      setBrief(DEFAULT_BRIEF);
+                      setCtaLink(DEFAULT_CTA_LINK);
+                    }}
                     className="text-slate-400 hover:text-white transition-colors"
                     style={{ fontSize: "0.78rem" }}
                   >
@@ -498,8 +728,16 @@ export default function NewCampaign() {
             >
               <div className="space-y-4">
                 <AnimatePresence initial={false}>
-                  {messages.map((message) => {
+                  {messages.map((message, index) => {
                     const isUser = message.role === "user";
+                    const isSystem = message.role === "system";
+                    const isMessageComplete = (msg: ChatMessage) => msg.role === "user" || completedMessageIds.has(msg.id);
+                    const previousMessageComplete = index === 0 || isMessageComplete(messages[index - 1]);
+                    const shouldStartRevealing = isUser || previousMessageComplete;
+                    const isFullyRevealed = isUser || completedMessageIds.has(message.id);
+
+                    if (!shouldStartRevealing) return null;
+
                     return (
                       <motion.div
                         key={message.id}
@@ -523,7 +761,7 @@ export default function NewCampaign() {
                               {isUser ? <User className="w-3.5 h-3.5" /> : <Bot className="w-3.5 h-3.5" />}
                               {isUser ? "You" : message.agent || "Agent"}
                             </span>
-                            {!isUser && (
+                            {!isUser && !isSystem && (
                               <span
                                 className="px-2 py-0.5 rounded-full"
                                 style={{
@@ -538,7 +776,15 @@ export default function NewCampaign() {
                             )}
                           </div>
                           <p className="text-slate-100 whitespace-pre-wrap" style={{ fontSize: "0.87rem", lineHeight: 1.65 }}>
-                            {message.text}
+                            {isFullyRevealed ? (
+                               message.text
+                            ) : (
+                               <AnimatedMessage 
+                                 text={message.text} 
+                                 onUpdate={triggerScroll}
+                                 onComplete={() => setCompletedMessageIds((current) => new Set(current).add(message.id))}
+                               />
+                            )}
                           </p>
                         </div>
                       </motion.div>
@@ -546,7 +792,7 @@ export default function NewCampaign() {
                   })}
                 </AnimatePresence>
 
-                {phase === "running" && (
+                {phase === "running" && (messages.length === 0 || messages[messages.length - 1].role === "user" || completedMessageIds.has(messages[messages.length - 1].id)) && (
                   <motion.div
                     initial={{ opacity: 0, y: 8 }}
                     animate={{ opacity: 1, y: 0 }}
@@ -555,7 +801,7 @@ export default function NewCampaign() {
                     <div className="rounded-2xl px-4 py-3" style={{ background: "rgba(15,23,42,0.82)", border: "1px solid rgba(148,163,184,0.2)" }}>
                       <div className="flex items-center gap-2 text-slate-200" style={{ fontSize: "0.78rem" }}>
                         <Bot className="w-3.5 h-3.5" />
-                        Agent thinking
+                        {thinkingMessages[thinkingMsgIndex]}
                         <TypingDots />
                       </div>
                     </div>
@@ -590,6 +836,30 @@ export default function NewCampaign() {
                               <div className="text-slate-300" style={{ fontSize: "0.72rem" }}>{formatCount(segment.size)} customers</div>
                             </div>
                             <p className="text-slate-300 mt-1" style={{ fontSize: "0.74rem" }}>{segment.criteria || segment.focus || "Segment details available."}</p>
+                            <div className="flex gap-2 mt-3">
+                              <button
+                                onClick={() => toggleSegmentApproval(segment.segmentId, true)}
+                                className="px-2.5 py-1 rounded-lg text-xs"
+                                style={{
+                                  background: (segmentApprovalStatus[segment.segmentId] ?? true) ? "rgba(22,163,74,0.22)" : "rgba(15,23,42,0.8)",
+                                  border: "1px solid rgba(34,197,94,0.35)",
+                                  color: "#dcfce7",
+                                }}
+                              >
+                                Approve
+                              </button>
+                              <button
+                                onClick={() => toggleSegmentApproval(segment.segmentId, false)}
+                                className="px-2.5 py-1 rounded-lg text-xs"
+                                style={{
+                                  background: !(segmentApprovalStatus[segment.segmentId] ?? true) ? "rgba(220,38,38,0.22)" : "rgba(15,23,42,0.8)",
+                                  border: "1px solid rgba(248,113,113,0.35)",
+                                  color: "#fee2e2",
+                                }}
+                              >
+                                Reject
+                              </button>
+                            </div>
                           </div>
                         ))}
                       </div>
@@ -627,8 +897,41 @@ export default function NewCampaign() {
                                 <p className="text-slate-300 mt-1 line-clamp-4" style={{ fontSize: "0.75rem", lineHeight: 1.55 }}>{draft.body}</p>
                               )}
                             </div>
+                            <div className="mt-2 text-sky-200" style={{ fontSize: "0.7rem" }}>
+                              CTA link: {pendingPause.ctaLink || latestCtaLink || ctaLink}
+                            </div>
+                            <div className="flex gap-2 mt-3">
+                              <button
+                                onClick={() => toggleDraftApproval(draft.segmentId, true)}
+                                className="px-2.5 py-1 rounded-lg text-xs"
+                                style={{
+                                  background: (draftApprovalStatus[draft.segmentId] ?? true) ? "rgba(22,163,74,0.22)" : "rgba(15,23,42,0.8)",
+                                  border: "1px solid rgba(34,197,94,0.35)",
+                                  color: "#dcfce7",
+                                }}
+                              >
+                                Approve
+                              </button>
+                              <button
+                                onClick={() => toggleDraftApproval(draft.segmentId, false)}
+                                className="px-2.5 py-1 rounded-lg text-xs"
+                                style={{
+                                  background: !(draftApprovalStatus[draft.segmentId] ?? true) ? "rgba(220,38,38,0.22)" : "rgba(15,23,42,0.8)",
+                                  border: "1px solid rgba(248,113,113,0.35)",
+                                  color: "#fee2e2",
+                                }}
+                              >
+                                Reject
+                              </button>
+                            </div>
                           </div>
                         ))}
+                      </div>
+                    )}
+
+                    {approvalError && (
+                      <div className="mt-3 text-rose-200" style={{ fontSize: "0.76rem" }}>
+                        {approvalError}
                       </div>
                     )}
 
@@ -689,18 +992,34 @@ export default function NewCampaign() {
             </div>
 
             {(latestMetrics || roundHistory.length > 0 || (phase === "complete" && result)) && (
-              <div className="grid md:grid-cols-3 gap-3 mt-4">
+              <div className="grid md:grid-cols-3 xl:grid-cols-4 gap-3 mt-4">
                 <div className="rounded-2xl p-4" style={{ background: "rgba(15,23,42,0.75)", border: "1px solid rgba(148,163,184,0.2)" }}>
-                  <div className="text-slate-400" style={{ fontSize: "0.72rem" }}>Latest Sent</div>
-                  <div className="text-white mt-1" style={{ fontSize: "1.3rem", fontWeight: 700 }}>{formatCount(latestMetrics?.sent || 0)}</div>
+                  <div className="text-slate-400" style={{ fontSize: "0.72rem" }}>People Sent</div>
+                  <div className="text-white mt-1" style={{ fontSize: "1.3rem", fontWeight: 700 }}>{formatCount(totalSent || 0)}</div>
                 </div>
                 <div className="rounded-2xl p-4" style={{ background: "rgba(15,23,42,0.75)", border: "1px solid rgba(148,163,184,0.2)" }}>
                   <div className="text-slate-400" style={{ fontSize: "0.72rem" }}>Open Rate</div>
-                  <div className="text-white mt-1" style={{ fontSize: "1.3rem", fontWeight: 700 }}>{formatPercent(result?.finalOpenRate ?? latestMetrics?.openRate ?? 0)}</div>
+                  <div className="text-white mt-1" style={{ fontSize: "1.3rem", fontWeight: 700 }}>{formatPercent(aggregateOpenRate)}</div>
                 </div>
                 <div className="rounded-2xl p-4" style={{ background: "rgba(15,23,42,0.75)", border: "1px solid rgba(148,163,184,0.2)" }}>
                   <div className="text-slate-400" style={{ fontSize: "0.72rem" }}>Click Rate</div>
-                  <div className="text-white mt-1" style={{ fontSize: "1.3rem", fontWeight: 700 }}>{formatPercent(result?.finalClickRate ?? latestMetrics?.clickRate ?? 0)}</div>
+                  <div className="text-white mt-1" style={{ fontSize: "1.3rem", fontWeight: 700 }}>{formatPercent(aggregateClickRate)}</div>
+                </div>
+                <div className="rounded-2xl p-4" style={{ background: "rgba(15,23,42,0.75)", border: "1px solid rgba(148,163,184,0.2)" }}>
+                  <div className="text-slate-400" style={{ fontSize: "0.72rem" }}>Total Opens</div>
+                  <div className="text-white mt-1" style={{ fontSize: "1.3rem", fontWeight: 700 }}>{formatCount(totalOpened)}</div>
+                </div>
+                <div className="rounded-2xl p-4" style={{ background: "rgba(15,23,42,0.75)", border: "1px solid rgba(148,163,184,0.2)" }}>
+                  <div className="text-slate-400" style={{ fontSize: "0.72rem" }}>Total Clicks</div>
+                  <div className="text-white mt-1" style={{ fontSize: "1.3rem", fontWeight: 700 }}>{formatCount(totalClicked)}</div>
+                </div>
+                <div className="rounded-2xl p-4" style={{ background: "rgba(15,23,42,0.75)", border: "1px solid rgba(148,163,184,0.2)" }}>
+                  <div className="text-slate-400" style={{ fontSize: "0.72rem" }}>Unique Opens</div>
+                  <div className="text-white mt-1" style={{ fontSize: "1.3rem", fontWeight: 700 }}>{formatCount(activeUniqueOpened)}</div>
+                </div>
+                <div className="rounded-2xl p-4" style={{ background: "rgba(15,23,42,0.75)", border: "1px solid rgba(148,163,184,0.2)" }}>
+                  <div className="text-slate-400" style={{ fontSize: "0.72rem" }}>Unique Clicks</div>
+                  <div className="text-white mt-1" style={{ fontSize: "1.3rem", fontWeight: 700 }}>{formatCount(activeUniqueClicked)}</div>
                 </div>
               </div>
             )}
@@ -742,9 +1061,19 @@ export default function NewCampaign() {
                   }
                 }}
               />
+              <input
+                value={ctaLink}
+                onChange={(event) => setCtaLink(event.target.value)}
+                className="w-full bg-transparent text-slate-100 placeholder:text-slate-500 outline-none px-2 py-2"
+                placeholder="Required CTA link"
+                style={{ fontSize: "0.86rem", lineHeight: 1.5, borderTop: "1px solid rgba(148,163,184,0.14)" }}
+              />
               <div className="flex justify-between items-center pt-1 px-1">
                 <button
-                  onClick={() => setBrief(DEFAULT_BRIEF)}
+                  onClick={() => {
+                    setBrief(DEFAULT_BRIEF);
+                    setCtaLink(DEFAULT_CTA_LINK);
+                  }}
                   className="text-slate-400 hover:text-white transition-colors"
                   style={{ fontSize: "0.76rem" }}
                 >

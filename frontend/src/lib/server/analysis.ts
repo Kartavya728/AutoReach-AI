@@ -15,12 +15,88 @@ function round(value: number, decimals = 2): number {
   return parseFloat(value.toFixed(decimals));
 }
 
+function toNumber(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function clampCount(value: number, max: number): number {
+  return Math.max(0, Math.min(max, Math.round(value)));
+}
+
+function isPositiveFlag(value: string | null | undefined): boolean {
+  return String(value ?? "").trim().toUpperCase() === "Y";
+}
+
 /**
  * Deterministic hash for a campaign ID — produces a stable integer seed so that
  * the same campaign always shows the same simulated variance.
  */
 function stableHash(id: string): number {
   return id.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0);
+}
+
+type AnalysisRecord = CampaignReportRecord & {
+  _hour: number;
+  _rowKey: string;
+};
+
+function getRecordHour(record: CampaignReportRecord): number {
+  let hour = 10;
+  try {
+    const timePart = record.send_time || record.invokation_time || "";
+    const match = timePart.match(/(\d{1,2}):/);
+    if (match) {
+      hour = parseInt(match[1], 10);
+    }
+  } catch {
+    hour = 10;
+  }
+  return hour;
+}
+
+function rankRecord(record: AnalysisRecord, seed: number): number {
+  return stableHash(
+    `${record.customer_id}:${record.send_time}:${record.invokation_time}:${record._rowKey}:${seed}`
+  );
+}
+
+function assignSyntheticEngagement(
+  records: AnalysisRecord[],
+  totalOpened: number,
+  totalClicked: number,
+  seed: number
+): AnalysisRecord[] {
+  if (records.length === 0) {
+    return records;
+  }
+
+  const openCount = clampCount(totalOpened, records.length);
+  const clickCount = clampCount(totalClicked, openCount);
+
+  const openCandidates = [...records].sort(
+    (a, b) => rankRecord(a, seed) - rankRecord(b, seed)
+  );
+  const openedKeys = new Set(
+    openCandidates.slice(0, openCount).map((record) => record._rowKey)
+  );
+
+  const clickCandidates = openCandidates
+    .slice(0, openCount)
+    .sort((a, b) => rankRecord(a, seed + 7919) - rankRecord(b, seed + 7919));
+  const clickedKeys = new Set(
+    clickCandidates.slice(0, clickCount).map((record) => record._rowKey)
+  );
+
+  return records.map((record) => {
+    const opened = openedKeys.has(record._rowKey);
+    const clicked = clickedKeys.has(record._rowKey);
+    return {
+      ...record,
+      EO: opened ? "Y" : "N",
+      EC: clicked ? "Y" : "N",
+    };
+  });
 }
 
 export function computeAnalysisFromReport(
@@ -30,42 +106,69 @@ export function computeAnalysisFromReport(
   customers?: CustomerCRMRecord[]
 ): ComputedAnalysisReport {
   const totalSent = records.length;
+  if (totalSent === 0) {
+    return {
+      campaignId,
+      totalSent: 0,
+      totalOpened: 0,
+      totalClicked: 0,
+      openRate: 0,
+      clickRate: 0,
+      timeSeriesData: [],
+      segmentPerformance: buildSegmentPerformance(customers, 0, 0, 0, stableHash(campaignId)),
+      regionPerformance: buildRegionPerformance(customers, 0, 0, stableHash(campaignId)),
+      genderPerformance: buildGenderPerformance(customers, 0, 0, stableHash(campaignId)),
+      deviceBreakdown: buildDeviceBreakdown(),
+      hourlyBestPerformance: "N/A",
+      topPerformingSegment: "N/A",
+    };
+  }
 
-  // ── Simulated engagement totals ──
-  // The sandbox API always returns EO=N / EC=N for every record.
-  // We simulate realistic, improving metrics:
-  //   Base: ~52 % open, ~32 % click
-  //   Per optimization round: +3 % open, +1.5 % click
+  // ── Normalize engagement totals ──
+  // CampaignX often returns EO/EC as all "N" in sandbox mode, so we fall back
+  // to stored campaign metrics and then project those metrics back onto records.
   const hash = stableHash(campaignId);
-  const dbOpenRate = campaign?.open_rate || 0;
-  const dbClickRate = campaign?.click_rate || 0;
-  
-  const totalOpenedVal = records.filter(r => r.EO === 'Y').length;
-  const totalClickedVal = records.filter(r => r.EC === 'Y').length;
-  
-  const totalOpened = totalOpenedVal > 0 ? totalOpenedVal : Math.round(totalSent * (dbOpenRate/100));
-  const totalClicked = totalClickedVal > 0 ? totalClickedVal : Math.round(totalSent * (dbClickRate/100));
-  
-  const openRate = totalOpenedVal > 0 ? round((totalOpened / totalSent) * 100) : dbOpenRate;
-  const clickRate = totalClickedVal > 0 ? round((totalClicked / totalSent) * 100) : dbClickRate;
+  const dbOpenRate = Math.max(0, toNumber(campaign?.open_rate));
+  const dbClickRate = Math.max(0, toNumber(campaign?.click_rate));
+  const dbOpened = Math.max(0, toNumber(campaign?.total_opened));
+  const dbClicked = Math.max(0, toNumber(campaign?.total_clicked));
 
-  // ── Assign simulated EO / EC to individual records ──
-  let remainingOpens = totalOpened;
-  let remainingClicks = totalClicked;
-
-  const assignedRecords = records.map((r, i) => {
-    let hour = 10;
-    try {
-      const timePart = r.send_time || r.invokation_time || "";
-      const match = timePart.match(/(\d{1,2}):/);
-      if (match) {
-        hour = parseInt(match[1], 10);
-      }
-    } catch {
-      hour = 10;
-    }
-    return { ...r, _hour: hour };
+  const normalizedRecords: AnalysisRecord[] = records.map((record, index) => {
+    const clicked = isPositiveFlag(record.EC);
+    const opened = clicked || isPositiveFlag(record.EO);
+    return {
+      ...record,
+      EO: opened ? "Y" : "N",
+      EC: clicked ? "Y" : "N",
+      _hour: getRecordHour(record),
+      _rowKey: `${record.customer_id || "row"}-${index}`,
+    };
   });
+
+  const reportedOpened = normalizedRecords.filter((record) => record.EO === "Y").length;
+  const reportedClicked = normalizedRecords.filter((record) => record.EC === "Y").length;
+  const useStoredMetrics =
+    reportedOpened === 0 &&
+    reportedClicked === 0 &&
+    (dbOpened > 0 || dbClicked > 0 || dbOpenRate > 0 || dbClickRate > 0);
+
+  const fallbackOpened = dbOpened > 0 ? dbOpened : totalSent * (dbOpenRate / 100);
+  const fallbackClicked = dbClicked > 0 ? dbClicked : totalSent * (dbClickRate / 100);
+
+  const totalOpened = clampCount(
+    useStoredMetrics ? fallbackOpened : reportedOpened,
+    totalSent
+  );
+  const totalClicked = clampCount(
+    useStoredMetrics ? fallbackClicked : reportedClicked,
+    totalOpened
+  );
+  const openRate = totalSent > 0 ? round((totalOpened / totalSent) * 100) : 0;
+  const clickRate = totalSent > 0 ? round((totalClicked / totalSent) * 100) : 0;
+
+  const assignedRecords = useStoredMetrics
+    ? assignSyntheticEngagement(normalizedRecords, totalOpened, totalClicked, hash)
+    : normalizedRecords;
 
   // ── Time-series: group by hour ──
   const hourlyMap = new Map<number, { opens: number; clicks: number }>();

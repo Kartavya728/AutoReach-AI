@@ -136,6 +136,7 @@ function toVariant(input: unknown, fallbackLabel: string): GeneratedEmailVariant
     variant: String(safe.variant ?? fallbackLabel),
     tone: String(safe.tone ?? "professional"),
     tags,
+    ctaLink: safe.ctaLink ? String(safe.ctaLink) : safe.cta_link ? String(safe.cta_link) : undefined,
   };
 }
 
@@ -179,6 +180,7 @@ function toFinalPayload(raw: unknown, fallbackBrief: string) {
 
   return {
     brief: String(safe.brief ?? fallbackBrief),
+    ctaLink: String(safe.cta_link ?? safe.ctaLink ?? ""),
     strategy: String(safe.strategy ?? ""),
     strategyReasoning: String(safe.strategyReasoning ?? safe.strategy_reasoning ?? ""),
     targetCustomerIds,
@@ -194,6 +196,12 @@ function toFinalPayload(raw: unknown, fallbackBrief: string) {
         : [],
     finalOpenRate: Number(safe.final_open_rate ?? safe.finalOpenRate ?? 0) || 0,
     finalClickRate: Number(safe.final_click_rate ?? safe.finalClickRate ?? 0) || 0,
+    finalTotalOpened: Number(safe.final_total_opened ?? safe.finalTotalOpened ?? 0) || 0,
+    finalTotalClicked: Number(safe.final_total_clicked ?? safe.finalTotalClicked ?? 0) || 0,
+    uniqueTotalOpened: Number(safe.unique_total_opened ?? safe.uniqueTotalOpened ?? 0) || 0,
+    uniqueTotalClicked: Number(safe.unique_total_clicked ?? safe.uniqueTotalClicked ?? 0) || 0,
+    predictedFinalOpenRate: Number(safe.predicted_final_open_rate ?? safe.predictedFinalOpenRate ?? 0) || 0,
+    predictedFinalClickRate: Number(safe.predicted_final_click_rate ?? safe.predictedFinalClickRate ?? 0) || 0,
     rawResult: safe,
   };
 }
@@ -335,15 +343,22 @@ export async function POST(request: Request) {
                   target_segment: "all",
                   target_customer_ids: finalPayload.targetCustomerIds,
                   strategy_reasoning: finalPayload.strategyReasoning,
-                  json_output: {
-                    strategy: finalPayload.strategy,
-                    strategyReasoning: finalPayload.strategyReasoning,
-                    segments: finalPayload.segments,
-                    metricsProgression: finalPayload.metricsProgression,
-                    finalOpenRate: finalPayload.finalOpenRate,
-                    finalClickRate: finalPayload.finalClickRate,
-                    rawResult: finalPayload.rawResult,
-                  },
+    json_output: {
+      ctaLink: finalPayload.ctaLink,
+      strategy: finalPayload.strategy,
+      strategyReasoning: finalPayload.strategyReasoning,
+      segments: finalPayload.segments,
+      metricsProgression: finalPayload.metricsProgression,
+      finalOpenRate: finalPayload.finalOpenRate,
+      finalClickRate: finalPayload.finalClickRate,
+      finalTotalOpened: finalPayload.finalTotalOpened,
+      finalTotalClicked: finalPayload.finalTotalClicked,
+      uniqueTotalOpened: finalPayload.uniqueTotalOpened,
+      uniqueTotalClicked: finalPayload.uniqueTotalClicked,
+      predictedFinalOpenRate: finalPayload.predictedFinalOpenRate,
+      predictedFinalClickRate: finalPayload.predictedFinalClickRate,
+      rawResult: finalPayload.rawResult,
+    },
                   total_customers: finalPayload.customerCount,
                   temperature: 0.7,
                   use_emojis: true,

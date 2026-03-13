@@ -42,6 +42,7 @@ function toVariant(input: unknown, fallbackLabel: string): GeneratedEmailVariant
     variant: String(safe.variant ?? fallbackLabel),
     tone: String(safe.tone ?? "professional"),
     tags: Array.isArray(safe.tags) ? safe.tags.map((tag) => String(tag)) : [],
+    ctaLink: safe.ctaLink ? String(safe.ctaLink) : safe.cta_link ? String(safe.cta_link) : undefined,
   };
 }
 
@@ -85,6 +86,7 @@ function normalizeSegments(raw: unknown): AgentRunResult["segments"] {
       criteria: String(safe.criteria ?? ""),
       tone: String(safe.tone ?? ""),
       focus: String(safe.focus ?? ""),
+      approved: safe.approved == null ? undefined : Boolean(safe.approved),
     };
   });
 }
@@ -108,6 +110,12 @@ function normalizeMetricsProgression(raw: unknown): AgentRunResult["metricsProgr
       openRate: Number(safe.openRate ?? safe.open_rate ?? 0) || 0,
       clickRate: Number(safe.clickRate ?? safe.click_rate ?? 0) || 0,
       segments: Number(safe.segments ?? 0) || 0,
+      totalOpened: Number(safe.totalOpened ?? safe.total_opened ?? 0) || 0,
+      totalClicked: Number(safe.totalClicked ?? safe.total_clicked ?? 0) || 0,
+      uniqueOpened: Number(safe.uniqueOpened ?? safe.unique_opened ?? 0) || 0,
+      uniqueClicked: Number(safe.uniqueClicked ?? safe.unique_clicked ?? 0) || 0,
+      predictedOpenRate: Number(safe.predictedOpenRate ?? safe.predicted_open_rate ?? 0) || 0,
+      predictedClickRate: Number(safe.predictedClickRate ?? safe.predicted_click_rate ?? 0) || 0,
     };
   });
 }
@@ -125,6 +133,7 @@ function normalizeRunResult(raw: unknown): AgentRunResult {
 
   return {
     brief: String(safe.brief ?? ""),
+    ctaLink: safe.ctaLink ? String(safe.ctaLink) : safe.cta_link ? String(safe.cta_link) : undefined,
     strategy: String(safe.strategy ?? ""),
     strategyReasoning: String(safe.strategyReasoning ?? safe.strategy_reasoning ?? ""),
     contentVariants: normalizeVariants(safe),
@@ -135,6 +144,12 @@ function normalizeRunResult(raw: unknown): AgentRunResult {
     savedCampaignId: safe.savedCampaignId ? String(safe.savedCampaignId) : null,
     finalOpenRate: Number(safe.finalOpenRate ?? safe.final_open_rate ?? 0) || 0,
     finalClickRate: Number(safe.finalClickRate ?? safe.final_click_rate ?? 0) || 0,
+    finalTotalOpened: Number(safe.finalTotalOpened ?? safe.final_total_opened ?? 0) || 0,
+    finalTotalClicked: Number(safe.finalTotalClicked ?? safe.final_total_clicked ?? 0) || 0,
+    uniqueTotalOpened: Number(safe.uniqueTotalOpened ?? safe.unique_total_opened ?? 0) || 0,
+    uniqueTotalClicked: Number(safe.uniqueTotalClicked ?? safe.unique_total_clicked ?? 0) || 0,
+    predictedFinalOpenRate: Number(safe.predictedFinalOpenRate ?? safe.predicted_final_open_rate ?? 0) || 0,
+    predictedFinalClickRate: Number(safe.predictedFinalClickRate ?? safe.predicted_final_click_rate ?? 0) || 0,
     rawResult: safe.rawResult ?? safe,
   };
 }
@@ -323,6 +338,7 @@ export async function streamCampaignAgent(
           message: pauseData.message ? String(pauseData.message) : undefined,
           round: Number(pauseData.round ?? 0) || undefined,
           maxRounds: Number(pauseData.maxRounds ?? 0) || undefined,
+          ctaLink: pauseData.ctaLink ? String(pauseData.ctaLink) : pauseData.cta_link ? String(pauseData.cta_link) : undefined,
           segments: Array.isArray(pauseData.segments)
             ? (pauseData.segments as AgentPausePayload["segments"])
             : undefined,
@@ -334,6 +350,12 @@ export async function streamCampaignAgent(
                 audience: Number(pauseData.metrics.audience ?? 0) || undefined,
                 openRate: Number(pauseData.metrics.openRate ?? 0) || undefined,
                 clickRate: Number(pauseData.metrics.clickRate ?? 0) || undefined,
+                totalOpened: Number(pauseData.metrics.totalOpened ?? pauseData.metrics.total_opened ?? 0) || undefined,
+                totalClicked: Number(pauseData.metrics.totalClicked ?? pauseData.metrics.total_clicked ?? 0) || undefined,
+                uniqueOpened: Number(pauseData.metrics.uniqueOpened ?? pauseData.metrics.unique_opened ?? 0) || undefined,
+                uniqueClicked: Number(pauseData.metrics.uniqueClicked ?? pauseData.metrics.unique_clicked ?? 0) || undefined,
+                predictedOpenRate: Number(pauseData.metrics.predictedOpenRate ?? pauseData.metrics.predicted_open_rate ?? 0) || undefined,
+                predictedClickRate: Number(pauseData.metrics.predictedClickRate ?? pauseData.metrics.predicted_click_rate ?? 0) || undefined,
               }
             : undefined,
         };
@@ -358,6 +380,10 @@ export async function streamCampaignAgent(
           clicked: Number(liveData.clicked ?? 0) || 0,
           openRate: Number(liveData.openRate ?? 0) || 0,
           clickRate: Number(liveData.clickRate ?? 0) || 0,
+          uniqueOpened: Number(liveData.uniqueOpened ?? liveData.unique_opened ?? liveData.opened ?? 0) || 0,
+          uniqueClicked: Number(liveData.uniqueClicked ?? liveData.unique_clicked ?? liveData.clicked ?? 0) || 0,
+          predictedOpenRate: Number(liveData.predictedOpenRate ?? liveData.predicted_open_rate ?? 0) || 0,
+          predictedClickRate: Number(liveData.predictedClickRate ?? liveData.predicted_click_rate ?? 0) || 0,
           bySegment: Array.isArray(liveData.bySegment)
             ? (liveData.bySegment as AgentLiveMetrics["bySegment"])
             : [],
@@ -376,12 +402,24 @@ export async function streamCampaignAgent(
                 openRate: Number(roundData.summary.openRate ?? 0) || 0,
                 clickRate: Number(roundData.summary.clickRate ?? 0) || 0,
                 segments: Number(roundData.summary.segments ?? 0) || 0,
+                totalOpened: Number(roundData.summary.totalOpened ?? roundData.summary.total_opened ?? 0) || 0,
+                totalClicked: Number(roundData.summary.totalClicked ?? roundData.summary.total_clicked ?? 0) || 0,
+                uniqueOpened: Number(roundData.summary.uniqueOpened ?? roundData.summary.unique_opened ?? 0) || 0,
+                uniqueClicked: Number(roundData.summary.uniqueClicked ?? roundData.summary.unique_clicked ?? 0) || 0,
+                predictedOpenRate: Number(roundData.summary.predictedOpenRate ?? roundData.summary.predicted_open_rate ?? 0) || 0,
+                predictedClickRate: Number(roundData.summary.predictedClickRate ?? roundData.summary.predicted_click_rate ?? 0) || 0,
               }
             : {
                 audience: 0,
                 openRate: 0,
                 clickRate: 0,
                 segments: 0,
+                totalOpened: 0,
+                totalClicked: 0,
+                uniqueOpened: 0,
+                uniqueClicked: 0,
+                predictedOpenRate: 0,
+                predictedClickRate: 0,
               },
         });
         return;

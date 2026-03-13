@@ -52,6 +52,7 @@ Psychological Angle to Exploit: {angle}
 
 RULES:
 - Use {{name}}, {{city}}, and {{occupation}} placeholders for 1:1 dynamic insertion.
+- The email body must include the exact CTA link provided in the brief.
 - Return ONLY JSON format.
 - Keys required: "subject", "body"
 
@@ -70,6 +71,7 @@ Draft received from Copywriter:
 
 Optimize it based on Cognitive Biases. Introduce loss aversion or social proof naturally.
 Ensure {{name}}, {{city}}, {{occupation}} remain.
+Ensure the exact CTA link from the brief remains in the body.
 Return ONLY JSON with "subject" and "body".
 """
         resp_psy = await self.llm.ainvoke([HumanMessage(content=prompt_psy)])

@@ -47,9 +47,7 @@ const AGENT_ENV_PASSTHROUGH_KEYS = [
 type UnknownRecord = Record<string, unknown>;
 
 // ── Module-level singleton ──
-let standaloneServer: HTTPServer | null = null;
-let standaloneWss: WebSocketServer | null = null;
-let serverReady = false;
+const globalAny = global as any;
 
 function isRecord(value: unknown): value is UnknownRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -178,6 +176,7 @@ function toVariant(input: unknown, fallbackLabel: string): GeneratedEmailVariant
     variant: String(safe.variant ?? fallbackLabel),
     tone: String(safe.tone ?? "professional"),
     tags: Array.isArray(safe.tags) ? safe.tags.map((tag) => String(tag)) : [],
+    ctaLink: safe.ctaLink ? String(safe.ctaLink) : safe.cta_link ? String(safe.cta_link) : undefined,
   };
 }
 
@@ -221,6 +220,7 @@ function toFinalPayload(raw: unknown, fallbackBrief: string) {
 
   return {
     brief: String(safe.brief ?? fallbackBrief),
+    ctaLink: String(safe.cta_link ?? safe.ctaLink ?? ""),
     strategy: String(safe.strategy ?? ""),
     strategyReasoning: String(safe.strategyReasoning ?? safe.strategy_reasoning ?? ""),
     targetCustomerIds,
@@ -236,6 +236,12 @@ function toFinalPayload(raw: unknown, fallbackBrief: string) {
         : [],
     finalOpenRate: Number(safe.final_open_rate ?? safe.finalOpenRate ?? 0) || 0,
     finalClickRate: Number(safe.final_click_rate ?? safe.finalClickRate ?? 0) || 0,
+    finalTotalOpened: Number(safe.final_total_opened ?? safe.finalTotalOpened ?? 0) || 0,
+    finalTotalClicked: Number(safe.final_total_clicked ?? safe.finalTotalClicked ?? 0) || 0,
+    uniqueTotalOpened: Number(safe.unique_total_opened ?? safe.uniqueTotalOpened ?? 0) || 0,
+    uniqueTotalClicked: Number(safe.unique_total_clicked ?? safe.uniqueTotalClicked ?? 0) || 0,
+    predictedFinalOpenRate: Number(safe.predicted_final_open_rate ?? safe.predictedFinalOpenRate ?? 0) || 0,
+    predictedFinalClickRate: Number(safe.predicted_final_click_rate ?? safe.predictedFinalClickRate ?? 0) || 0,
     rawResult: safe,
   };
 }
@@ -263,12 +269,19 @@ async function persistCampaignResult(
     target_customer_ids: finalPayload.targetCustomerIds,
     strategy_reasoning: finalPayload.strategyReasoning,
     json_output: {
+      ctaLink: finalPayload.ctaLink,
       strategy: finalPayload.strategy,
       strategyReasoning: finalPayload.strategyReasoning,
       segments: finalPayload.segments,
       metricsProgression: finalPayload.metricsProgression,
       finalOpenRate: finalPayload.finalOpenRate,
       finalClickRate: finalPayload.finalClickRate,
+      finalTotalOpened: finalPayload.finalTotalOpened,
+      finalTotalClicked: finalPayload.finalTotalClicked,
+      uniqueTotalOpened: finalPayload.uniqueTotalOpened,
+      uniqueTotalClicked: finalPayload.uniqueTotalClicked,
+      predictedFinalOpenRate: finalPayload.predictedFinalOpenRate,
+      predictedFinalClickRate: finalPayload.predictedFinalClickRate,
       rawResult: finalPayload.rawResult,
     },
     total_customers: finalPayload.customerCount,
@@ -495,12 +508,12 @@ function handleConnection(ws: WebSocket) {
 }
 
 function ensureStandaloneServer(): Promise<number> {
-  if (serverReady && standaloneServer) {
+  if (globalAny.__wsServerReady && globalAny.__wsStandaloneServer) {
     return Promise.resolve(WS_PORT);
   }
 
   return new Promise((resolve, reject) => {
-    if (standaloneWss) {
+    if (globalAny.__wsStandaloneWss) {
       resolve(WS_PORT);
       return;
     }
@@ -527,7 +540,7 @@ function ensureStandaloneServer(): Promise<number> {
       if (err.code === "EADDRINUSE") {
         // Port already in use — another instance is already running
         console.log(`[Agent WS] Port ${WS_PORT} already in use, reusing existing server`);
-        serverReady = true;
+        globalAny.__wsServerReady = true;
         resolve(WS_PORT);
         return;
       }
@@ -536,9 +549,9 @@ function ensureStandaloneServer(): Promise<number> {
 
     httpServer.listen(WS_PORT, () => {
       console.log(`[Agent WS] Standalone WebSocket server listening on port ${WS_PORT}`);
-      standaloneServer = httpServer;
-      standaloneWss = wss;
-      serverReady = true;
+      globalAny.__wsStandaloneServer = httpServer;
+      globalAny.__wsStandaloneWss = wss;
+      globalAny.__wsServerReady = true;
       resolve(WS_PORT);
     });
   });

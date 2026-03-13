@@ -90,6 +90,7 @@ export interface GeneratedEmailVariant {
   variant: string;
   tone: string;
   tags: string[];
+  ctaLink?: string;
 }
 
 export type AgentPauseType = "segment_approval" | "content_approval" | "next_round" | string;
@@ -108,6 +109,7 @@ export interface AgentSegmentCard {
   tone?: string;
   focus?: string;
   tier?: string;
+  approved?: boolean;
 }
 
 export interface AgentDraftCard {
@@ -118,6 +120,8 @@ export interface AgentDraftCard {
   body: string;
   tone?: string;
   tags?: string[];
+  ctaLink?: string;
+  approved?: boolean;
 }
 
 export interface AgentPausePayload {
@@ -126,12 +130,19 @@ export interface AgentPausePayload {
   message?: string;
   round?: number;
   maxRounds?: number;
+  ctaLink?: string;
   segments?: AgentSegmentCard[];
   variants?: AgentDraftCard[];
   metrics?: {
     audience?: number;
     openRate?: number;
     clickRate?: number;
+    totalOpened?: number;
+    totalClicked?: number;
+    uniqueOpened?: number;
+    uniqueClicked?: number;
+    predictedOpenRate?: number;
+    predictedClickRate?: number;
   };
 }
 
@@ -142,6 +153,10 @@ export interface AgentLiveMetrics {
   clicked: number;
   openRate: number;
   clickRate: number;
+  uniqueOpened: number;
+  uniqueClicked: number;
+  predictedOpenRate?: number;
+  predictedClickRate?: number;
   bySegment: Array<{
     segmentName: string;
     sent: number;
@@ -159,11 +174,18 @@ export interface AgentRoundComplete {
     openRate: number;
     clickRate: number;
     segments: number;
+    totalOpened?: number;
+    totalClicked?: number;
+    uniqueOpened?: number;
+    uniqueClicked?: number;
+    predictedOpenRate?: number;
+    predictedClickRate?: number;
   };
 }
 
 export interface AgentRunResult {
   brief: string;
+  ctaLink?: string;
   strategy: string;
   strategyReasoning: string;
   contentVariants: GeneratedEmailVariant[];
@@ -173,6 +195,7 @@ export interface AgentRunResult {
     criteria: string;
     tone: string;
     focus: string;
+    approved?: boolean;
   }>;
   metricsProgression: Array<{
     round: number;
@@ -180,12 +203,24 @@ export interface AgentRunResult {
     openRate: number;
     clickRate: number;
     segments: number;
+    totalOpened?: number;
+    totalClicked?: number;
+    uniqueOpened?: number;
+    uniqueClicked?: number;
+    predictedOpenRate?: number;
+    predictedClickRate?: number;
   }>;
   customerCount: number;
   targetCustomerIds: string[];
   savedCampaignId: string | null;
   finalOpenRate: number;
   finalClickRate: number;
+  finalTotalOpened?: number;
+  finalTotalClicked?: number;
+  uniqueTotalOpened?: number;
+  uniqueTotalClicked?: number;
+  predictedFinalOpenRate?: number;
+  predictedFinalClickRate?: number;
   rawResult: unknown;
 }
 
@@ -196,6 +231,7 @@ export interface CampaignRow {
   external_campaign_id?: string | null;
   name: string;
   brief: string;
+  cta_link?: string | null;
   status: "draft" | "pending_approval" | "active" | "completed" | "paused";
   subject?: string | null;
   body?: string | null;
@@ -270,6 +306,7 @@ export interface OptimizationHistoryRow {
 export interface CreateCampaignPayload {
   name: string;
   brief: string;
+  cta_link?: string;
   subject?: string;
   body?: string;
   target_segment?: string;
@@ -286,6 +323,7 @@ export interface CreateCampaignPayload {
 export interface UpdateCampaignPayload {
   external_campaign_id?: string;
   name?: string;
+  cta_link?: string;
   status?: CampaignRow["status"];
   subject?: string;
   body?: string;

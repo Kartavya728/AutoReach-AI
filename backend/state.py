@@ -20,6 +20,7 @@ class EmailVariant(TypedDict):
     variant: str
     tone: str
     tags: list[str]
+    cta_link: str
 
 
 class CustomerRecord(TypedDict, total=False):
@@ -84,6 +85,7 @@ class WorkflowState(TypedDict):
     rather than overwriting it — this accumulates an audit trail.
     """
     brief: str
+    cta_link: str
     crm_data: list[CustomerRecord]
     customer_count: int
     target_customer_ids: list[str]

@@ -13,6 +13,7 @@ Corresponds to: `generate_content` node in langgraph.js (upgraded)
 from __future__ import annotations
 import asyncio
 import json
+import re
 import sys
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -81,6 +82,25 @@ def _parse_single_variant(text: str, segment_name: str) -> EmailVariant | None:
 from backend.twin_simulator import twin_engine
 from backend.war_room import war_room
 from backend.bandit import bandit_engine
+
+URL_RE = re.compile(r"https?://[^\s<>\"]+")
+
+
+def _extract_cta_link(brief: str) -> str:
+    match = URL_RE.search(brief or "")
+    return match.group(0) if match else ""
+
+
+def _ensure_variant_has_cta_link(variant: EmailVariant, cta_link: str) -> EmailVariant:
+    if not cta_link:
+        return variant
+
+    body = str(variant.get("body", "") or "").strip()
+    if cta_link not in body:
+        body = f"{body}\n\nExplore now: {cta_link}".strip()
+    variant["body"] = body
+    variant["cta_link"] = cta_link
+    return variant
 
 async def generate_segment_variant(
     brief: str,
@@ -159,6 +179,7 @@ async def generate_content(state: WorkflowState) -> dict:
     """
     segments = state.get("segments", [])
     brief = state.get("brief", "")
+    cta_link = state.get("cta_link", "") or _extract_cta_link(brief)
     strategy = state.get("strategy", "")
 
     _safe_print(f"\n[Autonomous Growth Engine] Activating War Room for {len(segments)} segments")
@@ -172,6 +193,7 @@ async def generate_content(state: WorkflowState) -> dict:
     async def _process_segment(seg):
         _safe_print(f"  [Orchestrator] Processing Segment (Parallel): {seg['segment_name']} ({seg['size']} customers)")
         variant = await generate_segment_variant(brief, strategy, seg)
+        variant = _ensure_variant_has_cta_link(variant, cta_link)
         _safe_print(f"    [OK] Final Subject ({seg['segment_name'][:20]}...): {variant['subject'][:60]}...")
         return seg["segment_id"], variant
 
@@ -188,6 +210,7 @@ async def generate_content(state: WorkflowState) -> dict:
         **state,
         "content_variants": all_variants,
         "segment_variants": segment_variant_map,
+        "cta_link": cta_link,
         "steps": [
             {
                 "agent": "Autonomous-Growth-Engine",

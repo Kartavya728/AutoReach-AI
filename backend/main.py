@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import statistics
 import sys
 from datetime import datetime, timedelta, timezone
@@ -44,6 +45,7 @@ DEFAULT_OPTIMIZATION_ROUNDS = 3
 OUTPUT_FILE = "agent_output.json"
 CONTROL_PREFIX = "__AGENT_EVENT__"
 IST = timezone(timedelta(hours=5, minutes=30))
+URL_RE = re.compile(r"https?://[^\s<>\"]+")
 
 REACT_FORMAT_PROMPT = """Answer the following questions as best you can. You have access to the following tools:
 
@@ -93,6 +95,197 @@ def compact_json(data: Any) -> str:
         return json.dumps(data, ensure_ascii=False)
     except Exception:
         return str(data)
+
+
+def extract_cta_link(brief: str) -> str:
+    match = URL_RE.search(brief or "")
+    return match.group(0) if match else ""
+
+
+def ensure_variant_has_link(variant: dict[str, Any], cta_link: str) -> dict[str, Any]:
+    if not cta_link:
+        return variant
+
+    body = str(variant.get("body", "") or "").strip()
+    if cta_link not in body:
+        body = f"{body}\n\nExplore now: {cta_link}".strip()
+    variant["body"] = body
+    variant["cta_link"] = cta_link
+    return variant
+
+
+def collect_target_ids(segments: list[dict[str, Any]]) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for seg in segments:
+        for raw_id in seg.get("customer_ids", []) or []:
+            customer_id = str(raw_id)
+            if not customer_id or customer_id in seen:
+                continue
+            seen.add(customer_id)
+            ordered.append(customer_id)
+    return ordered
+
+
+def parse_segment_approvals(
+    segments: list[dict[str, Any]],
+    response: dict[str, Any],
+) -> list[dict[str, Any]]:
+    raw_approvals = response.get("segmentApprovals")
+    approval_map: dict[str, bool] = {}
+    if isinstance(raw_approvals, list):
+        for item in raw_approvals:
+            if not isinstance(item, dict):
+                continue
+            segment_id = str(item.get("segmentId", ""))
+            if not segment_id:
+                continue
+            approval_map[segment_id] = to_bool(item.get("approved"), default=True)
+
+    if not approval_map:
+        if not to_bool(response.get("approved"), default=True):
+            return []
+        return segments
+
+    approved_segments: list[dict[str, Any]] = []
+    for seg in segments:
+        seg_id = str(seg.get("segment_id", ""))
+        if approval_map.get(seg_id, True):
+            approved_segments.append(seg)
+    return approved_segments
+
+
+def apply_variant_approvals(
+    segments: list[dict[str, Any]],
+    segment_variants: dict[str, dict[str, Any]],
+    response: dict[str, Any],
+    cta_link: str,
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    raw_variant_approvals = response.get("variantApprovals")
+    approval_map: dict[str, bool] = {}
+    edit_map: dict[str, dict[str, Any]] = {}
+
+    if isinstance(raw_variant_approvals, list):
+        for item in raw_variant_approvals:
+            if not isinstance(item, dict):
+                continue
+            seg_id = str(item.get("segmentId", ""))
+            if not seg_id:
+                continue
+            approval_map[seg_id] = to_bool(item.get("approved"), default=True)
+            edit_map[seg_id] = item
+
+    edited_variants = response.get("editedVariants")
+    if isinstance(edited_variants, list):
+        for item in edited_variants:
+            if not isinstance(item, dict):
+                continue
+            seg_id = str(item.get("segmentId", ""))
+            if not seg_id:
+                continue
+            existing = edit_map.get(seg_id, {})
+            existing.update(item)
+            edit_map[seg_id] = existing
+
+    approved_segments: list[dict[str, Any]] = []
+    approved_variants: dict[str, dict[str, Any]] = {}
+    approved_variant_list: list[dict[str, Any]] = []
+
+    for seg in segments:
+        seg_id = str(seg.get("segment_id", ""))
+        if approval_map and not approval_map.get(seg_id, True):
+            continue
+        if not approval_map and not to_bool(response.get("approved"), default=True):
+            continue
+
+        variant = dict(segment_variants.get(seg_id) or {})
+        edits = edit_map.get(seg_id, {})
+        if "subject" in edits and edits.get("subject") is not None:
+            variant["subject"] = str(edits.get("subject", ""))
+        if "body" in edits and edits.get("body") is not None:
+            variant["body"] = str(edits.get("body", ""))
+
+        variant = ensure_variant_has_link(variant, cta_link)
+        approved_segments.append(seg)
+        approved_variants[seg_id] = variant
+        approved_variant_list.append(variant)
+
+    return approved_segments, approved_variants, approved_variant_list
+
+
+def predict_open_click(
+    segments: list[dict[str, Any]],
+    segment_variants: dict[str, dict[str, Any]],
+    cta_link: str,
+) -> dict[str, Any]:
+    total_audience = 0
+    predicted_opened = 0
+    predicted_clicked = 0
+    by_segment: list[dict[str, Any]] = []
+
+    for seg in segments:
+        seg_id = str(seg.get("segment_id", ""))
+        audience = int(seg.get("size", 0))
+        if audience <= 0:
+            continue
+
+        variant = segment_variants.get(seg_id) or {}
+        subject = str(variant.get("subject", "")).lower()
+        body = str(variant.get("body", "")).lower()
+        tone = str(variant.get("tone", seg.get("tone", "professional"))).lower()
+        segment_name = str(seg.get("segment_name", "")).lower()
+
+        open_rate = 0.24
+        click_rate = 0.07
+
+        if cta_link and cta_link in str(variant.get("body", "")):
+            click_rate += 0.05
+        if any(word in subject for word in ["exclusive", "unlock", "higher", "bonus", "special"]):
+            open_rate += 0.06
+        if any(word in subject for word in ["today", "now", "limited", "before", "last"]):
+            open_rate += 0.03
+            click_rate += 0.02
+        if "warm" in segment_name or "retarget" in segment_name:
+            open_rate += 0.12
+            click_rate += 0.08
+        if "cold" in segment_name:
+            open_rate += 0.04
+            click_rate += 0.01
+        if tone in {"urgent", "assertive"}:
+            click_rate += 0.02
+        if tone in {"friendly", "empathetic"}:
+            open_rate += 0.02
+        if len(body) > 220:
+            click_rate -= 0.01
+
+        open_rate = max(0.05, min(0.92, open_rate))
+        click_rate = max(0.01, min(open_rate * 0.7, click_rate))
+
+        opened = min(audience, round(audience * open_rate))
+        clicked = min(opened, round(audience * click_rate))
+        total_audience += audience
+        predicted_opened += opened
+        predicted_clicked += clicked
+        by_segment.append(
+            {
+                "segmentId": seg_id,
+                "segmentName": str(seg.get("segment_name", "Segment")),
+                "audience": audience,
+                "predictedOpenRate": round((opened / audience) * 100, 1) if audience else 0.0,
+                "predictedClickRate": round((clicked / audience) * 100, 1) if audience else 0.0,
+            }
+        )
+
+    open_rate = round((predicted_opened / total_audience) * 100, 1) if total_audience else 0.0
+    click_rate = round((predicted_clicked / total_audience) * 100, 1) if total_audience else 0.0
+    return {
+        "audience": total_audience,
+        "total_opened": predicted_opened,
+        "total_clicked": predicted_clicked,
+        "open_rate": open_rate,
+        "click_rate": click_rate,
+        "by_segment": by_segment,
+    }
 
 
 class RuntimeChannel:
@@ -223,6 +416,7 @@ def prepare_crm_data(api_customers: list[dict[str, Any]]) -> list[dict[str, Any]
 def build_initial_state(brief: str) -> WorkflowState:
     return {
         "brief": brief,
+        "cta_link": extract_cta_link(brief),
         "crm_data": [],
         "customer_count": 0,
         "target_customer_ids": [],
@@ -326,6 +520,7 @@ def category_cards(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "tone": str(seg.get("tone", "")),
                 "focus": str(seg.get("focus", "")),
                 "tier": str(seg.get("tier", "Reactivate")),
+                "approved": True,
             }
         )
     return cards
@@ -334,11 +529,12 @@ def category_cards(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def content_cards(
     segments: list[dict[str, Any]],
     segment_variants: dict[str, dict[str, Any]],
+    cta_link: str = "",
 ) -> list[dict[str, Any]]:
     cards: list[dict[str, Any]] = []
     for seg in segments:
         seg_id = str(seg.get("segment_id", ""))
-        variant = segment_variants.get(seg_id) or {}
+        variant = ensure_variant_has_link(dict(segment_variants.get(seg_id) or {}), cta_link)
         cards.append(
             {
                 "segmentId": seg_id,
@@ -348,6 +544,8 @@ def content_cards(
                 "body": str(variant.get("body", "")),
                 "tone": str(variant.get("tone", seg.get("tone", "professional"))),
                 "tags": [str(x) for x in variant.get("tags", [])] if isinstance(variant.get("tags"), list) else [],
+                "ctaLink": cta_link,
+                "approved": True,
             }
         )
     return cards
@@ -581,13 +779,26 @@ async def run_react_planner_executor(
         "segment_approval",
         {
             "title": "Approve customer categories",
-            "message": f"Review the {len(segments)} categories and approve to continue.",
+            "message": f"Review the {len(segments)} categories. Rejected categories will be excluded from the audience and later rate calculations.",
             "segments": cards,
+            "ctaLink": state.get("cta_link", ""),
         },
         auto_payload={"approved": True},
     )
-    if not to_bool(category_input.get("approved"), default=True):
-        raise RuntimeError("Human rejected customer categories. Pipeline stopped.")
+    approved_segments = parse_segment_approvals(segments, category_input)
+    if not approved_segments:
+        raise RuntimeError("No customer categories were approved. Pipeline stopped.")
+    segments = approved_segments
+    state["segments"] = segments
+    approved_ids = collect_target_ids(segments)
+    state["target_customer_ids"] = approved_ids
+    state["customer_count"] = len(approved_ids)
+    channel.emit_thinking(
+        f"{len(segments)} categories approved for {len(approved_ids)} total customers.",
+        agent="Human-Gate",
+        kind="decision",
+    )
+    channel.log(f"[HITL] Approved {len(segments)} categories covering {len(approved_ids)} customers.")
 
     # Action 4: plan_strategy
     emit_react("thought", "With approved segments, I can produce the campaign strategy.")
@@ -622,36 +833,56 @@ async def run_react_planner_executor(
     channel.log(f"Observation: Generated {len(state['content_variants'])} approved-draft emails.")
 
     # Human gate: content approval
-    mail_cards = content_cards(segments, segment_variants)
+    cta_link = str(state.get("cta_link", ""))
+    mail_cards = content_cards(segments, segment_variants, cta_link)
     content_input = await channel.wait_for_human(
         "content_approval",
         {
             "title": "Approve generated emails",
-            "message": "Review each category email. You can edit drafts before approving.",
+            "message": "Review each category email, approve or reject each draft, and edit if needed. Every approved email must retain the required CTA link.",
             "variants": mail_cards,
+            "ctaLink": cta_link,
         },
         auto_payload={"approved": True},
     )
-    if not to_bool(content_input.get("approved"), default=True):
-        raise RuntimeError("Human rejected generated email set. Pipeline stopped.")
+    segments, segment_variants, approved_variants = apply_variant_approvals(
+        segments,
+        segment_variants,
+        content_input,
+        cta_link,
+    )
+    if not segments:
+        raise RuntimeError("No email drafts were approved. Pipeline stopped.")
+    state["segments"] = segments
+    state["segment_variants"] = segment_variants
+    state["content_variants"] = approved_variants
+    approved_ids = collect_target_ids(segments)
+    state["target_customer_ids"] = approved_ids
+    state["customer_count"] = len(approved_ids)
+    channel.emit_thinking(
+        f"{len(approved_variants)} email drafts approved with CTA link enforcement.",
+        agent="Human-Gate",
+        kind="decision",
+    )
+    channel.log(f"[HITL] Approved {len(approved_variants)} email drafts for {len(approved_ids)} customers.")
 
-    # Apply any human edits to email drafts
-    edited = content_input.get("editedVariants")
-    if edited and isinstance(edited, list):
-        for edit in edited:
-            seg_id = str(edit.get("segmentId", ""))
-            if seg_id and seg_id in segment_variants:
-                if edit.get("subject"):
-                    segment_variants[seg_id]["subject"] = str(edit["subject"])
-                if edit.get("body"):
-                    segment_variants[seg_id]["body"] = str(edit["body"])
-        state["segment_variants"] = segment_variants
-        channel.emit_thinking(
-            f"Applied human edits to {len(edited)} email drafts.",
-            agent="Human-Gate",
-            kind="edit",
-        )
-        channel.log(f"[HITL] Applied {len(edited)} manual edits to email drafts.")
+    predictor_report = predict_open_click(segments, segment_variants, cta_link)
+    state["predicted_metrics"] = predictor_report
+    channel.emit_thinking(
+        (
+            "Open-Click-Predictor forecast: "
+            f"{predictor_report['open_rate']}% open, {predictor_report['click_rate']}% click "
+            f"across {predictor_report['audience']} approved customers."
+        ),
+        agent="Open-Click-Predictor",
+        kind="metrics",
+    )
+    channel.log(
+        "[Predictor] "
+        f"audience={predictor_report['audience']} "
+        f"open={predictor_report['open_rate']}% "
+        f"click={predictor_report['click_rate']}%"
+    )
 
     emit_react("thought", "I now know the final answer.")
     channel.log("Thought: I now know the final answer")
@@ -668,9 +899,11 @@ async def run_react_planner_executor(
     # ------------------------------------------------------------------
     all_round_metrics: list[dict[str, Any]] = []
     all_segment_results: list[dict[str, Any]] = []
+    cumulative_sent: set[str] = set()
     cumulative_opened: set[str] = set()
     cumulative_clicked: set[str] = set()
     total_audience = len(state.get("target_customer_ids", []))
+    latest_prediction = dict(state.get("predicted_metrics", {}) or {})
 
     current_groups: list[dict[str, Any]] = []
     for seg in segments:
@@ -728,11 +961,12 @@ async def run_react_planner_executor(
             )
             segment_results.append(metrics)
 
+            cumulative_sent.update(str(cid) for cid in metrics.get("customer_ids", []))
             # Update cumulative union sets
             cumulative_opened.update(str(cid) for cid in metrics.get("opened_ids", []))
             cumulative_clicked.update(str(cid) for cid in metrics.get("clicked_ids", []))
 
-            denom = total_audience if total_audience > 0 else 1
+            denom = len(cumulative_sent) if cumulative_sent else (total_audience if total_audience > 0 else 1)
             cumul_open_rate = round((len(cumulative_opened) / denom) * 100, 1)
             cumul_click_rate = round((len(cumulative_clicked) / denom) * 100, 1)
 
@@ -750,11 +984,15 @@ async def run_react_planner_executor(
                 "live_metrics",
                 {
                     "round": round_num,
-                    "sent": live["sent"],
+                    "sent": len(cumulative_sent),
                     "opened": len(cumulative_opened),
                     "clicked": len(cumulative_clicked),
                     "openRate": cumul_open_rate,
                     "clickRate": cumul_click_rate,
+                    "uniqueOpened": len(cumulative_opened),
+                    "uniqueClicked": len(cumulative_clicked),
+                    "predictedOpenRate": float(latest_prediction.get("open_rate", 0.0)),
+                    "predictedClickRate": float(latest_prediction.get("click_rate", 0.0)),
                     "bySegment": [
                         {
                             "segmentName": str(item.get("segment_name", "")),
@@ -772,16 +1010,22 @@ async def run_react_planner_executor(
         round_totals = aggregate_metrics(segment_results)
         all_segment_results.extend(segment_results)
 
-        denom = total_audience if total_audience > 0 else 1
+        denom = len(cumulative_sent) if cumulative_sent else (total_audience if total_audience > 0 else 1)
         cumul_open_rate = round((len(cumulative_opened) / denom) * 100, 1)
         cumul_click_rate = round((len(cumulative_clicked) / denom) * 100, 1)
 
         round_summary = {
             "round": round_num,
-            "audience": round_totals["sent"],
+            "audience": len(cumulative_sent),
             "open_rate": cumul_open_rate,
             "click_rate": cumul_click_rate,
             "segments": len(segment_results),
+            "total_opened": len(cumulative_opened),
+            "total_clicked": len(cumulative_clicked),
+            "unique_opened": len(cumulative_opened),
+            "unique_clicked": len(cumulative_clicked),
+            "predicted_open_rate": float(latest_prediction.get("open_rate", 0.0)),
+            "predicted_click_rate": float(latest_prediction.get("click_rate", 0.0)),
         }
         all_round_metrics.append(round_summary)
         channel.emit_thinking(
@@ -802,6 +1046,12 @@ async def run_react_planner_executor(
                     "openRate": cumul_open_rate,
                     "clickRate": cumul_click_rate,
                     "segments": round_summary["segments"],
+                    "totalOpened": round_summary["total_opened"],
+                    "totalClicked": round_summary["total_clicked"],
+                    "uniqueOpened": round_summary["unique_opened"],
+                    "uniqueClicked": round_summary["unique_clicked"],
+                    "predictedOpenRate": round_summary["predicted_open_rate"],
+                    "predictedClickRate": round_summary["predicted_click_rate"],
                 },
             },
         )
@@ -824,14 +1074,20 @@ async def run_react_planner_executor(
         next_round_input = await channel.wait_for_human(
             "next_round",
             {
-                "title": f"Run virtual testing round {round_num + 1}?",
-                "message": "Continue virtual testing with warm/cold retargeting.",
-                "round": round_num,
-                "maxRounds": rounds,
-                "metrics": {
+                    "title": f"Run virtual testing round {round_num + 1}?",
+                    "message": "Continue virtual testing with warm/cold retargeting.",
+                    "round": round_num,
+                    "maxRounds": rounds,
+                    "metrics": {
                     "audience": round_summary["audience"],
                     "openRate": cumul_open_rate,
                     "clickRate": cumul_click_rate,
+                    "totalOpened": round_summary["total_opened"],
+                    "totalClicked": round_summary["total_clicked"],
+                    "uniqueOpened": round_summary["unique_opened"],
+                    "uniqueClicked": round_summary["unique_clicked"],
+                    "predictedOpenRate": round_summary["predicted_open_rate"],
+                    "predictedClickRate": round_summary["predicted_click_rate"],
                 },
             },
             auto_payload={"continueOptimization": False},
@@ -865,12 +1121,17 @@ async def run_react_planner_executor(
                 "tier": "Gold",
             }
             warm_variant = await generate_segment_variant(brief, str(state.get("strategy", "")), warm_segment)
+            warm_variant = ensure_variant_has_link(warm_variant, str(state.get("cta_link", "")))
             next_groups.append(
                 {
                     "segment_id": warm_segment["segment_id"],
                     "segment_name": warm_segment["segment_name"],
                     "customer_ids": warm_ids,
                     "variant": warm_variant,
+                    "criteria": warm_segment["criteria"],
+                    "tone": warm_segment["tone"],
+                    "focus": warm_segment["focus"],
+                    "tier": warm_segment["tier"],
                 }
             )
 
@@ -887,12 +1148,17 @@ async def run_react_planner_executor(
                 "tier": "Reactivate",
             }
             cold_variant = await generate_segment_variant(brief, str(state.get("strategy", "")), cold_segment)
+            cold_variant = ensure_variant_has_link(cold_variant, str(state.get("cta_link", "")))
             next_groups.append(
                 {
                     "segment_id": cold_segment["segment_id"],
                     "segment_name": cold_segment["segment_name"],
                     "customer_ids": cold_ids,
                     "variant": cold_variant,
+                    "criteria": cold_segment["criteria"],
+                    "tone": cold_segment["tone"],
+                    "focus": cold_segment["focus"],
+                    "tier": cold_segment["tier"],
                 }
             )
 
@@ -900,7 +1166,81 @@ async def run_react_planner_executor(
             channel.log(f"[Round {round_num}] No optimization groups generated.")
             break
 
-        current_groups = next_groups
+        next_segments = [
+            {
+                "segment_id": str(group.get("segment_id", "")),
+                "segment_name": str(group.get("segment_name", "Segment")),
+                "customer_ids": [str(x) for x in group.get("customer_ids", [])],
+                "size": len(group.get("customer_ids", []) or []),
+                "criteria": str(group.get("criteria", "")),
+                "tone": str(group.get("tone", "professional")),
+                "focus": str(group.get("focus", "")),
+                "tier": str(group.get("tier", "Reactivate")),
+            }
+            for group in next_groups
+        ]
+        next_segment_input = await channel.wait_for_human(
+            "segment_approval",
+            {
+                "title": f"Approve optimization categories for round {round_num + 1}",
+                "message": "Approve or reject the optimization categories for the next round.",
+                "segments": category_cards(next_segments),
+                "ctaLink": state.get("cta_link", ""),
+            },
+            auto_payload={"approved": True},
+        )
+        next_segments = parse_segment_approvals(next_segments, next_segment_input)
+        if not next_segments:
+            channel.log(f"[Round {round_num}] No optimization categories approved for next round.")
+            break
+
+        next_variants = {
+            str(group.get("segment_id", "")): dict(group.get("variant", {}) or {})
+            for group in next_groups
+        }
+        next_content_input = await channel.wait_for_human(
+            "content_approval",
+            {
+                "title": f"Approve optimization emails for round {round_num + 1}",
+                "message": "Approve or edit each optimization email before the next round starts.",
+                "variants": content_cards(next_segments, next_variants, str(state.get("cta_link", ""))),
+                "ctaLink": state.get("cta_link", ""),
+            },
+            auto_payload={"approved": True},
+        )
+        next_segments, next_variants, _ = apply_variant_approvals(
+            next_segments,
+            next_variants,
+            next_content_input,
+            str(state.get("cta_link", "")),
+        )
+        if not next_segments:
+            channel.log(f"[Round {round_num}] No optimization emails approved for next round.")
+            break
+
+        latest_prediction = predict_open_click(next_segments, next_variants, str(state.get("cta_link", "")))
+        channel.emit_thinking(
+            (
+                "Open-Click-Predictor forecast for next round: "
+                f"{latest_prediction['open_rate']}% open, {latest_prediction['click_rate']}% click."
+            ),
+            agent="Open-Click-Predictor",
+            kind="metrics",
+        )
+
+        current_groups = [
+            {
+                "segment_id": str(seg.get("segment_id", "")),
+                "segment_name": str(seg.get("segment_name", "Segment")),
+                "customer_ids": [str(x) for x in seg.get("customer_ids", [])],
+                "variant": next_variants.get(str(seg.get("segment_id", "")), {}),
+                "criteria": str(seg.get("criteria", "")),
+                "tone": str(seg.get("tone", "professional")),
+                "focus": str(seg.get("focus", "")),
+                "tier": str(seg.get("tier", "Reactivate")),
+            }
+            for seg in next_segments
+        ]
 
     print_header("FINAL CAMPAIGN SUMMARY")
     channel.emit_thinking(
@@ -919,6 +1259,7 @@ async def run_react_planner_executor(
     clicked_unique = set()
 
     for result in all_segment_results:
+        unique_audience.update(str(cid) for cid in result.get("customer_ids", []))
         opened_unique.update(str(cid) for cid in result.get("opened_ids", []))
         clicked_unique.update(str(cid) for cid in result.get("clicked_ids", []))
 
@@ -928,6 +1269,7 @@ async def run_react_planner_executor(
 
     final_result = {
         "brief": brief,
+        "cta_link": state.get("cta_link", ""),
         "strategy": state.get("strategy", ""),
         "strategy_reasoning": state.get("strategy_reasoning", ""),
         "target_customer_ids": state.get("target_customer_ids", []),
@@ -940,6 +1282,7 @@ async def run_react_planner_executor(
                 "criteria": str(seg.get("criteria", "")),
                 "tone": str(seg.get("tone", "")),
                 "focus": str(seg.get("focus", "")),
+                "approved": True,
             }
             for seg in state.get("segments", [])
         ],
@@ -957,6 +1300,12 @@ async def run_react_planner_executor(
         "metrics_progression": all_round_metrics,
         "final_open_rate": final_open,
         "final_click_rate": final_click,
+        "final_total_opened": len(opened_unique),
+        "final_total_clicked": len(clicked_unique),
+        "unique_total_opened": len(opened_unique),
+        "unique_total_clicked": len(clicked_unique),
+        "predicted_final_open_rate": float(latest_prediction.get("open_rate", 0.0)),
+        "predicted_final_click_rate": float(latest_prediction.get("click_rate", 0.0)),
         "steps": state.get("steps", []),
         "round_summaries": all_round_metrics,
     }
