@@ -73,36 +73,6 @@ export async function GET(
           campaign,
           crmCustomers
         );
-
-        // Update cached metrics in Supabase
-        try {
-          await serverUpdateCampaign(params.id, {
-            open_rate: analysisReport.openRate,
-            click_rate: analysisReport.clickRate,
-            total_opened: analysisReport.totalOpened,
-            total_clicked: analysisReport.totalClicked,
-          });
-        } catch { /* non-critical */ }
-
-        // Generate AI optimization suggestions if none exist
-        if (optimizations.length === 0 && (analysisReport?.totalSent || 0) > 0) {
-          try {
-            const { serverSaveOptimizations } = await import(
-              "@/src/lib/server/supabase"
-            );
-            const suggestions = await generateOptimizationSuggestions(
-              params.id,
-              analysisReport!,
-              campaign.brief
-            );
-            optimizations = await serverSaveOptimizations(
-              params.id,
-              suggestions
-            );
-          } catch (err) {
-            console.warn("[API] Failed to generate optimizations:", err);
-          }
-        }
       }
     } catch (err) {
       console.warn("[API] Could not compute analysis:", err);

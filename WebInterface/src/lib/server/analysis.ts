@@ -37,31 +37,17 @@ export function computeAnalysisFromReport(
   //   Base: ~52 % open, ~32 % click
   //   Per optimization round: +3 % open, +1.5 % click
   const hash = stableHash(campaignId);
-  const openVar = ((hash % 7) - 3) / 100;
-  const clickVar = ((hash % 5) - 2) / 100;
-  const optRound = campaign?.optimization_round
-    ? Number(campaign.optimization_round)
-    : 1;
-  const roundBoostOpen = (optRound - 1) * 0.03;
-  const roundBoostClick = (optRound - 1) * 0.015;
-
-  const totalOpened = Math.max(
-    0,
-    Math.floor(totalSent * (0.52 + openVar + roundBoostOpen))
-  );
-  const totalClicked = Math.max(
-    0,
-    Math.floor(totalSent * (0.32 + clickVar + roundBoostClick))
-  );
-
-  console.log(
-    `[Analysis] campaign=${campaignId} round=${optRound} sent=${totalSent} ` +
-    `opens=${totalOpened}(${((totalOpened / totalSent) * 100).toFixed(1)}%) ` +
-    `clicks=${totalClicked}(${((totalClicked / totalSent) * 100).toFixed(1)}%)`
-  );
-
-  const openRate = totalSent > 0 ? round((totalOpened / totalSent) * 100) : 0;
-  const clickRate = totalSent > 0 ? round((totalClicked / totalSent) * 100) : 0;
+  const dbOpenRate = campaign?.open_rate || 0;
+  const dbClickRate = campaign?.click_rate || 0;
+  
+  const totalOpenedVal = records.filter(r => r.EO === 'Y').length;
+  const totalClickedVal = records.filter(r => r.EC === 'Y').length;
+  
+  const totalOpened = totalOpenedVal > 0 ? totalOpenedVal : Math.round(totalSent * (dbOpenRate/100));
+  const totalClicked = totalClickedVal > 0 ? totalClickedVal : Math.round(totalSent * (dbClickRate/100));
+  
+  const openRate = totalOpenedVal > 0 ? round((totalOpened / totalSent) * 100) : dbOpenRate;
+  const clickRate = totalClickedVal > 0 ? round((totalClicked / totalSent) * 100) : dbClickRate;
 
   // ── Assign simulated EO / EC to individual records ──
   let remainingOpens = totalOpened;
@@ -74,23 +60,11 @@ export function computeAnalysisFromReport(
       const match = timePart.match(/(\d{1,2}):/);
       if (match) {
         hour = parseInt(match[1], 10);
-      } else {
-        hour = 8 + Math.floor(Math.sin((i / totalSent) * Math.PI) * 8);
       }
     } catch {
       hour = 10;
     }
-
-    const rec = { ...r, _hour: hour };
-    if (remainingOpens > 0 && Math.random() < totalOpened / totalSent) {
-      rec.EO = "Y";
-      remainingOpens--;
-      if (remainingClicks > 0 && Math.random() < totalClicked / totalOpened) {
-        rec.EC = "Y";
-        remainingClicks--;
-      }
-    }
-    return rec;
+    return { ...r, _hour: hour };
   });
 
   // ── Time-series: group by hour ──
@@ -147,7 +121,7 @@ export function computeAnalysisFromReport(
     clickRate,
     hash
   );
-  const deviceBreakdown = buildDeviceBreakdown(hash);
+  const deviceBreakdown = buildDeviceBreakdown();
 
   // Find top-performing segment dynamically
   const topRegion = regionPerformance.reduce(
@@ -316,14 +290,10 @@ function buildGenderPerformance(
     ];
 }
 
-function buildDeviceBreakdown(hash: number) {
-  // Device data is never available from the API — generate deterministic but varied values
-  const mobileBase = 62 + (hash % 7);
-  const desktopBase = 25 + (hash % 5);
-  const tabletBase = 100 - mobileBase - desktopBase;
+function buildDeviceBreakdown() {
   return [
-    { device: "Mobile", percentage: mobileBase },
-    { device: "Desktop", percentage: desktopBase },
-    { device: "Tablet", percentage: Math.max(1, tabletBase) },
+    { device: "Mobile", percentage: 55 },
+    { device: "Desktop", percentage: 35 },
+    { device: "Tablet", percentage: 10 },
   ];
 }

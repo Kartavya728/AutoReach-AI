@@ -190,6 +190,24 @@ async function recoverLatestAgentResult(expectedBrief: string): Promise<AgentRun
   return null;
 }
 
+let preconnectedWs: WebSocket | null = null;
+let preconnectPort: number | null = null;
+
+export async function preloadAgentStream(): Promise<void> {
+  if (typeof window === "undefined") return;
+  if (preconnectedWs) {
+    if (preconnectedWs.readyState === WebSocket.OPEN || preconnectedWs.readyState === WebSocket.CONNECTING) {
+      return;
+    }
+  }
+  try {
+    preconnectPort = await bootstrapWebSocketServer();
+    preconnectedWs = new WebSocket(buildWebSocketUrl(preconnectPort));
+  } catch (err) {
+    console.warn("Failed to preload agent stream", err);
+  }
+}
+
 export async function streamCampaignAgent(
   brief: string,
   options?: StreamCampaignAgentOptions
@@ -198,13 +216,20 @@ export async function streamCampaignAgent(
     throw new Error("Agent streaming is only available in the browser runtime.");
   }
 
-  const wsPort = await bootstrapWebSocketServer();
+  const wsPort = preconnectPort ?? (await bootstrapWebSocketServer());
 
   return new Promise<AgentRunResult>((resolve, reject) => {
-    const ws = new WebSocket(buildWebSocketUrl(wsPort));
+    let ws: WebSocket;
+    if (preconnectedWs && (preconnectedWs.readyState === WebSocket.OPEN || preconnectedWs.readyState === WebSocket.CONNECTING)) {
+      ws = preconnectedWs;
+      preconnectedWs = null; // Consume the preloaded socket
+    } else {
+      ws = new WebSocket(buildWebSocketUrl(wsPort));
+    }
+
     let finished = false;
     let recoveringFromClose = false;
-    let opened = false;
+    let opened = ws.readyState === WebSocket.OPEN;
 
     const fail = (error: Error) => {
       if (finished) {
@@ -234,16 +259,20 @@ export async function streamCampaignAgent(
       };
     };
 
-    ws.onopen = () => {
-      opened = true;
-      ws.send(
-        JSON.stringify({
-          type: "start",
-          brief,
-          rounds: options?.rounds,
-        })
-      );
-    };
+    const startPayload = JSON.stringify({
+      type: "start",
+      brief,
+      rounds: options?.rounds,
+    });
+
+    if (opened) {
+      ws.send(startPayload);
+    } else {
+      ws.onopen = () => {
+        opened = true;
+        ws.send(startPayload);
+      };
+    }
 
     ws.onmessage = (messageEvent) => {
       let payload: unknown;

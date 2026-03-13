@@ -259,39 +259,18 @@ def summarize_customers(crm_data: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def ensure_four_categories(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Guarantee exactly four frontend cards while preserving all customers."""
+def ensure_minimum_categories(
+    segments: list[dict[str, Any]],
+    min_count: int = 3,
+) -> list[dict[str, Any]]:
+    """Guarantee at least `min_count` categories while preserving all customers."""
     clean = [dict(seg) for seg in segments if int(seg.get("size", 0)) > 0]
 
     if not clean:
         return []
 
-    # If there are more than 4 segments, merge tail into the 4th bucket.
-    if len(clean) > 4:
-        head = clean[:3]
-        tail = clean[3:]
-        merged_ids: list[str] = []
-        merged_criteria: list[str] = []
-        for t in tail:
-            merged_ids.extend([str(x) for x in t.get("customer_ids", [])])
-            if t.get("criteria"):
-                merged_criteria.append(str(t["criteria"]))
-
-        merged = {
-            "segment_id": "category_4_combined",
-            "segment_name": "Growth Opportunity Cohort",
-            "customer_ids": merged_ids,
-            "size": len(merged_ids),
-            "criteria": " | ".join(merged_criteria) if merged_criteria else "Combined long-tail audience",
-            "tone": "friendly",
-            "focus": "broad appeal",
-            "emoji_level": "moderate",
-            "tier": "Reactivate",
-        }
-        clean = [*head, merged]
-
-    # If fewer than 4, split the largest segments until we have 4.
-    while len(clean) < 4:
+    # If fewer than min_count, split the largest segments until we reach min_count.
+    while len(clean) < min_count:
         largest_idx = max(range(len(clean)), key=lambda i: int(clean[i].get("size", 0)))
         largest = clean[largest_idx]
         ids = [str(x) for x in largest.get("customer_ids", [])]
@@ -332,7 +311,7 @@ def ensure_four_categories(segments: list[dict[str, Any]]) -> list[dict[str, Any
         }
         clean.append(new_seg)
 
-    return clean[:4]
+    return clean
 
 
 def category_cards(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -576,14 +555,14 @@ async def run_react_planner_executor(
     )
 
     # Action 3: segment_customers
-    emit_react("thought", "I now segment customers into exactly four approval-ready categories.")
-    channel.log("Thought: I now segment customers into exactly four approval-ready categories.")
-    emit_react("action", "Generating and normalizing four customer categories.")
+    emit_react("thought", "I now segment customers into approval-ready categories.")
+    channel.log("Thought: I now segment customers into approval-ready categories.")
+    emit_react("action", "Generating and normalizing customer categories (minimum 3).")
     channel.log("Action: segment_customers")
-    channel.log("Action Input: {\"min_categories\": 4, \"max_categories\": 4}")
+    channel.log("Action Input: {\"min_categories\": 3}")
 
     segments = await segment_customers(crm_data, brief)
-    segments = ensure_four_categories(segments)
+    segments = ensure_minimum_categories(segments, min_count=3)
 
     state["segments"] = segments
 
@@ -602,7 +581,7 @@ async def run_react_planner_executor(
         "segment_approval",
         {
             "title": "Approve customer categories",
-            "message": "Review the four categories and approve to continue.",
+            "message": f"Review the {len(segments)} categories and approve to continue.",
             "segments": cards,
         },
         auto_payload={"approved": True},
@@ -648,7 +627,7 @@ async def run_react_planner_executor(
         "content_approval",
         {
             "title": "Approve generated emails",
-            "message": "Review each category email. Approve all to start sending.",
+            "message": "Review each category email. You can edit drafts before approving.",
             "variants": mail_cards,
         },
         auto_payload={"approved": True},
@@ -656,21 +635,42 @@ async def run_react_planner_executor(
     if not to_bool(content_input.get("approved"), default=True):
         raise RuntimeError("Human rejected generated email set. Pipeline stopped.")
 
+    # Apply any human edits to email drafts
+    edited = content_input.get("editedVariants")
+    if edited and isinstance(edited, list):
+        for edit in edited:
+            seg_id = str(edit.get("segmentId", ""))
+            if seg_id and seg_id in segment_variants:
+                if edit.get("subject"):
+                    segment_variants[seg_id]["subject"] = str(edit["subject"])
+                if edit.get("body"):
+                    segment_variants[seg_id]["body"] = str(edit["body"])
+        state["segment_variants"] = segment_variants
+        channel.emit_thinking(
+            f"Applied human edits to {len(edited)} email drafts.",
+            agent="Human-Gate",
+            kind="edit",
+        )
+        channel.log(f"[HITL] Applied {len(edited)} manual edits to email drafts.")
+
     emit_react("thought", "I now know the final answer.")
     channel.log("Thought: I now know the final answer")
     emit_react(
         "final",
-        "Categories and emails are approved. Starting live dispatch and optimization rounds."
+        "Categories and emails are approved. Starting virtual testing rounds."
     )
     channel.log(
-        "Final Answer: Categories and emails are approved. Starting live dispatch and optimization rounds."
+        "Final Answer: Categories and emails are approved. Starting virtual testing rounds."
     )
 
     # ------------------------------------------------------------------
-    # Execute Round 1 and optional optimization rounds
+    # Execute virtual testing rounds
     # ------------------------------------------------------------------
     all_round_metrics: list[dict[str, Any]] = []
     all_segment_results: list[dict[str, Any]] = []
+    cumulative_opened: set[str] = set()
+    cumulative_clicked: set[str] = set()
+    total_audience = len(state.get("target_customer_ids", []))
 
     current_groups: list[dict[str, Any]] = []
     for seg in segments:
@@ -694,7 +694,7 @@ async def run_react_planner_executor(
         raise RuntimeError("No eligible segment groups to send.")
 
     for round_num in range(1, rounds + 1):
-        print_header(f"ROUND {round_num} - Dispatch + Live Metrics")
+        print_header(f"VIRTUAL TESTING ROUND {round_num}")
 
         segment_results: list[dict[str, Any]] = []
 
@@ -727,10 +727,19 @@ async def run_react_planner_executor(
                 channel,
             )
             segment_results.append(metrics)
+
+            # Update cumulative union sets
+            cumulative_opened.update(str(cid) for cid in metrics.get("opened_ids", []))
+            cumulative_clicked.update(str(cid) for cid in metrics.get("clicked_ids", []))
+
+            denom = total_audience if total_audience > 0 else 1
+            cumul_open_rate = round((len(cumulative_opened) / denom) * 100, 1)
+            cumul_click_rate = round((len(cumulative_clicked) / denom) * 100, 1)
+
             channel.emit_thinking(
                 (
                     f"{group['segment_name']} delivered. "
-                    f"Open rate {metrics['open_rate']}%, click rate {metrics['click_rate']}%."
+                    f"Cumulative open {cumul_open_rate}%, click {cumul_click_rate}%."
                 ),
                 agent="Metrics-Agent",
                 kind="metrics",
@@ -742,10 +751,10 @@ async def run_react_planner_executor(
                 {
                     "round": round_num,
                     "sent": live["sent"],
-                    "opened": live["opened"],
-                    "clicked": live["clicked"],
-                    "openRate": live["open_rate"],
-                    "clickRate": live["click_rate"],
+                    "opened": len(cumulative_opened),
+                    "clicked": len(cumulative_clicked),
+                    "openRate": cumul_open_rate,
+                    "clickRate": cumul_click_rate,
                     "bySegment": [
                         {
                             "segmentName": str(item.get("segment_name", "")),
@@ -761,19 +770,24 @@ async def run_react_planner_executor(
             )
 
         round_totals = aggregate_metrics(segment_results)
+        all_segment_results.extend(segment_results)
+
+        denom = total_audience if total_audience > 0 else 1
+        cumul_open_rate = round((len(cumulative_opened) / denom) * 100, 1)
+        cumul_click_rate = round((len(cumulative_clicked) / denom) * 100, 1)
+
         round_summary = {
             "round": round_num,
             "audience": round_totals["sent"],
-            "open_rate": round_totals["open_rate"],
-            "click_rate": round_totals["click_rate"],
+            "open_rate": cumul_open_rate,
+            "click_rate": cumul_click_rate,
             "segments": len(segment_results),
         }
         all_round_metrics.append(round_summary)
-        all_segment_results.extend(segment_results)
         channel.emit_thinking(
             (
-                f"Round {round_num} complete. Audience {round_summary['audience']}, "
-                f"open {round_summary['open_rate']}%, click {round_summary['click_rate']}%."
+                f"Virtual testing round {round_num} complete. "
+                f"Cumulative open {cumul_open_rate}%, click {cumul_click_rate}%."
             ),
             agent="Optimizer",
             kind="summary",
@@ -785,8 +799,8 @@ async def run_react_planner_executor(
                 "round": round_num,
                 "summary": {
                     "audience": round_summary["audience"],
-                    "openRate": round_summary["open_rate"],
-                    "clickRate": round_summary["click_rate"],
+                    "openRate": cumul_open_rate,
+                    "clickRate": cumul_click_rate,
                     "segments": round_summary["segments"],
                 },
             },
@@ -810,14 +824,14 @@ async def run_react_planner_executor(
         next_round_input = await channel.wait_for_human(
             "next_round",
             {
-                "title": f"Start optimization round {round_num + 1}?",
-                "message": "Approve to continue with warm/cold retargeting.",
+                "title": f"Run virtual testing round {round_num + 1}?",
+                "message": "Continue virtual testing with warm/cold retargeting.",
                 "round": round_num,
                 "maxRounds": rounds,
                 "metrics": {
                     "audience": round_summary["audience"],
-                    "openRate": round_summary["open_rate"],
-                    "clickRate": round_summary["click_rate"],
+                    "openRate": cumul_open_rate,
+                    "clickRate": cumul_click_rate,
                 },
             },
             auto_payload={"continueOptimization": False},
@@ -825,15 +839,15 @@ async def run_react_planner_executor(
 
         if not to_bool(next_round_input.get("continueOptimization"), default=False):
             channel.emit_thinking(
-                f"Human chose to stop after round {round_num}.",
+                f"Human chose to stop after virtual testing round {round_num}.",
                 agent="Human-Gate",
                 kind="decision",
             )
-            channel.log(f"[Round {round_num}] Human chose to stop optimization rounds.")
+            channel.log(f"[Round {round_num}] Human chose to stop virtual testing.")
             break
 
         if not warm_ids and not cold_ids:
-            channel.log(f"[Round {round_num}] No warm/cold audience left. Stopping optimization.")
+            channel.log(f"[Round {round_num}] No warm/cold audience left. Stopping virtual testing.")
             break
 
         # Build groups for next optimization round.

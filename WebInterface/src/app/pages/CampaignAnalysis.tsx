@@ -304,8 +304,8 @@ export default function CampaignAnalysis() {
               {[
                 { label: "Total Sent", value: safeReport.totalSent.toLocaleString(), icon: Mail, color: "#7c3aed" },
                 { label: "Total Opened", value: safeReport.totalOpened.toLocaleString(), icon: Eye, color: "#0891b2" },
-                { label: "Open Rate", value: `${safeReport.openRate}%`, icon: TrendingUp, color: "#059669", sub: "Industry avg: 22%" },
-                { label: "Click Rate", value: `${safeReport.clickRate}%`, icon: MousePointer, color: "#ec4899", sub: "Industry avg: 10%" },
+                { label: "Open Rate", value: `${safeReport.openRate}%`, icon: TrendingUp, color: "#059669" },
+                { label: "Click Rate", value: `${safeReport.clickRate}%`, icon: MousePointer, color: "#ec4899" },
                 { label: "Opt Rounds", value: campaign.optimization_round ?? 1, icon: RefreshCw, color: "#f59e0b", sub: "Active Iterations" },
               ].map((stat, i) => (
                 <motion.div
@@ -624,34 +624,33 @@ export default function CampaignAnalysis() {
             </motion.div>
 
             {/* KEY INSIGHT */}
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.55 }}
-              className="p-5 rounded-2xl mb-8 flex items-start gap-4"
-              style={{
-                background: "linear-gradient(135deg, rgba(139,92,246,0.1), rgba(236,72,153,0.07))",
-                border: "1px solid rgba(139,92,246,0.3)",
-              }}
-            >
-              <div
-                className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
-                style={{ background: "rgba(139,92,246,0.3)" }}
+            {campaign.optimization_round && campaign.optimization_round > 1 && safeReport.totalSent > 0 && (
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.55 }}
+                className="p-5 rounded-2xl mb-8 flex items-start gap-4"
+                style={{
+                  background: "linear-gradient(135deg, rgba(139,92,246,0.1), rgba(236,72,153,0.07))",
+                  border: "1px solid rgba(139,92,246,0.3)",
+                }}
               >
-                <Brain className="w-5 h-5 text-violet-400" />
-              </div>
-              <div>
-                <div className="text-violet-300 mb-1" style={{ fontSize: "0.875rem", fontWeight: 600 }}>
-                  AI Key Insight
+                <div
+                  className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
+                  style={{ background: "rgba(139,92,246,0.3)" }}
+                >
+                  <Brain className="w-5 h-5 text-violet-400" />
                 </div>
-                <div className="text-gray-300" style={{ fontSize: "0.82rem", lineHeight: "1.6" }}>
-                  Top performing segment: <span className="text-violet-400 font-semibold">{safeReport.topPerformingSegment}</span>.{" "}
-                  Campaign performs best during <span className="text-pink-400 font-semibold">{safeReport.hourlyBestPerformance}</span>.
-                  South India + female + 26-45 age group shows strongest engagement. Recommend morning-slot targeted
-                  re-campaign with personalized subject lines.
+                <div>
+                  <div className="text-violet-300 mb-1" style={{ fontSize: "0.875rem", fontWeight: 600 }}>
+                    AI Key Insight
+                  </div>
+                  <div className="text-gray-300" style={{ fontSize: "0.82rem", lineHeight: "1.6" }}>
+                    Top performing segment identified as: <span className="text-violet-400 font-semibold">{safeReport.topPerformingSegment}</span>. 
+                  </div>
                 </div>
-              </div>
-            </motion.div>
+              </motion.div>
+            )}
 
             {/* ── OPTIMIZATION HISTORY ── */}
             {optimizationHistory && optimizationHistory.length > 0 && (

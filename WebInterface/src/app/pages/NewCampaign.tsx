@@ -14,6 +14,7 @@ import {
   Layers3,
   Mail,
   PauseCircle,
+  Pencil,
   Play,
   Radar,
   RefreshCw,
@@ -28,7 +29,7 @@ import {
 } from "lucide-react";
 import { Navbar } from "../components/Navbar";
 import { AIProcessing } from "../components/AIProcessing";
-import { streamCampaignAgent, type AgentPauseResponder } from "../../lib/agent-stream";
+import { streamCampaignAgent, preloadAgentStream, type AgentPauseResponder } from "../../lib/agent-stream";
 import type {
   AgentDraftCard,
   AgentLiveMetrics,
@@ -232,6 +233,8 @@ export default function NewCampaign() {
   const [error, setError] = useState<string | null>(null);
   const [terminalOpen, setTerminalOpen] = useState(true);
   const [displayedTerminal, setDisplayedTerminal] = useState("");
+  const [editingDrafts, setEditingDrafts] = useState(false);
+  const [editedDrafts, setEditedDrafts] = useState<AgentDraftCard[]>([]);
   const terminalRef = useRef<HTMLPreElement>(null);
   const pendingCharsRef = useRef<string[]>([]);
   const rafIdRef = useRef<number | null>(null);
@@ -285,6 +288,9 @@ export default function NewCampaign() {
 
   // Start/stop typewriter based on phase
   useEffect(() => {
+    // Preload websocket connection so it's instantly ready when user hits Start
+    preloadAgentStream().catch(console.error);
+
     if (phase === "running") {
       startTypewriter();
     } else {
@@ -364,6 +370,8 @@ export default function NewCampaign() {
     setDisplayedTerminal("");
     pendingCharsRef.current = [];
     setTerminalOpen(true);
+    setEditingDrafts(false);
+    setEditedDrafts([]);
     touchActivity(true);
   };
 
@@ -387,11 +395,43 @@ export default function NewCampaign() {
       answerCheckpoint({ continueOptimization: true });
       return;
     }
+    // If editing drafts, send edited variants with approval
+    if (editingDrafts && editedDrafts.length > 0) {
+      const editedVariants = editedDrafts.map((d) => ({
+        segmentId: d.segmentId,
+        subject: d.subject,
+        body: d.body,
+      }));
+      setEditingDrafts(false);
+      setEditedDrafts([]);
+      answerCheckpoint({ approved: true, editedVariants });
+      return;
+    }
+    setEditingDrafts(false);
+    setEditedDrafts([]);
     answerCheckpoint({ approved: true });
   };
 
   const handleStopOptimization = () => {
     answerCheckpoint({ continueOptimization: false });
+  };
+
+  const handleEditDrafts = () => {
+    setEditedDrafts(displayedDrafts.map((d) => ({ ...d })));
+    setEditingDrafts(true);
+  };
+
+  const handleCancelEdit = () => {
+    setEditingDrafts(false);
+    setEditedDrafts([]);
+  };
+
+  const updateEditedDraft = (index: number, field: "subject" | "body", value: string) => {
+    setEditedDrafts((prev) => {
+      const copy = [...prev];
+      copy[index] = { ...copy[index], [field]: value };
+      return copy;
+    });
   };
 
   const handleStart = async () => {
@@ -1003,8 +1043,44 @@ export default function NewCampaign() {
                         }}
                       >
                         <CheckCircle2 className="w-4 h-4" />
-                        {pendingPause.pauseType === "next_round" ? "Run next round" : "Approve all"}
+                        {pendingPause.pauseType === "next_round"
+                          ? "Run next round"
+                          : editingDrafts
+                            ? "Save & approve"
+                            : "Approve all"}
                       </motion.button>
+
+                      {pendingPause.pauseType === "content_approval" && !editingDrafts && (
+                        <motion.button
+                          whileHover={{ scale: 1.02 }}
+                          whileTap={{ scale: 0.98 }}
+                          onClick={handleEditDrafts}
+                          className="inline-flex items-center gap-2 px-5 py-3 rounded-[18px] text-slate-100"
+                          style={{
+                            background: "rgba(99,102,241,0.16)",
+                            border: "1px solid rgba(129,140,248,0.28)",
+                            fontSize: "0.88rem",
+                            fontWeight: 600,
+                          }}
+                        >
+                          <Pencil className="w-4 h-4" />
+                          Edit drafts
+                        </motion.button>
+                      )}
+
+                      {pendingPause.pauseType === "content_approval" && editingDrafts && (
+                        <button
+                          onClick={handleCancelEdit}
+                          className="inline-flex items-center gap-2 px-5 py-3 rounded-[18px] text-slate-300"
+                          style={{
+                            background: "rgba(148,163,184,0.1)",
+                            border: "1px solid rgba(148,163,184,0.2)",
+                            fontSize: "0.88rem",
+                          }}
+                        >
+                          Cancel edit
+                        </button>
+                      )}
 
                       {pendingPause.pauseType === "next_round" && (
                         <button
@@ -1097,11 +1173,11 @@ export default function NewCampaign() {
                 </div>
               ) : (
                 <div className="grid gap-3">
-                  {displayedDrafts.map((draft, index) => (
+                  {(editingDrafts ? editedDrafts : displayedDrafts).map((draft, index) => (
                     <div
                       key={`${draft.segmentId}-${index}`}
                       className="rounded-[24px] p-4"
-                      style={{ background: "rgba(15,23,42,0.58)", border: "1px solid rgba(148,163,184,0.12)" }}
+                      style={{ background: "rgba(15,23,42,0.58)", border: `1px solid ${editingDrafts ? "rgba(129,140,248,0.28)" : "rgba(148,163,184,0.12)"}` }}
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div>
@@ -1109,7 +1185,7 @@ export default function NewCampaign() {
                             {draft.segmentName}
                           </div>
                           <div className="text-slate-400 mt-1" style={{ fontSize: "0.74rem" }}>
-                            Subject line ready for approval
+                            {editingDrafts ? "Editing — change subject and body below" : "Subject line ready for approval"}
                           </div>
                         </div>
                         {draft.tone && (
@@ -1126,21 +1202,50 @@ export default function NewCampaign() {
                         <div className="text-slate-500 uppercase tracking-[0.16em]" style={{ fontSize: "0.64rem" }}>
                           Subject
                         </div>
-                        <div className="text-slate-100 mt-2" style={{ fontSize: "0.84rem", fontWeight: 600 }}>
-                          {draft.subject}
-                        </div>
+                        {editingDrafts ? (
+                          <input
+                            value={draft.subject}
+                            onChange={(e) => updateEditedDraft(index, "subject", e.target.value)}
+                            className="w-full mt-2 px-3 py-2 rounded-[12px] text-slate-100 outline-none"
+                            style={{
+                              background: "rgba(30,41,59,0.8)",
+                              border: "1px solid rgba(129,140,248,0.3)",
+                              fontSize: "0.84rem",
+                              fontWeight: 600,
+                            }}
+                          />
+                        ) : (
+                          <div className="text-slate-100 mt-2" style={{ fontSize: "0.84rem", fontWeight: 600 }}>
+                            {draft.subject}
+                          </div>
+                        )}
                         <div
                           className="text-slate-500 uppercase tracking-[0.16em] mt-4"
                           style={{ fontSize: "0.64rem" }}
                         >
                           Body preview
                         </div>
-                        <p
-                          className="text-slate-300 mt-2 whitespace-pre-wrap line-clamp-5"
-                          style={{ fontSize: "0.8rem", lineHeight: 1.7 }}
-                        >
-                          {draft.body}
-                        </p>
+                        {editingDrafts ? (
+                          <textarea
+                            value={draft.body}
+                            onChange={(e) => updateEditedDraft(index, "body", e.target.value)}
+                            rows={6}
+                            className="w-full mt-2 px-3 py-2 rounded-[12px] text-slate-300 outline-none resize-y"
+                            style={{
+                              background: "rgba(30,41,59,0.8)",
+                              border: "1px solid rgba(129,140,248,0.3)",
+                              fontSize: "0.8rem",
+                              lineHeight: 1.7,
+                            }}
+                          />
+                        ) : (
+                          <p
+                            className="text-slate-300 mt-2 whitespace-pre-wrap line-clamp-5"
+                            style={{ fontSize: "0.8rem", lineHeight: 1.7 }}
+                          >
+                            {draft.body}
+                          </p>
+                        )}
                       </div>
 
                       {draft.tags && draft.tags.length > 0 && (
@@ -1246,7 +1351,7 @@ export default function NewCampaign() {
           </Surface>
 
           <Surface
-            eyebrow="Optimization trace"
+            eyebrow="Virtual testing trace"
             title="Round history"
             right={<Sparkles className="w-5 h-5 text-amber-300" />}
           >
@@ -1255,7 +1360,7 @@ export default function NewCampaign() {
                 className="rounded-[24px] p-5 text-slate-400"
                 style={{ background: "rgba(15,23,42,0.56)", border: "1px dashed rgba(148,163,184,0.16)" }}
               >
-                Completed round summaries appear here after each optimization pass.
+                Completed round summaries appear here after each virtual testing pass.
               </div>
             ) : (
               <div className="space-y-3">
@@ -1268,7 +1373,7 @@ export default function NewCampaign() {
                     <div className="flex items-center justify-between gap-4">
                       <div>
                         <div className="text-white" style={{ fontSize: "0.88rem", fontWeight: 600 }}>
-                          Optimization round {round.round}
+                          Virtual testing round {round.round}
                         </div>
                         <div className="text-slate-400 mt-1" style={{ fontSize: "0.72rem" }}>
                           {formatCount(round.summary.audience)} audience across {round.summary.segments} groups
@@ -1329,6 +1434,102 @@ export default function NewCampaign() {
               </div>
             </div>
           </motion.div>
+        )}
+
+        {phase === "complete" && result && (
+          <div className="mt-6 flex justify-center">
+            <motion.button
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              onClick={() => {
+                resetRun();
+                setPhase("running");
+                void (async () => {
+                  try {
+                    const optimResult = await streamCampaignAgent(brief, {
+                      rounds: 1,
+                      onHeartbeat: () => touchActivity(),
+                      onThinking: (step) => {
+                        touchActivity(true);
+                        setThinkingSteps((current) => pushUniqueStep(current, step));
+                      },
+                      onPause: (pause, respond) => {
+                        touchActivity(true);
+                        pauseResponderRef.current = respond;
+                        setPendingPause(pause);
+                        if (pause.segments && pause.segments.length > 0) {
+                          setSegmentCards(pause.segments);
+                        }
+                        if (pause.variants && pause.variants.length > 0) {
+                          setDraftCards(pause.variants);
+                        }
+                        setPhase("paused");
+                      },
+                      onLiveMetrics: (metrics) => {
+                        touchActivity(true);
+                        setPhase("running");
+                        setMetricsHistory((current) => {
+                          const previous = current[current.length - 1];
+                          if (
+                            previous &&
+                            previous.round === metrics.round &&
+                            previous.sent === metrics.sent &&
+                            previous.opened === metrics.opened &&
+                            previous.clicked === metrics.clicked
+                          ) {
+                            return current;
+                          }
+                          return [...current, metrics].slice(-24);
+                        });
+                      },
+                      onTerminal: (text) => {
+                        touchActivity();
+                        enqueueTerminal(text);
+                      },
+                      onRoundComplete: (round) => {
+                        touchActivity(true);
+                        setRoundHistory((current) => {
+                          const previous = current[current.length - 1];
+                          if (previous && previous.round === round.round) {
+                            return [...current.slice(0, -1), round];
+                          }
+                          return [...current, round];
+                        });
+                      },
+                    });
+                    setResult(optimResult);
+                    setSegmentCards((current) =>
+                      current.length > 0 ? current : toSegmentCardsFromResult(optimResult)
+                    );
+                    setDraftCards((current) =>
+                      current.length > 0 ? current : toDraftCardsFromResult(optimResult)
+                    );
+                    setPendingPause(null);
+                    pauseResponderRef.current = null;
+                    setPhase("complete");
+                    touchActivity(true);
+                  } catch (runError) {
+                    const message =
+                      runError instanceof Error
+                        ? runError.message
+                        : "Optimization round failed.";
+                    setError(message);
+                    setPhase("error");
+                  }
+                })();
+              }}
+              className="inline-flex items-center gap-3 px-8 py-4 rounded-[22px] text-white"
+              style={{
+                background: "linear-gradient(135deg, #f59e0b 0%, #ef4444 100%)",
+                fontSize: "0.96rem",
+                fontWeight: 700,
+                boxShadow: "0 4px 24px rgba(245,158,11,0.3)",
+              }}
+            >
+              <RefreshCw className="w-5 h-5" />
+              Run Optimization Round
+            </motion.button>
+          </div>
         )}
       </div>
     </div>
