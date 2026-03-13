@@ -2,20 +2,30 @@
 
 import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "motion/react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
+  BarChart3,
   Bot,
+  BrainCircuit,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Clock3,
+  Eye,
+  EyeOff,
+  Gavel,
   LoaderCircle,
   Pencil,
   Play,
+  Search,
   Send,
   Sparkles,
   StopCircle,
+  TrendingUp,
   User,
   XCircle,
+  Zap,
 } from "lucide-react";
 import { Navbar } from "../components/Navbar";
 import { preloadAgentStream, streamCampaignAgent, type AgentPauseResponder } from "../../lib/agent-stream";
@@ -37,6 +47,9 @@ const DEFAULT_BRIEF =
 const DEFAULT_CTA_LINK = "https://superbfsi.com/xdeposit/explore/";
 const MAX_INTERACTIVE_OPTIMIZATION_ROUNDS = 10;
 const INITIAL_VISIBLE_TWIN_CARDS = 3;
+const INITIAL_VISIBLE_SEGMENTS = 3;
+const INITIAL_VISIBLE_DRAFTS = 2;
+const EMAIL_BODY_PREVIEW_LINES = 3;
 
 type RunPhase = "idle" | "running" | "paused" | "complete" | "error";
 type MessageRole = "user" | "agent" | "system";
@@ -62,7 +75,95 @@ function kindLabel(kind?: string) {
   if (value === "final") return "Final";
   if (value === "metrics") return "Metrics";
   if (value === "decision") return "Decision";
+  if (value === "summary") return "Summary";
   return "Status";
+}
+
+function kindVisualConfig(kind?: string) {
+  const value = (kind || "status").toLowerCase();
+  switch (value) {
+    case "thought":
+      return {
+        icon: BrainCircuit,
+        badgeBg: "rgba(99,102,241,0.15)",
+        badgeBorder: "1px solid rgba(129,140,248,0.3)",
+        badgeColor: "#c7d2fe",
+        bubbleBg: "rgba(30,27,75,0.45)",
+        bubbleBorder: "1px solid rgba(99,102,241,0.18)",
+        accentColor: "#818cf8",
+      };
+    case "action":
+      return {
+        icon: Zap,
+        badgeBg: "rgba(245,158,11,0.15)",
+        badgeBorder: "1px solid rgba(251,191,36,0.3)",
+        badgeColor: "#fde68a",
+        bubbleBg: "rgba(45,26,3,0.4)",
+        bubbleBorder: "1px solid rgba(245,158,11,0.18)",
+        accentColor: "#fbbf24",
+      };
+    case "observation":
+      return {
+        icon: Search,
+        badgeBg: "rgba(20,184,166,0.15)",
+        badgeBorder: "1px solid rgba(45,212,191,0.3)",
+        badgeColor: "#99f6e4",
+        bubbleBg: "rgba(4,47,46,0.35)",
+        bubbleBorder: "1px solid rgba(20,184,166,0.18)",
+        accentColor: "#2dd4bf",
+      };
+    case "metrics":
+    case "summary":
+      return {
+        icon: BarChart3,
+        badgeBg: "rgba(16,185,129,0.15)",
+        badgeBorder: "1px solid rgba(52,211,153,0.3)",
+        badgeColor: "#a7f3d0",
+        bubbleBg: "rgba(6,78,59,0.3)",
+        bubbleBorder: "1px solid rgba(16,185,129,0.2)",
+        accentColor: "#34d399",
+      };
+    case "decision":
+      return {
+        icon: Gavel,
+        badgeBg: "rgba(168,85,247,0.15)",
+        badgeBorder: "1px solid rgba(192,132,252,0.3)",
+        badgeColor: "#e9d5ff",
+        bubbleBg: "rgba(59,7,100,0.3)",
+        bubbleBorder: "1px solid rgba(168,85,247,0.18)",
+        accentColor: "#c084fc",
+      };
+    case "final":
+      return {
+        icon: CheckCircle2,
+        badgeBg: "rgba(34,197,94,0.18)",
+        badgeBorder: "1px solid rgba(74,222,128,0.35)",
+        badgeColor: "#bbf7d0",
+        bubbleBg: "rgba(5,46,22,0.4)",
+        bubbleBorder: "1px solid rgba(34,197,94,0.22)",
+        accentColor: "#4ade80",
+      };
+    case "pause":
+      return {
+        icon: Clock3,
+        badgeBg: "rgba(251,146,60,0.15)",
+        badgeBorder: "1px solid rgba(251,146,60,0.3)",
+        badgeColor: "#fed7aa",
+        bubbleBg: "rgba(67,20,7,0.3)",
+        bubbleBorder: "1px solid rgba(251,146,60,0.2)",
+        accentColor: "#fb923c",
+      };
+    default:
+      return {
+        icon: Bot,
+        badgeBg: "rgba(8,145,178,0.15)",
+        badgeBorder: "1px solid rgba(34,211,238,0.25)",
+        badgeColor: "#a5f3fc",
+        bubbleBg: "rgba(15,23,42,0.72)",
+        bubbleBorder: "1px solid rgba(148,163,184,0.16)",
+        accentColor: "#22d3ee",
+      };
+  }
 }
 
 function formatPercent(value?: number | null) {
@@ -332,6 +433,10 @@ export default function NewCampaign() {
   const [draftApprovalStatus, setDraftApprovalStatus] = useState<Record<string, ApprovalDecision>>({});
   const [twinCards, setTwinCards] = useState<Record<string, AgentTwinCard>>({});
   const [visibleTwinCards, setVisibleTwinCards] = useState(INITIAL_VISIBLE_TWIN_CARDS);
+  const [visibleSegments, setVisibleSegments] = useState(INITIAL_VISIBLE_SEGMENTS);
+  const [visibleDrafts, setVisibleDrafts] = useState(INITIAL_VISIBLE_DRAFTS);
+  const [expandedBodies, setExpandedBodies] = useState<Set<string>>(new Set());
+  const [collapsedSections, setCollapsedSections] = useState<Record<string,boolean>>({});
 
   const thinkingMessages = useMemo(() => [
     "Agent thinking",
@@ -400,6 +505,10 @@ export default function NewCampaign() {
     setDraftApprovalStatus({});
     setTwinCards({});
     setVisibleTwinCards(INITIAL_VISIBLE_TWIN_CARDS);
+    setVisibleSegments(INITIAL_VISIBLE_SEGMENTS);
+    setVisibleDrafts(INITIAL_VISIBLE_DRAFTS);
+    setExpandedBodies(new Set());
+    setCollapsedSections({});
     
     setLatestMetrics((currentMetrics) => {
       if (isOptimization) {
@@ -918,7 +1027,7 @@ export default function NewCampaign() {
                 border: "1px solid rgba(148,163,184,0.2)",
               }}
             >
-              <div className="space-y-4">
+              <div className="space-y-1.5">
                 <AnimatePresence initial={false}>
                   {messages.map((message, index) => {
                     const isUser = message.role === "user";
@@ -930,56 +1039,132 @@ export default function NewCampaign() {
 
                     if (!shouldStartRevealing) return null;
 
-                    return (
-                      <motion.div
-                        key={message.id}
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -6 }}
-                        transition={{ duration: 0.2 }}
-                        className={`flex ${isUser ? "justify-end" : "justify-start"}`}
-                      >
-                        <div
-                          className="max-w-[92%] md:max-w-[80%] rounded-2xl px-4 py-3"
-                          style={{
-                            background: isUser
-                              ? "linear-gradient(135deg, rgba(37,99,235,0.9) 0%, rgba(14,116,144,0.9) 100%)"
-                              : "rgba(15,23,42,0.82)",
-                            border: isUser ? "1px solid rgba(125,211,252,0.3)" : "1px solid rgba(148,163,184,0.2)",
-                          }}
+                    // Check if this is the start of a new agent (phase separator)
+                    const prevMsg = index > 0 ? messages[index - 1] : null;
+                    const showPhaseSeparator = !isUser && !isSystem && prevMsg && (
+                      prevMsg.role === "user" ||
+                      (prevMsg.agent && message.agent && prevMsg.agent !== message.agent)
+                    );
+
+                    // Same-agent consecutive message = compact mode (thinner, no header)
+                    const isSameAgentContinuation = !isUser && !isSystem && prevMsg &&
+                      prevMsg.role !== "user" && prevMsg.role !== "system" &&
+                      prevMsg.agent === message.agent && !showPhaseSeparator;
+
+                    const kindConfig = kindVisualConfig(message.kind);
+                    const KindIcon = kindConfig.icon;
+
+                    // User messages
+                    if (isUser) {
+                      return (
+                        <motion.div
+                          key={message.id}
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: -6 }}
+                          transition={{ duration: 0.2 }}
+                          className="flex justify-end"
                         >
-                          <div className="flex items-center gap-2 mb-2">
-                            <span className="inline-flex items-center gap-1.5 text-slate-200" style={{ fontSize: "0.72rem" }}>
-                              {isUser ? <User className="w-3.5 h-3.5" /> : <Bot className="w-3.5 h-3.5" />}
-                              {isUser ? "You" : message.agent || "Agent"}
-                            </span>
-                            {!isUser && !isSystem && (
-                              <span
-                                className="px-2 py-0.5 rounded-full"
-                                style={{
-                                  fontSize: "0.66rem",
-                                  color: "#a5f3fc",
-                                  background: "rgba(8,145,178,0.2)",
-                                  border: "1px solid rgba(34,211,238,0.28)",
-                                }}
-                              >
-                                {kindLabel(message.kind)}
-                              </span>
-                            )}
+                          <div
+                            className="max-w-[85%] md:max-w-[70%] rounded-2xl px-4 py-3"
+                            style={{
+                              background: "linear-gradient(135deg, rgba(37,99,235,0.9) 0%, rgba(14,116,144,0.9) 100%)",
+                              border: "1px solid rgba(125,211,252,0.3)",
+                            }}
+                          >
+                            <div className="flex items-center gap-1.5 mb-1.5">
+                              <User className="w-3 h-3 text-blue-200" />
+                              <span className="text-blue-100" style={{ fontSize: "0.7rem", fontWeight: 600 }}>You</span>
+                            </div>
+                            <p className="text-white whitespace-pre-wrap" style={{ fontSize: "0.86rem", lineHeight: 1.6 }}>
+                              {message.text}
+                            </p>
                           </div>
-                          <p className="text-slate-100 whitespace-pre-wrap" style={{ fontSize: "0.87rem", lineHeight: 1.65 }}>
-                            {isFullyRevealed ? (
-                               message.text
-                            ) : (
-                               <AnimatedMessage 
-                                 text={message.text} 
-                                 onUpdate={triggerScroll}
-                                 onComplete={() => setCompletedMessageIds((current) => new Set(current).add(message.id))}
-                               />
+                        </motion.div>
+                      );
+                    }
+
+                    // Agent / System messages - styled by kind
+                    return (
+                      <React.Fragment key={message.id}>
+                        {showPhaseSeparator && (
+                          <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            className="flex items-center gap-3 py-2"
+                          >
+                            <div className="flex-1 h-px" style={{ background: "linear-gradient(90deg, transparent, rgba(148,163,184,0.2), transparent)" }} />
+                            <span className="text-slate-500 flex items-center gap-1.5" style={{ fontSize: "0.66rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.1em" }}>
+                              <Sparkles className="w-3 h-3" />
+                              {message.agent || "Agent"}
+                            </span>
+                            <div className="flex-1 h-px" style={{ background: "linear-gradient(90deg, transparent, rgba(148,163,184,0.2), transparent)" }} />
+                          </motion.div>
+                        )}
+                        <motion.div
+                          initial={{ opacity: 0, y: 8 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: -4 }}
+                          transition={{ duration: 0.18 }}
+                          className="flex justify-start"
+                        >
+                          <div
+                            className={`max-w-[95%] md:max-w-[88%] rounded-xl ${isSameAgentContinuation ? "ml-6" : ""}`}
+                            style={{
+                              padding: isSameAgentContinuation ? "6px 12px" : "10px 14px",
+                              background: kindConfig.bubbleBg,
+                              border: kindConfig.bubbleBorder,
+                            }}
+                          >
+                            {/* Header - shown only for first message in a group or different agents */}
+                            {!isSameAgentContinuation && (
+                              <div className="flex items-center gap-2 mb-1.5">
+                                <div
+                                  className="w-5 h-5 rounded-md flex items-center justify-center"
+                                  style={{ background: kindConfig.badgeBg, border: kindConfig.badgeBorder }}
+                                >
+                                  <KindIcon className="w-3 h-3" style={{ color: kindConfig.accentColor }} />
+                                </div>
+                                <span className="text-slate-300" style={{ fontSize: "0.7rem", fontWeight: 600 }}>
+                                  {message.agent || "Agent"}
+                                </span>
+                                <span
+                                  className="px-1.5 py-0.5 rounded-full"
+                                  style={{
+                                    fontSize: "0.6rem",
+                                    fontWeight: 700,
+                                    color: kindConfig.badgeColor,
+                                    background: kindConfig.badgeBg,
+                                    border: kindConfig.badgeBorder,
+                                  }}
+                                >
+                                  {kindLabel(message.kind)}
+                                </span>
+                              </div>
                             )}
-                          </p>
-                        </div>
-                      </motion.div>
+                            {/* Compact inline badge for continuation messages */}
+                            {isSameAgentContinuation && (
+                              <div className="flex items-center gap-1.5 mb-1">
+                                <KindIcon className="w-3 h-3" style={{ color: kindConfig.accentColor, opacity: 0.7 }} />
+                                <span className="px-1.5 py-0.5 rounded-full" style={{ fontSize: "0.58rem", fontWeight: 600, color: kindConfig.badgeColor, background: kindConfig.badgeBg, border: kindConfig.badgeBorder, opacity: 0.8 }}>
+                                  {kindLabel(message.kind)}
+                                </span>
+                              </div>
+                            )}
+                            <p className="text-slate-200 whitespace-pre-wrap" style={{ fontSize: isSameAgentContinuation ? "0.82rem" : "0.85rem", lineHeight: 1.55 }}>
+                              {isFullyRevealed ? (
+                                 message.text
+                              ) : (
+                                 <AnimatedMessage 
+                                   text={message.text} 
+                                   onUpdate={triggerScroll}
+                                   onComplete={() => setCompletedMessageIds((current) => new Set(current).add(message.id))}
+                                 />
+                              )}
+                            </p>
+                          </div>
+                        </motion.div>
+                      </React.Fragment>
                     );
                   })}
                 </AnimatePresence>
@@ -1020,104 +1205,220 @@ export default function NewCampaign() {
                     )}
 
                     {segmentCards.length > 0 && (
-                      <div className="grid gap-2 mt-3">
-                        {segmentCards.map((segment) => (
-                          <div key={segment.segmentId} className="rounded-xl p-3" style={{ background: "rgba(2,6,23,0.65)", border: "1px solid rgba(251,191,36,0.2)" }}>
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="text-slate-100" style={{ fontSize: "0.8rem", fontWeight: 600 }}>{segment.name}</div>
-                              <div className="text-slate-300" style={{ fontSize: "0.72rem" }}>{formatCount(segment.size)} customers</div>
+                      <div className="mt-3">
+                        <button
+                          onClick={() => setCollapsedSections(c => ({ ...c, segments: !c.segments }))}
+                          className="flex items-center gap-2 w-full text-left mb-2"
+                        >
+                          {collapsedSections.segments ? <ChevronDown className="w-3.5 h-3.5 text-slate-400" /> : <ChevronUp className="w-3.5 h-3.5 text-slate-400" />}
+                          <span className="text-slate-300" style={{ fontSize: "0.74rem", fontWeight: 600 }}>Categories ({segmentCards.length})</span>
+                        </button>
+                        {!collapsedSections.segments && (
+                          <>
+                            <div className="grid gap-2">
+                              {segmentCards.slice(0, visibleSegments).map((segment) => {
+                                const tierColors: Record<string, { bg: string; border: string; text: string }> = {
+                                  Diamond: { bg: "rgba(168,85,247,0.18)", border: "1px solid rgba(168,85,247,0.35)", text: "#e9d5ff" },
+                                  Gold: { bg: "rgba(245,158,11,0.18)", border: "1px solid rgba(251,191,36,0.35)", text: "#fde68a" },
+                                  Silver: { bg: "rgba(100,116,139,0.22)", border: "1px solid rgba(148,163,184,0.35)", text: "#e2e8f0" },
+                                  Reactivate: { bg: "rgba(244,63,94,0.15)", border: "1px solid rgba(251,113,133,0.3)", text: "#fecdd3" },
+                                  Priority: { bg: "rgba(14,116,144,0.18)", border: "1px solid rgba(34,211,238,0.3)", text: "#cffafe" },
+                                  Active: { bg: "rgba(22,163,74,0.15)", border: "1px solid rgba(34,197,94,0.3)", text: "#dcfce7" },
+                                };
+                                const tierStyle = tierColors[segment.tier || ""] || { bg: "rgba(51,65,85,0.3)", border: "1px solid rgba(100,116,139,0.3)", text: "#cbd5e1" };
+                                return (
+                                  <div key={segment.segmentId} className="rounded-xl p-3" style={{ background: "rgba(2,6,23,0.65)", border: "1px solid rgba(251,191,36,0.2)" }}>
+                                    <div className="flex items-center justify-between gap-2">
+                                      <div className="flex items-center gap-2">
+                                        <div className="text-slate-100" style={{ fontSize: "0.8rem", fontWeight: 600 }}>{segment.name}</div>
+                                        {segment.tier && (
+                                          <span className="px-2 py-0.5 rounded-full" style={{ fontSize: "0.62rem", fontWeight: 700, background: tierStyle.bg, border: tierStyle.border, color: tierStyle.text }}>
+                                            {segment.tier}
+                                          </span>
+                                        )}
+                                      </div>
+                                      <div className="text-slate-300" style={{ fontSize: "0.72rem" }}>{formatCount(segment.size)} customers</div>
+                                    </div>
+                                    <p className="text-slate-300 mt-1" style={{ fontSize: "0.74rem" }}>{segment.criteria || segment.focus || "Segment details available."}</p>
+                                    <div className="flex gap-2 mt-3">
+                                      <button
+                                        onClick={() => toggleSegmentApproval(segment.segmentId, "approved")}
+                                        className="px-2.5 py-1 rounded-lg text-xs"
+                                        style={{
+                                          background: (segmentApprovalStatus[segment.segmentId] ?? "pending") === "approved" ? "rgba(22,163,74,0.22)" : "rgba(15,23,42,0.8)",
+                                          border: "1px solid rgba(34,197,94,0.35)",
+                                          color: "#dcfce7",
+                                        }}
+                                      >
+                                        Approve
+                                      </button>
+                                      <button
+                                        onClick={() => toggleSegmentApproval(segment.segmentId, "rejected")}
+                                        className="px-2.5 py-1 rounded-lg text-xs"
+                                        style={{
+                                          background: (segmentApprovalStatus[segment.segmentId] ?? "pending") === "rejected" ? "rgba(220,38,38,0.22)" : "rgba(15,23,42,0.8)",
+                                          border: "1px solid rgba(248,113,113,0.35)",
+                                          color: "#fee2e2",
+                                        }}
+                                      >
+                                        Reject
+                                      </button>
+                                    </div>
+                                  </div>
+                                );
+                              })}
                             </div>
-                            <p className="text-slate-300 mt-1" style={{ fontSize: "0.74rem" }}>{segment.criteria || segment.focus || "Segment details available."}</p>
-                            <div className="flex gap-2 mt-3">
+                            {segmentCards.length > visibleSegments && (
                               <button
-                                onClick={() => toggleSegmentApproval(segment.segmentId, "approved")}
-                                className="px-2.5 py-1 rounded-lg text-xs"
-                                style={{
-                                  background: (segmentApprovalStatus[segment.segmentId] ?? "pending") === "approved" ? "rgba(22,163,74,0.22)" : "rgba(15,23,42,0.8)",
-                                  border: "1px solid rgba(34,197,94,0.35)",
-                                  color: "#dcfce7",
-                                }}
+                                onClick={() => setVisibleSegments(c => c + INITIAL_VISIBLE_SEGMENTS)}
+                                className="w-full mt-2 py-2 rounded-lg text-slate-300 hover:text-white transition-colors"
+                                style={{ background: "rgba(30,41,59,0.5)", border: "1px solid rgba(148,163,184,0.18)", fontSize: "0.76rem", fontWeight: 600 }}
                               >
-                                Approve
+                                View {Math.min(INITIAL_VISIBLE_SEGMENTS, segmentCards.length - visibleSegments)} more categories
                               </button>
+                            )}
+                            {visibleSegments > INITIAL_VISIBLE_SEGMENTS && (
                               <button
-                                onClick={() => toggleSegmentApproval(segment.segmentId, "rejected")}
-                                className="px-2.5 py-1 rounded-lg text-xs"
-                                style={{
-                                  background: (segmentApprovalStatus[segment.segmentId] ?? "pending") === "rejected" ? "rgba(220,38,38,0.22)" : "rgba(15,23,42,0.8)",
-                                  border: "1px solid rgba(248,113,113,0.35)",
-                                  color: "#fee2e2",
-                                }}
+                                onClick={() => setVisibleSegments(INITIAL_VISIBLE_SEGMENTS)}
+                                className="w-full mt-1 py-1.5 rounded-lg text-slate-400 hover:text-slate-200 transition-colors"
+                                style={{ fontSize: "0.72rem" }}
                               >
-                                Reject
+                                Show less
                               </button>
-                            </div>
-                          </div>
-                        ))}
+                            )}
+                          </>
+                        )}
                       </div>
                     )}
 
                     {approvalDrafts.length > 0 && (
-                      <div className="grid gap-2 mt-3">
-                        {approvalDrafts.map((draft, index) => (
-                          <div key={`${draft.segmentId}-${index}`} className="rounded-xl p-3" style={{ background: "rgba(2,6,23,0.65)", border: "1px solid rgba(251,191,36,0.2)" }}>
-                            <div className="text-slate-100" style={{ fontSize: "0.8rem", fontWeight: 600 }}>{draft.segmentName}</div>
-                            <div className="mt-2">
-                              <div className="text-slate-400" style={{ fontSize: "0.66rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>Subject</div>
-                              {editingDrafts ? (
-                                <input
-                                  value={draft.subject}
-                                  onChange={(event) => updateEditedDraft(index, "subject", event.target.value)}
-                                  className="w-full mt-1 px-2.5 py-1.5 rounded-lg bg-slate-800/80 text-slate-100 outline-none"
-                                  style={{ border: "1px solid rgba(148,163,184,0.35)", fontSize: "0.78rem" }}
-                                />
-                              ) : (
-                                <div className="text-slate-100 mt-1" style={{ fontSize: "0.78rem", fontWeight: 600 }}>{draft.subject}</div>
-                              )}
+                      <div className="mt-3">
+                        <button
+                          onClick={() => setCollapsedSections(c => ({ ...c, drafts: !c.drafts }))}
+                          className="flex items-center gap-2 w-full text-left mb-2"
+                        >
+                          {collapsedSections.drafts ? <ChevronDown className="w-3.5 h-3.5 text-slate-400" /> : <ChevronUp className="w-3.5 h-3.5 text-slate-400" />}
+                          <span className="text-slate-300" style={{ fontSize: "0.74rem", fontWeight: 600 }}>Email Drafts ({approvalDrafts.length})</span>
+                        </button>
+                        {!collapsedSections.drafts && (
+                          <>
+                            <div className="grid gap-2">
+                              {approvalDrafts.slice(0, visibleDrafts).map((draft, index) => {
+                                const bodyExpanded = expandedBodies.has(draft.segmentId);
+                                const bodyLines = draft.body.split("\n");
+                                const isTruncated = bodyLines.length > EMAIL_BODY_PREVIEW_LINES;
+                                const displayBody = bodyExpanded || !isTruncated ? draft.body : bodyLines.slice(0, EMAIL_BODY_PREVIEW_LINES).join("\n") + "...";
+                                return (
+                                  <div key={`${draft.segmentId}-${index}`} className="rounded-xl p-3" style={{ background: "rgba(2,6,23,0.65)", border: "1px solid rgba(251,191,36,0.2)" }}>
+                                    <div className="flex items-center justify-between">
+                                      <div className="text-slate-100" style={{ fontSize: "0.8rem", fontWeight: 600 }}>{draft.segmentName}</div>
+                                      {draft.tone && (
+                                        <span className="px-2 py-0.5 rounded-full" style={{ fontSize: "0.62rem", background: "rgba(14,116,144,0.18)", border: "1px solid rgba(34,211,238,0.22)", color: "#a5f3fc" }}>
+                                          {draft.tone}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="mt-2">
+                                      <div className="text-slate-400" style={{ fontSize: "0.66rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>Subject</div>
+                                      {editingDrafts ? (
+                                        <input
+                                          value={draft.subject}
+                                          onChange={(event) => updateEditedDraft(index, "subject", event.target.value)}
+                                          className="w-full mt-1 px-2.5 py-1.5 rounded-lg bg-slate-800/80 text-slate-100 outline-none"
+                                          style={{ border: "1px solid rgba(148,163,184,0.35)", fontSize: "0.78rem" }}
+                                        />
+                                      ) : (
+                                        <div className="text-slate-100 mt-1" style={{ fontSize: "0.78rem", fontWeight: 600 }}>{draft.subject}</div>
+                                      )}
+                                    </div>
+                                    <div className="mt-2">
+                                      <div className="text-slate-400" style={{ fontSize: "0.66rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>Body</div>
+                                      {editingDrafts ? (
+                                        <textarea
+                                          value={draft.body}
+                                          onChange={(event) => updateEditedDraft(index, "body", event.target.value)}
+                                          rows={4}
+                                          className="w-full mt-1 px-2.5 py-1.5 rounded-lg bg-slate-800/80 text-slate-200 outline-none resize-y"
+                                          style={{ border: "1px solid rgba(148,163,184,0.35)", fontSize: "0.76rem", lineHeight: 1.5 }}
+                                        />
+                                      ) : (
+                                        <>
+                                          <p className="text-slate-300 mt-1" style={{ fontSize: "0.75rem", lineHeight: 1.55 }}>{displayBody}</p>
+                                          {isTruncated && (
+                                            <button
+                                              onClick={() => setExpandedBodies(prev => {
+                                                const next = new Set(prev);
+                                                if (next.has(draft.segmentId)) next.delete(draft.segmentId);
+                                                else next.add(draft.segmentId);
+                                                return next;
+                                              })}
+                                              className="inline-flex items-center gap-1 mt-1 text-cyan-300 hover:text-cyan-100 transition-colors"
+                                              style={{ fontSize: "0.7rem" }}
+                                            >
+                                              {bodyExpanded ? <><EyeOff className="w-3 h-3" /> Hide full email</> : <><Eye className="w-3 h-3" /> View full email</>}
+                                            </button>
+                                          )}
+                                        </>
+                                      )}
+                                    </div>
+                                    <div className="mt-2 flex items-center gap-2 flex-wrap">
+                                      <span className="text-sky-200" style={{ fontSize: "0.7rem" }}>
+                                        CTA: {pendingPause.ctaLink || latestCtaLink || ctaLink}
+                                      </span>
+                                      {draft.tags && draft.tags.length > 0 && draft.tags.map((tag, ti) => (
+                                        <span key={ti} className="px-1.5 py-0.5 rounded-full" style={{ fontSize: "0.6rem", background: "rgba(51,65,85,0.5)", border: "1px solid rgba(100,116,139,0.3)", color: "#94a3b8" }}>
+                                          {tag}
+                                        </span>
+                                      ))}
+                                    </div>
+                                    <div className="flex gap-2 mt-3">
+                                      <button
+                                        onClick={() => toggleDraftApproval(draft.segmentId, "approved")}
+                                        className="px-2.5 py-1 rounded-lg text-xs"
+                                        style={{
+                                          background: (draftApprovalStatus[draft.segmentId] ?? "pending") === "approved" ? "rgba(22,163,74,0.22)" : "rgba(15,23,42,0.8)",
+                                          border: "1px solid rgba(34,197,94,0.35)",
+                                          color: "#dcfce7",
+                                        }}
+                                      >
+                                        Approve
+                                      </button>
+                                      <button
+                                        onClick={() => toggleDraftApproval(draft.segmentId, "rejected")}
+                                        className="px-2.5 py-1 rounded-lg text-xs"
+                                        style={{
+                                          background: (draftApprovalStatus[draft.segmentId] ?? "pending") === "rejected" ? "rgba(220,38,38,0.22)" : "rgba(15,23,42,0.8)",
+                                          border: "1px solid rgba(248,113,113,0.35)",
+                                          color: "#fee2e2",
+                                        }}
+                                      >
+                                        Reject
+                                      </button>
+                                    </div>
+                                  </div>
+                                );
+                              })}
                             </div>
-                            <div className="mt-2">
-                              <div className="text-slate-400" style={{ fontSize: "0.66rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>Body</div>
-                              {editingDrafts ? (
-                                <textarea
-                                  value={draft.body}
-                                  onChange={(event) => updateEditedDraft(index, "body", event.target.value)}
-                                  rows={4}
-                                  className="w-full mt-1 px-2.5 py-1.5 rounded-lg bg-slate-800/80 text-slate-200 outline-none resize-y"
-                                  style={{ border: "1px solid rgba(148,163,184,0.35)", fontSize: "0.76rem", lineHeight: 1.5 }}
-                                />
-                              ) : (
-                                <p className="text-slate-300 mt-1 line-clamp-4" style={{ fontSize: "0.75rem", lineHeight: 1.55 }}>{draft.body}</p>
-                              )}
-                            </div>
-                            <div className="mt-2 text-sky-200" style={{ fontSize: "0.7rem" }}>
-                              CTA link: {pendingPause.ctaLink || latestCtaLink || ctaLink}
-                            </div>
-                            <div className="flex gap-2 mt-3">
+                            {approvalDrafts.length > visibleDrafts && (
                               <button
-                                onClick={() => toggleDraftApproval(draft.segmentId, "approved")}
-                                className="px-2.5 py-1 rounded-lg text-xs"
-                                style={{
-                                  background: (draftApprovalStatus[draft.segmentId] ?? "pending") === "approved" ? "rgba(22,163,74,0.22)" : "rgba(15,23,42,0.8)",
-                                  border: "1px solid rgba(34,197,94,0.35)",
-                                  color: "#dcfce7",
-                                }}
+                                onClick={() => setVisibleDrafts(c => c + INITIAL_VISIBLE_DRAFTS)}
+                                className="w-full mt-2 py-2 rounded-lg text-slate-300 hover:text-white transition-colors"
+                                style={{ background: "rgba(30,41,59,0.5)", border: "1px solid rgba(148,163,184,0.18)", fontSize: "0.76rem", fontWeight: 600 }}
                               >
-                                Approve
+                                View {Math.min(INITIAL_VISIBLE_DRAFTS, approvalDrafts.length - visibleDrafts)} more drafts
                               </button>
+                            )}
+                            {visibleDrafts > INITIAL_VISIBLE_DRAFTS && (
                               <button
-                                onClick={() => toggleDraftApproval(draft.segmentId, "rejected")}
-                                className="px-2.5 py-1 rounded-lg text-xs"
-                                style={{
-                                  background: (draftApprovalStatus[draft.segmentId] ?? "pending") === "rejected" ? "rgba(220,38,38,0.22)" : "rgba(15,23,42,0.8)",
-                                  border: "1px solid rgba(248,113,113,0.35)",
-                                  color: "#fee2e2",
-                                }}
+                                onClick={() => setVisibleDrafts(INITIAL_VISIBLE_DRAFTS)}
+                                className="w-full mt-1 py-1.5 rounded-lg text-slate-400 hover:text-slate-200 transition-colors"
+                                style={{ fontSize: "0.72rem" }}
                               >
-                                Reject
+                                Show less
                               </button>
-                            </div>
-                          </div>
-                        ))}
+                            )}
+                          </>
+                        )}
                       </div>
                     )}
 
@@ -1184,53 +1485,79 @@ export default function NewCampaign() {
             </div>
 
             {(latestMetrics || roundHistory.length > 0 || (phase === "complete" && result)) && (
-              <div className="grid md:grid-cols-3 xl:grid-cols-4 gap-3 mt-4">
-                <div className="rounded-2xl p-4" style={{ background: "rgba(15,23,42,0.75)", border: "1px solid rgba(148,163,184,0.2)" }}>
-                  <div className="text-slate-400" style={{ fontSize: "0.72rem" }}>People Sent</div>
-                  <div className="text-white mt-1" style={{ fontSize: "1.3rem", fontWeight: 700 }}>{formatCount(totalSent || 0)}</div>
+              <div className="mt-5">
+                {/* Section Header */}
+                <div className="flex items-center gap-2 mb-3">
+                  <TrendingUp className="w-4 h-4 text-emerald-400" />
+                  <span className="text-white" style={{ fontSize: "0.9rem", fontWeight: 700 }}>Campaign Performance</span>
                 </div>
-                <div className="rounded-2xl p-4" style={{ background: "rgba(15,23,42,0.75)", border: "1px solid rgba(148,163,184,0.2)" }}>
-                  <div className="text-slate-400" style={{ fontSize: "0.72rem" }}>Open Rate</div>
-                  <div className="text-white mt-1" style={{ fontSize: "1.3rem", fontWeight: 700 }}>{formatPercent(aggregateOpenRate)}</div>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <div className="rounded-2xl p-4" style={{ background: "linear-gradient(135deg, rgba(14,116,144,0.15) 0%, rgba(15,23,42,0.75) 100%)", border: "1px solid rgba(34,211,238,0.18)" }}>
+                    <div className="text-cyan-300" style={{ fontSize: "0.7rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>Audience Reached</div>
+                    <div className="text-white mt-1" style={{ fontSize: "1.4rem", fontWeight: 800 }}>{formatCount(totalSent || 0)}</div>
+                  </div>
+                  <div className="rounded-2xl p-4" style={{ background: "linear-gradient(135deg, rgba(22,163,74,0.12) 0%, rgba(15,23,42,0.75) 100%)", border: "1px solid rgba(34,197,94,0.18)" }}>
+                    <div className="text-emerald-300" style={{ fontSize: "0.7rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>Open Rate</div>
+                    <div className="text-white mt-1" style={{ fontSize: "1.4rem", fontWeight: 800 }}>{formatPercent(aggregateOpenRate)}</div>
+                    <div className="text-emerald-400/60 mt-0.5" style={{ fontSize: "0.68rem" }}>{formatCount(totalOpened)} opens</div>
+                  </div>
+                  <div className="rounded-2xl p-4" style={{ background: "linear-gradient(135deg, rgba(37,99,235,0.12) 0%, rgba(15,23,42,0.75) 100%)", border: "1px solid rgba(59,130,246,0.18)" }}>
+                    <div className="text-blue-300" style={{ fontSize: "0.7rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>Click Rate</div>
+                    <div className="text-white mt-1" style={{ fontSize: "1.4rem", fontWeight: 800 }}>{formatPercent(aggregateClickRate)}</div>
+                    <div className="text-blue-400/60 mt-0.5" style={{ fontSize: "0.68rem" }}>{formatCount(totalClicked)} clicks</div>
+                  </div>
+                  <div className="rounded-2xl p-4" style={{ background: "linear-gradient(135deg, rgba(168,85,247,0.1) 0%, rgba(15,23,42,0.75) 100%)", border: "1px solid rgba(168,85,247,0.18)" }}>
+                    <div className="text-purple-300" style={{ fontSize: "0.7rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>Unique Engagement</div>
+                    <div className="text-white mt-1" style={{ fontSize: "1.4rem", fontWeight: 800 }}>{formatCount(activeUniqueOpened)}</div>
+                    <div className="text-purple-400/60 mt-0.5" style={{ fontSize: "0.68rem" }}>{formatCount(activeUniqueClicked)} unique clicks</div>
+                  </div>
                 </div>
-                <div className="rounded-2xl p-4" style={{ background: "rgba(15,23,42,0.75)", border: "1px solid rgba(148,163,184,0.2)" }}>
-                  <div className="text-slate-400" style={{ fontSize: "0.72rem" }}>Click Rate</div>
-                  <div className="text-white mt-1" style={{ fontSize: "1.3rem", fontWeight: 700 }}>{formatPercent(aggregateClickRate)}</div>
-                </div>
-                <div className="rounded-2xl p-4" style={{ background: "rgba(15,23,42,0.75)", border: "1px solid rgba(148,163,184,0.2)" }}>
-                  <div className="text-slate-400" style={{ fontSize: "0.72rem" }}>Total Opens</div>
-                  <div className="text-white mt-1" style={{ fontSize: "1.3rem", fontWeight: 700 }}>{formatCount(totalOpened)}</div>
-                </div>
-                <div className="rounded-2xl p-4" style={{ background: "rgba(15,23,42,0.75)", border: "1px solid rgba(148,163,184,0.2)" }}>
-                  <div className="text-slate-400" style={{ fontSize: "0.72rem" }}>Total Clicks</div>
-                  <div className="text-white mt-1" style={{ fontSize: "1.3rem", fontWeight: 700 }}>{formatCount(totalClicked)}</div>
-                </div>
-                <div className="rounded-2xl p-4" style={{ background: "rgba(15,23,42,0.75)", border: "1px solid rgba(148,163,184,0.2)" }}>
-                  <div className="text-slate-400" style={{ fontSize: "0.72rem" }}>Unique Opens</div>
-                  <div className="text-white mt-1" style={{ fontSize: "1.3rem", fontWeight: 700 }}>{formatCount(activeUniqueOpened)}</div>
-                </div>
-                <div className="rounded-2xl p-4" style={{ background: "rgba(15,23,42,0.75)", border: "1px solid rgba(148,163,184,0.2)" }}>
-                  <div className="text-slate-400" style={{ fontSize: "0.72rem" }}>Unique Clicks</div>
-                  <div className="text-white mt-1" style={{ fontSize: "1.3rem", fontWeight: 700 }}>{formatCount(activeUniqueClicked)}</div>
-                </div>
+
+                {/* Round History Timeline */}
+                {roundHistory.length > 1 && (
+                  <div className="mt-3 rounded-2xl p-4" style={{ background: "rgba(15,23,42,0.65)", border: "1px solid rgba(148,163,184,0.14)" }}>
+                    <div className="text-slate-400 mb-2" style={{ fontSize: "0.72rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>Round Progression</div>
+                    <div className="flex items-end gap-2">
+                      {roundHistory.map((round) => {
+                        const maxRate = Math.max(...roundHistory.map(r => r.summary.openRate), 1);
+                        const barHeight = Math.max(16, (round.summary.openRate / maxRate) * 56);
+                        return (
+                          <div key={round.round} className="flex flex-col items-center gap-1 flex-1">
+                            <div className="text-emerald-300" style={{ fontSize: "0.62rem" }}>{formatPercent(round.summary.openRate)}</div>
+                            <div className="w-full rounded-t-md" style={{ height: `${barHeight}px`, background: "linear-gradient(180deg, rgba(34,197,94,0.5) 0%, rgba(34,197,94,0.15) 100%)", minWidth: "20px" }} />
+                            <div className="text-slate-500" style={{ fontSize: "0.6rem" }}>R{round.round}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
             {digitalTwinCards.length > 0 && (
-              <div className="mt-4 rounded-[24px] p-4" style={{ background: "rgba(8,18,33,0.96)", border: "1px solid rgba(148,163,184,0.2)" }}>
-                <div className="flex items-center justify-between gap-3 mb-4">
+              <div className="mt-5 rounded-[24px] p-4" style={{ background: "rgba(8,18,33,0.96)", border: "1px solid rgba(148,163,184,0.2)" }}>
+                <button
+                  onClick={() => setCollapsedSections(c => ({ ...c, twin: !c.twin }))}
+                  className="flex items-center justify-between gap-3 w-full text-left"
+                >
                   <div>
-                    <div className="text-white" style={{ fontSize: "0.95rem", fontWeight: 700 }}>Digital Twin Review</div>
-                    <div className="text-slate-400 mt-1" style={{ fontSize: "0.76rem" }}>
-                      Each category card shows the current email draft plus live persona approvals or declines while the Digital Twin simulator runs.
+                    <div className="flex items-center gap-2">
+                      {collapsedSections.twin ? <ChevronDown className="w-4 h-4 text-slate-400" /> : <ChevronUp className="w-4 h-4 text-slate-400" />}
+                      <span className="text-white" style={{ fontSize: "0.95rem", fontWeight: 700 }}>Digital Twin Review</span>
+                    </div>
+                    <div className="text-slate-400 mt-1 ml-6" style={{ fontSize: "0.76rem" }}>
+                      Each category card shows the current email draft plus live persona approvals.
                     </div>
                   </div>
                   <div className="text-slate-400" style={{ fontSize: "0.76rem" }}>
                     {formatCount(digitalTwinCards.length)} categories
                   </div>
-                </div>
+                </button>
 
-                <div className="grid md:grid-cols-2 gap-3">
+                {!collapsedSections.twin && (
+                  <>
+                  <div className="grid md:grid-cols-2 gap-3 mt-4">
                   {visibleDigitalTwinCards.map(({ segment, draft, twin }) => {
                     const badge = twinStageStyles(twin.stage);
                     const activeDraft = draft ?? {
@@ -1380,6 +1707,8 @@ export default function NewCampaign() {
                       </button>
                     )}
                   </div>
+                )}
+                  </>
                 )}
               </div>
             )}
