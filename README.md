@@ -11,7 +11,7 @@
 3. [System Architecture](#system-architecture)
 4. [Campaign Strategy](#campaign-strategy)
 5. [LLM Integration & Strategy](#llm-integration--strategy)
-6. [LangSmith Integration](#langsmith-integration)
+
 7. [Tech Stack Options — Pros & Cons](#tech-stack-options--pros--cons)
 8. [Required APIs](#required-apis)
 9. [Platform API Reference](#platform-api-reference)
@@ -166,51 +166,6 @@ Campaign Brief (NLP Input)
 
 ---
 
-## 🔍 LangSmith Integration
-
-[LangSmith](https://smith.langchain.com) is used for **full observability** of all LLM/agent calls — tracking agent interaction, decision, and reasoning data.
-
-### Setup
-
-```bash
-pip install langsmith langchain langchain-google-genai
-```
-
-```python
-# .env
-LANGCHAIN_TRACING_V2=true
-LANGCHAIN_ENDPOINT=https://api.smith.langchain.com
-LANGCHAIN_API_KEY=your_langsmith_api_key
-LANGCHAIN_PROJECT=AutoReachAI
-```
-
-### What LangSmith Tracks
-- ✅ Every LLM prompt + response per agent
-- ✅ Agent-to-agent handoffs and reasoning chains
-- ✅ Token usage and latency per call
-- ✅ Campaign content generation traces
-- ✅ Optimization decision reasoning
-- ✅ API call results piped back into agent memory
-
-### Integration Code Pattern
-
-```python
-import os
-from langsmith import Client
-from langchain.callbacks import LangChainTracer
-from langchain_google_genai import ChatGoogleGenerativeAI
-
-os.environ["LANGCHAIN_TRACING_V2"] = "true"
-os.environ["LANGCHAIN_PROJECT"] = "AutoReachAI"
-
-tracer = LangChainTracer(project_name="AutoReachAI")
-
-llm = ChatGoogleGenerativeAI(
-    model="gemini-1.5-flash",
-    google_api_key=os.environ["GEMINI_API_KEY"],
-    callbacks=[tracer]
-)
-```
 
 ---
 
@@ -221,7 +176,7 @@ llm = ChatGoogleGenerativeAI(
 | Layer | Technology | Pros | Cons |
 |-------|-----------|------|------|
 | **Backend** | FastAPI (Python) | Native LangChain/LangGraph support; async; fast; huge AI ecosystem | Python GIL for CPU tasks |
-| **Agent Framework** | LangGraph | State machines for agents; LangSmith built-in; production-grade | Steeper learning curve |
+| **Agent Framework** | LangGraph | State machines for agents; production-grade | Steeper learning curve |
 | **Frontend** | React + TypeScript | Rich UI; component reuse; excellent ecosystem | More setup than plain HTML |
 | **Database** | SQLite / PostgreSQL | SQLite: zero-config; Postgres: production-grade | Postgres needs hosting |
 | **LLM** | Gemini + Groq | Free tier; high rate limits; multimodal | API key management |
@@ -310,11 +265,6 @@ llm = ChatGoogleGenerativeAI(
 | **GitHub Models** | gpt-4o-mini, phi-4, llama-3.3-70b | [github.com/settings/tokens](https://github.com/settings/tokens) | Backup / diversity |
 | **Ollama** | llama3.2:1b, mistral | Local (no key needed) | Offline testing |
 
-### 3. Observability (FREE)
-
-| Tool | Purpose | Get Key At |
-|------|---------|-----------|
-| **LangSmith** | LLM tracing, agent logging | [smith.langchain.com](https://smith.langchain.com) |
 
 ### 4. Optional Enhancement APIs
 
@@ -395,7 +345,7 @@ Response: {
 | Innovation & creativity | 15% |
 
 ### Bonus Points
-- ✅ LangSmith agent interaction logging
+
 - ✅ Real-time campaign metrics dashboard
 - ✅ Cloud deployment
 
@@ -407,7 +357,7 @@ Response: {
 - [ ] Build multi-agent system (orchestrator + 5 agents)
 - [ ] Implement HiTL approval UI
 - [ ] Implement A/B testing optimization loop
-- [ ] Integrate LangSmith for observability
+
 - [ ] Run full campaign during test phase
 - [ ] Record screen demo (< 3 mins)
 - [ ] Retrieve **new** customer cohort on launch day (cohort changes!)
@@ -434,7 +384,7 @@ autoreach-ai/
 │   ├── api/
 │   │   └── routes.py          # FastAPI routes
 │   ├── utils/
-│   │   └── langsmith_setup.py
+
 │   └── main.py
 ├── frontend/
 │   ├── src/
@@ -463,11 +413,7 @@ GROQ_API_KEY=your_groq_key
 MISTRAL_API_KEY=your_mistral_key
 GITHUB_TOKEN=your_github_pat
 
-# LangSmith Observability
-LANGCHAIN_TRACING_V2=true
-LANGCHAIN_ENDPOINT=https://api.smith.langchain.com
-LANGCHAIN_API_KEY=your_langsmith_key
-LANGCHAIN_PROJECT=AutoReachAI
+
 ```
 
 ---

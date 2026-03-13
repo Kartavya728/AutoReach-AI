@@ -1,494 +1,987 @@
 """
-CampaignX Agent System — Main Entry Point (Segmented Pipeline)
-================================================================
-Full auto-approve lifecycle with micro-segmentation:
-  1. Create campaign (LangGraph: Cohort+Segment → Strategy → Content)
-  2. Send DIFFERENT emails to DIFFERENT segments via CampaignX API
-  3. Fetch REAL EO/EC data per segment
-  4. Display real open/click rates per segment
-  5. Re-target warm audience (opened but didn't click) with stronger CTAs
-  6. Repeat for N rounds
+CampaignX Agent System - ReAct Planner/Executor with Human-in-the-Loop
+=======================================================================
+Pipeline:
+  1. Fetch and study customer data
+  2. Segment into four approved categories
+  3. Generate category-specific emails (War Room + Twin + Bandit)
+  4. Human approval gate for generated emails
+  5. Send campaigns and stream live open/click metrics
+  6. Run iterative optimization rounds with human yes/no control
 
 Usage:
-    python -m agents.main                              # Default, 1 round
-    python -m agents.main --rounds 3                   # 3 optimization rounds
-    python -m agents.main "Your brief" --rounds 2      # Custom brief
+    python -m agents.main "<brief>" --rounds 3
+    python -m agents.main --rounds 3 --interactive
 """
 
 from __future__ import annotations
+
+import argparse
 import asyncio
 import json
+import statistics
 import sys
-import time
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
-from agents.graph import run_campaign_graph
-from agents.analysis_agent import compute_analysis, generate_optimization_suggestions
-from agents.campaignx_api import send_campaign, fetch_campaign_report
-from agents.content_agent import generate_segment_variant, _get_model
-from agents.segment_engine import get_segment_profile
-from agents.state import SegmentResult
+from agents.analysis_agent import compute_analysis
+from agents.campaignx_api import fetch_campaign_report, fetch_customer_cohort, send_campaign
+from agents.content_agent import generate_content, generate_segment_variant
+from agents.segment_engine import segment_customers
+from agents.state import WorkflowState
+from agents.strategy_agent import plan_strategy
 
-
-# ════════════════════════════════════════════════════════════════
-#  DEFAULTS
-# ════════════════════════════════════════════════════════════════
 
 DEFAULT_BRIEF = (
-    "Run an email campaign for launching XDeposit, a flagship term deposit "
-    "product from SuperBFSI, that gives 1 percentage point higher returns "
-    "than its competitors. Target high-income professionals and senior citizens. "
-    "Use personalized subject lines and a friendly tone with emojis. "
-    "Include the CTA URL: https://superbfsi.com/xdeposit/explore/"
+    "Run email campaign for launching XDeposit, a flagship term deposit product from "
+    "SuperBFSI, that gives 1 percentage point higher returns than its competitors. "
+    "Announce an additional 0.25 percentage point higher returns for female senior "
+    "citizens. Optimise for open rate and click rate. Don't skip emails to customers "
+    "marked 'inactive'. Include the call to action: "
+    "https://superbfsi.com/xdeposit/explore/"
 )
-
+DEFAULT_OPTIMIZATION_ROUNDS = 3
+OUTPUT_FILE = "agent_output.json"
+CONTROL_PREFIX = "__AGENT_EVENT__"
 IST = timezone(timedelta(hours=5, minutes=30))
 
+REACT_FORMAT_PROMPT = """Answer the following questions as best you can. You have access to the following tools:
 
-# ════════════════════════════════════════════════════════════════
-#  HELPERS
-# ════════════════════════════════════════════════════════════════
+{tools}
+
+Use the following format:
+
+Question: the input question you must answer
+Thought: you should always think about what to do
+Action: the action to take, should be one of [{tool_names}]
+Action Input: the input to the action
+Observation: the result of the action
+... (this Thought/Action/Action Input/Observation can repeat N times)
+Thought: I now know the final answer
+Final Answer: the final answer to the original input question
+
+Begin!
+
+Question: {input}
+Thought:{agent_scratchpad}
+"""
+
 
 def print_header(title: str):
-    print("\n" + "=" * 70)
+    print("\n" + "=" * 78)
     print(f"  {title}")
-    print("=" * 70)
+    print("=" * 78, flush=True)
 
 
 def format_time(dt: datetime) -> str:
-    """Format as DD:MM:YY HH:MM:SS in IST for CampaignX API."""
+    """CampaignX API format: DD:MM:YY HH:MM:SS in IST."""
     return dt.astimezone(IST).strftime("%d:%m:%y %H:%M:%S")
 
 
-def print_segment_metrics(results: list[SegmentResult]):
-    """Print per-segment metrics table."""
-    print(f"\n  {'Segment':<35} {'Sent':>6} {'Opened':>8} {'Clicked':>8} {'Open%':>7} {'Click%':>7}")
-    print(f"  {'─' * 35} {'─' * 6} {'─' * 8} {'─' * 8} {'─' * 7} {'─' * 7}")
-    for r in results:
-        name = r["segment_name"][:35]
-        print(
-            f"  {name:<35} {r['total_sent']:>6} {r['total_opened']:>8} "
-            f"{r['total_clicked']:>8} {r['open_rate']:>6.1f}% {r['click_rate']:>6.1f}%"
+def to_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "y", "approve", "approved", "continue"}
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return default
+
+
+def compact_json(data: Any) -> str:
+    try:
+        return json.dumps(data, ensure_ascii=False)
+    except Exception:
+        return str(data)
+
+
+class RuntimeChannel:
+    """Prints human-readable logs and emits structured control events for websocket runtime."""
+
+    def __init__(self, interactive: bool):
+        self.interactive = interactive
+
+    def log(self, message: str):
+        encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+        safe_message = message.encode(encoding, errors="replace").decode(encoding, errors="replace")
+        print(safe_message, flush=True)
+
+    def emit_event(self, event: str, data: dict[str, Any]):
+        envelope = {"event": event, "data": data}
+        sys.stderr.write(f"{CONTROL_PREFIX}{json.dumps(envelope, ensure_ascii=False)}\n")
+        sys.stderr.flush()
+
+    def emit_thinking(self, step: str, agent: str = "ReAct-Agent", kind: str = "status"):
+        self.emit_event(
+            "thinking",
+            {
+                "agent": agent,
+                "step": step,
+                "kind": kind,
+            },
         )
 
-    # Totals
-    total_sent = sum(r["total_sent"] for r in results)
-    total_opened = sum(r["total_opened"] for r in results)
-    total_clicked = sum(r["total_clicked"] for r in results)
-    overall_open = round(total_opened / total_sent * 100, 1) if total_sent > 0 else 0
-    overall_click = round(total_clicked / total_sent * 100, 1) if total_sent > 0 else 0
-    print(f"  {'─' * 35} {'─' * 6} {'─' * 8} {'─' * 8} {'─' * 7} {'─' * 7}")
-    print(
-        f"  {'TOTAL':<35} {total_sent:>6} {total_opened:>8} "
-        f"{total_clicked:>8} {overall_open:>6.1f}% {overall_click:>6.1f}%"
-    )
-    return overall_open, overall_click
+    async def wait_for_human(
+        self,
+        pause_type: str,
+        payload: dict[str, Any],
+        auto_payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if not self.interactive:
+            response = auto_payload or {"approved": True, "continueOptimization": False}
+            self.log(f"[HITL] Interactive mode off. Auto-response for '{pause_type}': {response}")
+            return response
+
+        self.emit_thinking(
+            f"Waiting for human input on {pause_type.replace('_', ' ')}.",
+            agent="Human-Gate",
+            kind="pause",
+        )
+        self.emit_event(
+            "pause",
+            {
+                "pauseType": pause_type,
+                **payload,
+            },
+        )
+
+        self.log(f"[HITL] Waiting for human input: {pause_type}")
+
+        while True:
+            line = await asyncio.to_thread(sys.stdin.readline)
+            if line is None:
+                await asyncio.sleep(0.05)
+                continue
+
+            text = line.strip()
+            if not text:
+                await asyncio.sleep(0.05)
+                continue
+
+            try:
+                message = json.loads(text)
+            except json.JSONDecodeError:
+                self.log(f"[HITL] Ignoring non-JSON input: {text[:120]}")
+                continue
+
+            if str(message.get("type", "")) != "human_input":
+                continue
+
+            if str(message.get("pauseType", "")) != pause_type:
+                self.log(
+                    f"[HITL] Ignoring input for pause '{message.get('pauseType')}', "
+                    f"current pause is '{pause_type}'."
+                )
+                continue
+
+            self.log(f"[HITL] Received input for '{pause_type}'.")
+            self.emit_thinking(
+                f"Received human response for {pause_type.replace('_', ' ')}.",
+                agent="Human-Gate",
+                kind="resume",
+            )
+            return message
 
 
-# ════════════════════════════════════════════════════════════════
-#  SEND ONE SEGMENT
-# ════════════════════════════════════════════════════════════════
+# -----------------------------------------------------------------------------
+# Data/Tool Helpers
+# -----------------------------------------------------------------------------
+
+
+def prepare_crm_data(api_customers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for api in api_customers:
+        customer_id = api.get("customer_id")
+        if not customer_id:
+            continue
+
+        records.append(
+            {
+                "id": str(customer_id),
+                "age": api.get("Age"),
+                "gender": api.get("Gender"),
+                "occupation": api.get("Occupation"),
+                "income": api.get("Monthly_Income"),
+                "city": api.get("City"),
+                "marital_status": api.get("Marital_Status"),
+                "credit_score": api.get("Credit score"),
+                "kyc_status": api.get("KYC status"),
+                "app_installed": api.get("App_Installed"),
+                "existing_customer": api.get("Existing Customer"),
+                "social_media_active": api.get("Social_Media_Active"),
+                "family_size": api.get("Family_Size"),
+                "kids": api.get("Kids_in_Household"),
+                "w1": 0.0,
+                "w2": 0.0,
+                "w3": 0.0,
+            }
+        )
+
+    return records
+
+
+def build_initial_state(brief: str) -> WorkflowState:
+    return {
+        "brief": brief,
+        "crm_data": [],
+        "customer_count": 0,
+        "target_customer_ids": [],
+        "strategy_reasoning": "",
+        "strategy": "",
+        "content_variants": [],
+        "segments": [],
+        "segment_variants": {},
+        "steps": [{"agent": "Orchestrator", "step": "Initialized ReAct planner-executor workflow."}],
+    }
+
+
+def summarize_customers(crm_data: list[dict[str, Any]]) -> dict[str, Any]:
+    ages = [float(c["age"]) for c in crm_data if c.get("age") is not None]
+    incomes = [float(c["income"]) for c in crm_data if c.get("income") is not None]
+    top_cities: dict[str, int] = {}
+    top_occupations: dict[str, int] = {}
+
+    for c in crm_data:
+        city = str(c.get("city") or "Unknown")
+        occ = str(c.get("occupation") or "Unknown")
+        top_cities[city] = top_cities.get(city, 0) + 1
+        top_occupations[occ] = top_occupations.get(occ, 0) + 1
+
+    sorted_cities = sorted(top_cities.items(), key=lambda x: x[1], reverse=True)[:4]
+    sorted_occ = sorted(top_occupations.items(), key=lambda x: x[1], reverse=True)[:4]
+
+    return {
+        "total": len(crm_data),
+        "avg_age": round(statistics.mean(ages), 1) if ages else None,
+        "avg_income": round(statistics.mean(incomes), 0) if incomes else None,
+        "top_cities": sorted_cities,
+        "top_occupations": sorted_occ,
+    }
+
+
+def ensure_four_categories(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Guarantee exactly four frontend cards while preserving all customers."""
+    clean = [dict(seg) for seg in segments if int(seg.get("size", 0)) > 0]
+
+    if not clean:
+        return []
+
+    # If there are more than 4 segments, merge tail into the 4th bucket.
+    if len(clean) > 4:
+        head = clean[:3]
+        tail = clean[3:]
+        merged_ids: list[str] = []
+        merged_criteria: list[str] = []
+        for t in tail:
+            merged_ids.extend([str(x) for x in t.get("customer_ids", [])])
+            if t.get("criteria"):
+                merged_criteria.append(str(t["criteria"]))
+
+        merged = {
+            "segment_id": "category_4_combined",
+            "segment_name": "Growth Opportunity Cohort",
+            "customer_ids": merged_ids,
+            "size": len(merged_ids),
+            "criteria": " | ".join(merged_criteria) if merged_criteria else "Combined long-tail audience",
+            "tone": "friendly",
+            "focus": "broad appeal",
+            "emoji_level": "moderate",
+            "tier": "Reactivate",
+        }
+        clean = [*head, merged]
+
+    # If fewer than 4, split the largest segments until we have 4.
+    while len(clean) < 4:
+        largest_idx = max(range(len(clean)), key=lambda i: int(clean[i].get("size", 0)))
+        largest = clean[largest_idx]
+        ids = [str(x) for x in largest.get("customer_ids", [])]
+
+        if len(ids) <= 1:
+            clean.append(
+                {
+                    "segment_id": f"category_{len(clean) + 1}_empty",
+                    "segment_name": f"Category {len(clean) + 1}",
+                    "customer_ids": [],
+                    "size": 0,
+                    "criteria": "No eligible customers in this split",
+                    "tone": "neutral",
+                    "focus": "n/a",
+                    "emoji_level": "none",
+                    "tier": "Reactivate",
+                }
+            )
+            continue
+
+        midpoint = len(ids) // 2
+        first_half = ids[:midpoint]
+        second_half = ids[midpoint:]
+
+        largest["customer_ids"] = first_half
+        largest["size"] = len(first_half)
+
+        new_seg = {
+            "segment_id": f"{largest.get('segment_id', 'segment')}_split_{len(clean) + 1}",
+            "segment_name": f"{largest.get('segment_name', 'Segment')} - Split {len(clean) + 1}",
+            "customer_ids": second_half,
+            "size": len(second_half),
+            "criteria": str(largest.get("criteria", "")),
+            "tone": str(largest.get("tone", "friendly")),
+            "focus": str(largest.get("focus", "")),
+            "emoji_level": str(largest.get("emoji_level", "moderate")),
+            "tier": str(largest.get("tier", "Reactivate")),
+        }
+        clean.append(new_seg)
+
+    return clean[:4]
+
+
+def category_cards(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    cards: list[dict[str, Any]] = []
+    for seg in segments:
+        cards.append(
+            {
+                "segmentId": str(seg.get("segment_id", "")),
+                "name": str(seg.get("segment_name", "Segment")),
+                "size": int(seg.get("size", 0)),
+                "criteria": str(seg.get("criteria", "")),
+                "tone": str(seg.get("tone", "")),
+                "focus": str(seg.get("focus", "")),
+                "tier": str(seg.get("tier", "Reactivate")),
+            }
+        )
+    return cards
+
+
+def content_cards(
+    segments: list[dict[str, Any]],
+    segment_variants: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    cards: list[dict[str, Any]] = []
+    for seg in segments:
+        seg_id = str(seg.get("segment_id", ""))
+        variant = segment_variants.get(seg_id) or {}
+        cards.append(
+            {
+                "segmentId": seg_id,
+                "segmentName": str(seg.get("segment_name", "Segment")),
+                "size": int(seg.get("size", 0)),
+                "subject": str(variant.get("subject", "")),
+                "body": str(variant.get("body", "")),
+                "tone": str(variant.get("tone", seg.get("tone", "professional"))),
+                "tags": [str(x) for x in variant.get("tags", [])] if isinstance(variant.get("tags"), list) else [],
+            }
+        )
+    return cards
+
+
+def recommended_send_time(segment_name: str) -> str:
+    now_utc = datetime.now(timezone.utc)
+    lowered = segment_name.lower()
+
+    if "professional" in lowered or "earner" in lowered:
+        slot = now_utc.replace(hour=12, minute=30, second=0, microsecond=0)
+    elif "senior" in lowered or "retired" in lowered:
+        slot = now_utc.replace(hour=3, minute=30, second=0, microsecond=0)
+    elif "young" in lowered or "digital" in lowered:
+        slot = now_utc.replace(hour=15, minute=30, second=0, microsecond=0)
+    else:
+        slot = now_utc + timedelta(minutes=5)
+
+    if slot < now_utc:
+        slot += timedelta(days=1)
+
+    if slot < now_utc + timedelta(minutes=5):
+        slot = now_utc + timedelta(minutes=5)
+
+    return format_time(slot)
+
 
 async def send_segment(
     segment_name: str,
-    variant: dict,
+    variant: dict[str, Any],
     customer_ids: list[str],
     send_time_str: str,
-) -> str | None:
-    """Send a campaign for one segment, return external campaign_id."""
+    channel: RuntimeChannel,
+) -> list[str]:
     if not customer_ids:
-        return None
+        return []
 
-    BATCH_SIZE = 5000
-    campaign_id = None
-    total_batches = (len(customer_ids) + BATCH_SIZE - 1) // BATCH_SIZE
+    batch_size = 1000
+    campaign_ids: list[str] = []
+    total_batches = (len(customer_ids) + batch_size - 1) // batch_size
 
-    for i in range(0, len(customer_ids), BATCH_SIZE):
-        chunk = customer_ids[i : i + BATCH_SIZE]
-        batch_num = i // BATCH_SIZE + 1
-        print(f"    🎯 [1:1 Personalization Engine] Generated {len(chunk)} uniquely formatted emails.")
-        try:
-            resp = await send_campaign(
-                subject=variant.get("subject", "Campaign"),
-                body=variant.get("body", ""),
-                customer_ids=chunk,
-                send_time=send_time_str,
-            )
-            cid = resp.get("campaign_id")
-            if i == 0 and cid:
-                campaign_id = cid
-            print(f"    ✅ Batch {batch_num}/{total_batches}: {len(chunk)} routed via API (id: {cid})")
-        except Exception as e:
-            print(f"    ❌ Batch {batch_num}/{total_batches}: {e}")
+    for i in range(0, len(customer_ids), batch_size):
+        batch = customer_ids[i : i + batch_size]
+        batch_num = i // batch_size + 1
+        channel.log(
+            f"[Dispatch] {segment_name}: batch {batch_num}/{total_batches} ({len(batch)} customers)"
+        )
+        response = await send_campaign(
+            subject=str(variant.get("subject", "Campaign")),
+            body=str(variant.get("body", "")),
+            customer_ids=batch,
+            send_time=send_time_str,
+        )
+        campaign_id = response.get("campaign_id")
+        if campaign_id:
+            campaign_ids.append(str(campaign_id))
 
-    return campaign_id
+    return campaign_ids
 
-
-# ════════════════════════════════════════════════════════════════
-#  FETCH REAL METRICS FOR A SEGMENT
-# ════════════════════════════════════════════════════════════════
-
-from agents.personalization import personalization_engine
-from agents.bandit import bandit_engine
 
 async def fetch_segment_metrics(
     segment_name: str,
     segment_id: str,
-    campaign_id: str | None,
+    campaign_ids: list[str],
     customer_ids: list[str],
-    variant: dict,
-) -> SegmentResult:
-    """Fetch real EO/EC from CampaignX API and update Contextual Bandit (RL)."""
-    records = []
-    expected_count = len(customer_ids)
-    
-    if campaign_id:
-        max_retries = 15
-        for attempt in range(max_retries):
-            try:
-                resp = await fetch_campaign_report(campaign_id)
-                records = resp.get("data", [])
-                
-                if len(records) >= expected_count:
-                    break
-                else:
-                    print(f"    ⏳ {segment_name}: Waiting for CampaignX processing... ({len(records)}/{expected_count} processed)")
-                    await asyncio.sleep(3)
-                    
-            except Exception as e:
-                # Break early on rate limits
-                if "429" in str(e):
-                    print(f"    ⚠️  Rate limit (429) hit for {segment_name}. Falling back.")
-                    break
-                print(f"    ⚠️  Report fetch failed for {segment_name}: {e}")
-                await asyncio.sleep(3)
+    variant: dict[str, Any],
+    channel: RuntimeChannel,
+) -> dict[str, Any]:
+    records: list[dict[str, Any]] = []
 
-    if not records:
-        # Fallback to generate stubs if API rate limits us (429)
+    if campaign_ids:
+        for campaign_id in campaign_ids:
+            batch_records: list[dict[str, Any]] = []
+            for _ in range(12):
+                try:
+                    response = await fetch_campaign_report(campaign_id)
+                    batch_records = response.get("data", []) or []
+                except Exception as exc:
+                    channel.log(f"[Metrics] report fetch failed for {segment_name}: {exc}")
+                    await asyncio.sleep(2)
+                    continue
+
+                if batch_records:
+                    break
+                await asyncio.sleep(2)
+
+            records.extend(batch_records)
+
+    if not records and customer_ids:
         records = [{"customer_id": cid, "EO": "N", "EC": "N"} for cid in customer_ids]
 
-    analysis = compute_analysis(campaign_id or segment_id, records)
-
-    # REINFORCEMENT LEARNING UPDATE
-    tier = variant.get("tags", ["Reactivate"])[0] if variant.get("tags") else "Reactivate"
-    angle = variant.get("tone", "curiosity")
-    
-    if tier in ["Diamond", "Gold", "Silver", "Reactivate"]:
-        successes = analysis["total_clicked"]
-        failures = analysis["total_sent"] - successes
-        if tier in bandit_engine.state and angle in bandit_engine.state[tier]:
-            bandit_engine.state[tier][angle]["alpha"] += successes
-            bandit_engine.state[tier][angle]["beta"] += failures
-            bandit_engine._save_state()
-            print(f"    🧠 [RL Bandit] Updated Posterior for {tier} -> {angle}: {successes} wins, {failures} losses")
+    analysis = compute_analysis(campaign_ids[0] if campaign_ids else segment_id, records)
 
     return {
         "segment_id": segment_id,
         "segment_name": segment_name,
-        "campaign_id": campaign_id,
+        "campaign_ids": campaign_ids,
         "customer_ids": customer_ids,
-        "total_sent": analysis["total_sent"],
-        "total_opened": analysis["total_opened"],
-        "total_clicked": analysis["total_clicked"],
-        "open_rate": analysis["open_rate"],
-        "click_rate": analysis["click_rate"],
-        "opened_ids": analysis.get("opened_ids", []),
-        "clicked_ids": analysis.get("clicked_ids", []),
+        "total_sent": int(analysis.get("total_sent", 0)),
+        "total_opened": int(analysis.get("total_opened", 0)),
+        "total_clicked": int(analysis.get("total_clicked", 0)),
+        "open_rate": float(analysis.get("open_rate", 0.0)),
+        "click_rate": float(analysis.get("click_rate", 0.0)),
+        "opened_ids": [str(x) for x in analysis.get("opened_ids", [])],
+        "clicked_ids": [str(x) for x in analysis.get("clicked_ids", [])],
         "variant_used": variant,
     }
 
 
-# ════════════════════════════════════════════════════════════════
-#  FULL AUTO PIPELINE
-# ════════════════════════════════════════════════════════════════
+def aggregate_metrics(segment_results: list[dict[str, Any]]) -> dict[str, Any]:
+    sent = sum(int(item.get("total_sent", 0)) for item in segment_results)
+    opened = sum(int(item.get("total_opened", 0)) for item in segment_results)
+    clicked = sum(int(item.get("total_clicked", 0)) for item in segment_results)
 
-async def run_full_pipeline(brief: str, rounds: int = 1) -> dict:
-    """Complete segmented pipeline with real EO/EC tracking."""
-
-    # ── STEP 1: Create campaign via LangGraph ──
-    print_header("STEP 1: AI Campaign Creation (LangGraph + Segmentation)")
-    print(f"\n📋 Brief: {brief}\n")
-    print("-" * 70)
-
-    result = await run_campaign_graph(brief)
-
-    segments = result.get("segments", [])
-    segment_variants = result.get("segment_variants", {})
-    all_variants = result.get("content_variants", [])
-
-    print(f"\n✅ LangGraph pipeline complete!")
-    print(f"📊 Strategy: {str(result['strategy'])[:200]}...")
-    print(f"👥 Total: {result['customer_count']} customers in {len(segments)} segments")
-
-    print(f"\n📧 Segment-Specific Emails:")
-    for seg in segments:
-        v = segment_variants.get(seg["segment_id"])
-        if v:
-            print(f"  {seg['segment_name']} ({seg['size']})")
-            print(f"    Subject: {v['subject'][:70]}...")
-            print(f"    Tone: {v['tone']}")
-
-    print(f"\n📝 Agent Steps:")
-    for step in result.get("steps", []):
-        print(f"  [{step['agent']}] {step['step']}")
-
-    # ── STEP 2: Send different emails to different segments ──
-    print_header("STEP 2: Sending Segment Campaigns to CampaignX API")
-
-    segment_campaign_ids: dict[str, str | None] = {}
-    master_segment_results: list[SegmentResult] = []
-
-    for seg in segments:
-        if seg["size"] == 0:
-            continue
-        variant = segment_variants.get(seg["segment_id"])
-        if not variant:
-            continue
-
-        print(f"\n  📤 {seg['segment_name']} — {seg['size']} customers")
-        
-        # 1:1 Send-Time Optimization (Heuristic based on segment name)
-        segment_name_lower = seg['segment_name'].lower()
-        now_utc = datetime.now(timezone.utc)
-        
-        if 'professional' in segment_name_lower or 'earner' in segment_name_lower:
-            # Send at 6 PM IST (12:30 PM UTC)
-            sto_time = now_utc.replace(hour=12, minute=30, second=0)
-        elif 'senior' in segment_name_lower or 'retired' in segment_name_lower:
-            # Send at 9 AM IST (3:30 AM UTC)
-            sto_time = now_utc.replace(hour=3, minute=30, second=0)
-        elif 'young' in segment_name_lower or 'digital' in segment_name_lower:
-            # Send at 9 PM IST (15:30 UTC)
-            sto_time = now_utc.replace(hour=15, minute=30, second=0)
-        else:
-            # Default to +5 mins
-            sto_time = now_utc + timedelta(minutes=5)
-            
-        # If the scheduled time has already passed today, schedule it for tomorrow
-        if sto_time < now_utc:
-            sto_time += timedelta(days=1)
-            
-        # Ensure at least a 5 min buffer if it's very close
-        if sto_time < now_utc + timedelta(minutes=5):
-            sto_time = now_utc + timedelta(minutes=5)
-            
-        sto_time_str = format_time(sto_time)
-        print(f"    🕒 [Send-Time Optimizer] Scheduled Delivery: {sto_time_str} IST")
-            
-        cid = await send_segment(
-            seg["segment_name"], variant, seg["customer_ids"], sto_time_str,
-        )
-        segment_campaign_ids[seg["segment_id"]] = cid
-
-    total_sent = sum(s["size"] for s in segments if s["size"] > 0)
-    campaigns_created = sum(1 for v in segment_campaign_ids.values() if v)
-    print(f"\n🔗 {campaigns_created} segment campaigns created, {total_sent} total emails sent")
-
-    # ── STEP 3: Fetch REAL metrics per segment ──
-    print_header("STEP 3: Fetching REAL Engagement Metrics (EO/EC)")
-
-    segment_results: list[SegmentResult] = []
-    for seg in segments:
-        if seg["size"] == 0:
-            continue
-        variant = segment_variants.get(seg["segment_id"], {})
-        cid = segment_campaign_ids.get(seg["segment_id"])
-
-        sr = await fetch_segment_metrics(
-            seg["segment_name"], seg["segment_id"],
-            cid, seg["customer_ids"], variant,
-        )
-        segment_results.append(sr)
-        master_segment_results.append(sr)
-
-    print_header("ROUND 1 — Per-Segment REAL Metrics")
-    overall_open, overall_click = print_segment_metrics(segment_results)
-
-    all_round_metrics = [{
-        "round": 1,
-        "audience": total_sent,
-        "open_rate": overall_open,
-        "click_rate": overall_click,
-        "segments": len(segment_results),
-    }]
-
-    # ── STEP 4+: Optimization Rounds (re-target warm audience) ──
-    for round_num in range(1, rounds + 1):
-        print_header(f"OPTIMIZATION ROUND {round_num + 1}")
-
-        # Collect warm IDs across all segments (opened but didn't click)
-        warm_ids_all = []
-        cold_ids_all = []
-        for sr in segment_results:
-            warm = [c for c in sr["opened_ids"] if c not in set(sr["clicked_ids"])]
-            cold = [c for c in sr["customer_ids"] if c not in set(sr["opened_ids"])]
-            warm_ids_all.extend(warm)
-            cold_ids_all.extend(cold)
-
-        print(f"  🔥 Warm leads (opened, didn't click): {len(warm_ids_all)}")
-        print(f"  ❄️  Cold leads (never opened): {len(cold_ids_all)}")
-
-        if not warm_ids_all and not cold_ids_all:
-            print("  ⚠️  No re-targetable audience, stopping.")
-            break
-
-        # Re-target: warm audience with urgency CTA, cold with new subject
-        retarget_groups = []
-        if warm_ids_all:
-            retarget_groups.append({
-                "name": "🔥 Warm Re-target (Opened, Didn't Click)",
-                "ids": warm_ids_all,
-                "prompt_extra": (
-                    "These customers ALREADY OPENED the previous email but did NOT click. "
-                    "They are interested but need a stronger push. "
-                    "Use URGENCY, SCARCITY, and a CLEAR CTA. "
-                    "Subject should create FOMO. Body should be SHORT and action-focused."
-                ),
-                "tone": "urgent",
-                "emoji_level": "moderate",
-            })
-        if cold_ids_all:
-            retarget_groups.append({
-                "name": "❄️ Cold Re-target (Never Opened)",
-                "ids": cold_ids_all,  # Hit EVERYONE as requested
-                "prompt_extra": (
-                    "These customers NEVER OPENED the previous email. "
-                    "The previous subject line failed for them. "
-                    "Use a COMPLETELY DIFFERENT subject line approach. "
-                    "Try questions, personalization, or curiosity gaps."
-                ),
-                "tone": "friendly and curious",
-                "emoji_level": "heavy",
-            })
-
-        # Generate re-targeting content with LLM
-        retarget_results: list[SegmentResult] = []
-        send_time_str = format_time(datetime.now(timezone.utc) + timedelta(minutes=5))
-
-        for group in retarget_groups:
-            print(f"\n  📧 Generating re-target email: {group['name']} ({len(group['ids'])} customers)")
-
-            fake_segment = {
-                "segment_id": "retarget",
-                "segment_name": group["name"],
-                "customer_ids": group["ids"],
-                "size": len(group["ids"]),
-                "criteria": group["prompt_extra"],
-                "tone": group["tone"],
-                "focus": group["prompt_extra"],
-                "emoji_level": group["emoji_level"],
-            }
-
-            variant = await generate_segment_variant(brief, str(result["strategy"]), fake_segment)
-            print(f"    Subject: {variant['subject'][:70]}...")
-
-            # Send
-            cid = await send_segment(group["name"], variant, group["ids"], send_time_str)
-
-            # Wait and fetch real metrics
-            sr = await fetch_segment_metrics(
-                group["name"], f"retarget_r{round_num + 1}",
-                cid, group["ids"], variant,
-            )
-            retarget_results.append(sr)
-            master_segment_results.append(sr)
-
-        print_header(f"ROUND {round_num + 1} — Re-targeting REAL Metrics")
-        r_open, r_click = print_segment_metrics(retarget_results)
-
-        all_round_metrics.append({
-            "round": round_num + 1,
-            "audience": sum(r["total_sent"] for r in retarget_results),
-            "open_rate": r_open,
-            "click_rate": r_click,
-            "segments": len(retarget_results),
-        })
-
-        # Update segment_results for next round
-        segment_results = retarget_results
-
-    # ── FINAL SUMMARY ──
-    print_header("🏆 FINAL CAMPAIGN SUMMARY")
-
-    print("\n📈 Metrics Progression (REAL EO/EC Data):")
-    print(f"  {'Round':<8} {'Audience':<12} {'Segments':<10} {'Open Rate':<12} {'Click Rate':<12}")
-    print(f"  {'─' * 8} {'─' * 12} {'─' * 10} {'─' * 12} {'─' * 12}")
-    for m in all_round_metrics:
-        print(
-            f"  {m['round']:<8} {m['audience']:<12} {m['segments']:<10} "
-            f"{m['open_rate']}%{'':<8} {m['click_rate']}%"
-        )
-        
-    # Calculate cumulative unique metrics
-    all_unique_opens = set()
-    all_unique_clicks = set()
-    total_unique_audience = 0
-    
-    # We reconstruct the total audience from round 1 segment sizes
-    if len(all_round_metrics) > 0:
-        total_unique_audience = all_round_metrics[0]["audience"]
-        
-    for sr in master_segment_results:
-        all_unique_opens.update(sr["opened_ids"])
-        all_unique_clicks.update(sr["clicked_ids"])
-        
-    unique_open_rate = round((len(all_unique_opens) / total_unique_audience * 100) if total_unique_audience > 0 else 0, 1)
-    unique_click_rate = round((len(all_unique_clicks) / total_unique_audience * 100) if total_unique_audience > 0 else 0, 1)
-
-    if len(all_round_metrics) > 1:
-        first = all_round_metrics[0]
-        last = all_round_metrics[-1]
-        print(f"\n  📊 Progression:")
-        print(f"     Round 1 (5000 cold): {first['open_rate']}% open, {first['click_rate']}% click")
-        print(f"     Round {last['round']} (warm re-target): {last['open_rate']}% open, {last['click_rate']}% click")
-        
-    print(f"\n  🎯 Cumulative Pipeline Performance (Unique Customers Reached):")
-    print(f"     Total Audience: {total_unique_audience}")
-    print(f"     Unique Opens: {len(all_unique_opens)} ({unique_open_rate}%)")
-    print(f"     Unique Clicks: {len(all_unique_clicks)} ({unique_click_rate}%)")
+    open_rate = round((opened / sent) * 100, 1) if sent > 0 else 0.0
+    click_rate = round((clicked / sent) * 100, 1) if sent > 0 else 0.0
 
     return {
-        "brief": brief,
-        "strategy": result.get("strategy", ""),
-        "segments": [{"name": s["segment_name"], "size": s["size"]} for s in segments],
-        "segment_variants": {
-            sid: {"subject": v["subject"], "tone": v["tone"]}
-            for sid, v in segment_variants.items()
-        },
-        "metrics_progression": all_round_metrics,
-        "final_open_rate": unique_open_rate,
-        "final_click_rate": unique_click_rate,
-        "steps": result.get("steps", []),
+        "sent": sent,
+        "opened": opened,
+        "clicked": clicked,
+        "open_rate": open_rate,
+        "click_rate": click_rate,
     }
 
 
-# ════════════════════════════════════════════════════════════════
-#  CLI
-# ════════════════════════════════════════════════════════════════
+# -----------------------------------------------------------------------------
+# ReAct Planner / Executor
+# -----------------------------------------------------------------------------
 
-def parse_args():
-    args = sys.argv[1:]
-    rounds = 1
-    brief_parts = []
-    i = 0
-    while i < len(args):
-        if args[i] == "--rounds" and i + 1 < len(args):
-            rounds = int(args[i + 1])
-            i += 2
-        else:
-            brief_parts.append(args[i])
-            i += 1
-    return " ".join(brief_parts) if brief_parts else DEFAULT_BRIEF, rounds
+
+async def run_react_planner_executor(
+    brief: str,
+    rounds: int,
+    channel: RuntimeChannel,
+) -> dict[str, Any]:
+    """Deterministic planner/executor that logs with ReAct Action format."""
+
+    state = build_initial_state(brief)
+
+    def emit_react(kind: str, text: str):
+        kind_lower = kind.lower()
+        agent = "ReAct-Agent"
+        if kind_lower == "action":
+            agent = "Tool-Executor"
+        elif kind_lower == "final":
+            agent = "Orchestrator"
+        elif kind_lower == "observation":
+            agent = "Analyzer"
+        channel.emit_thinking(text, agent=agent, kind=kind_lower)
+
+    tools = {
+        "fetch_customers": "Fetch CRM cohort from CampaignX API",
+        "study_customers": "Analyze distributions and top cohorts",
+        "segment_customers": "Generate actionable customer categories",
+        "plan_strategy": "Build strategy for segmented audience",
+        "generate_emails": "Generate one email per segment using War Room + Twin + Bandit",
+    }
+
+    channel.log(REACT_FORMAT_PROMPT.format(
+        tools=compact_json(tools),
+        tool_names=", ".join(tools.keys()),
+        input=brief,
+        agent_scratchpad="",
+    ).strip())
+
+    # Action 1: fetch_customers
+    emit_react("thought", "I need customer records before any planning.")
+    channel.log("Thought: I need customer records before any planning.")
+    emit_react("action", "Fetching customer cohort from CampaignX API.")
+    channel.log("Action: fetch_customers")
+    channel.log("Action Input: {\"source\": \"CampaignX API\"}")
+
+    raw = await fetch_customer_cohort()
+    api_customers = raw.get("data", []) if isinstance(raw, dict) else []
+    crm_data = prepare_crm_data(api_customers)
+    state["crm_data"] = crm_data
+    state["customer_count"] = len(crm_data)
+    state["target_customer_ids"] = [str(c.get("id", "")) for c in crm_data if c.get("id")]
+
+    emit_react("observation", f"Fetched {len(crm_data)} customers.")
+    channel.log(f"Observation: Fetched {len(crm_data)} customers.")
+
+    # Action 2: study_customers
+    emit_react("thought", "I should inspect the customer distribution before creating categories.")
+    channel.log("Thought: I should inspect the customer distribution before creating categories.")
+    emit_react("action", "Profiling age, income, city, and occupation distributions.")
+    channel.log("Action: study_customers")
+    channel.log("Action Input: {\"fields\": [\"age\", \"income\", \"city\", \"occupation\"]}")
+
+    profile = summarize_customers(crm_data)
+    state["customer_profile"] = profile  # runtime-only key
+
+    emit_react(
+        "observation",
+        (
+            f"Customer profile ready. Total={profile['total']}, avg age={profile.get('avg_age')}, "
+            f"avg income={profile.get('avg_income')}."
+        ),
+    )
+    channel.log(
+        "Observation: "
+        f"Total={profile['total']}, avg_age={profile.get('avg_age')}, "
+        f"avg_income={profile.get('avg_income')}, top_cities={profile.get('top_cities')}"
+    )
+
+    # Action 3: segment_customers
+    emit_react("thought", "I now segment customers into exactly four approval-ready categories.")
+    channel.log("Thought: I now segment customers into exactly four approval-ready categories.")
+    emit_react("action", "Generating and normalizing four customer categories.")
+    channel.log("Action: segment_customers")
+    channel.log("Action Input: {\"min_categories\": 4, \"max_categories\": 4}")
+
+    segments = await segment_customers(crm_data, brief)
+    segments = ensure_four_categories(segments)
+
+    state["segments"] = segments
+
+    emit_react(
+        "observation",
+        f"Built {len(segments)} categories and prepared them for human approval."
+    )
+    channel.log(
+        "Observation: "
+        f"Built {len(segments)} categories with sizes {[int(s.get('size', 0)) for s in segments]}."
+    )
+
+    # Human gate: category approval
+    cards = category_cards(segments)
+    category_input = await channel.wait_for_human(
+        "segment_approval",
+        {
+            "title": "Approve customer categories",
+            "message": "Review the four categories and approve to continue.",
+            "segments": cards,
+        },
+        auto_payload={"approved": True},
+    )
+    if not to_bool(category_input.get("approved"), default=True):
+        raise RuntimeError("Human rejected customer categories. Pipeline stopped.")
+
+    # Action 4: plan_strategy
+    emit_react("thought", "With approved segments, I can produce the campaign strategy.")
+    channel.log("Thought: With approved segments, I can produce the campaign strategy.")
+    emit_react("action", "Planning segment-aware campaign strategy.")
+    channel.log("Action: plan_strategy")
+    channel.log("Action Input: {\"use_segment_context\": true}")
+
+    strategy_result = await plan_strategy(state)
+    state["strategy"] = str(strategy_result.get("strategy", ""))
+    state["strategy_reasoning"] = str(strategy_result.get("strategy_reasoning", ""))
+
+    emit_react("observation", "Strategy generated for all approved categories.")
+    channel.log("Observation: Strategy generated for approved categories.")
+
+    # Action 5: generate_emails
+    emit_react("thought", "Next I need one optimized email for each approved category.")
+    channel.log("Thought: Next I need one optimized email for each approved category.")
+    emit_react("action", "Generating segment emails with War Room, Bandit, and Twin Simulator.")
+    channel.log("Action: generate_emails")
+    channel.log("Action Input: {\"optimizer\": [\"war_room\", \"twin_simulator\", \"bandit\"]}")
+
+    content_state = await generate_content(state)
+    segment_variants = content_state.get("segment_variants", {}) or {}
+    state["segment_variants"] = segment_variants
+    state["content_variants"] = content_state.get("content_variants", []) or []
+
+    emit_react(
+        "observation",
+        f"Generated {len(state['content_variants'])} optimized email drafts."
+    )
+    channel.log(f"Observation: Generated {len(state['content_variants'])} approved-draft emails.")
+
+    # Human gate: content approval
+    mail_cards = content_cards(segments, segment_variants)
+    content_input = await channel.wait_for_human(
+        "content_approval",
+        {
+            "title": "Approve generated emails",
+            "message": "Review each category email. Approve all to start sending.",
+            "variants": mail_cards,
+        },
+        auto_payload={"approved": True},
+    )
+    if not to_bool(content_input.get("approved"), default=True):
+        raise RuntimeError("Human rejected generated email set. Pipeline stopped.")
+
+    emit_react("thought", "I now know the final answer.")
+    channel.log("Thought: I now know the final answer")
+    emit_react(
+        "final",
+        "Categories and emails are approved. Starting live dispatch and optimization rounds."
+    )
+    channel.log(
+        "Final Answer: Categories and emails are approved. Starting live dispatch and optimization rounds."
+    )
+
+    # ------------------------------------------------------------------
+    # Execute Round 1 and optional optimization rounds
+    # ------------------------------------------------------------------
+    all_round_metrics: list[dict[str, Any]] = []
+    all_segment_results: list[dict[str, Any]] = []
+
+    current_groups: list[dict[str, Any]] = []
+    for seg in segments:
+        seg_id = str(seg.get("segment_id", ""))
+        variant = segment_variants.get(seg_id)
+        if not variant:
+            continue
+        ids = [str(x) for x in seg.get("customer_ids", [])]
+        if not ids:
+            continue
+        current_groups.append(
+            {
+                "segment_id": seg_id,
+                "segment_name": str(seg.get("segment_name", "Segment")),
+                "customer_ids": ids,
+                "variant": variant,
+            }
+        )
+
+    if not current_groups:
+        raise RuntimeError("No eligible segment groups to send.")
+
+    for round_num in range(1, rounds + 1):
+        print_header(f"ROUND {round_num} - Dispatch + Live Metrics")
+
+        segment_results: list[dict[str, Any]] = []
+
+        for group in current_groups:
+            send_time_str = recommended_send_time(group["segment_name"])
+            channel.emit_thinking(
+                f"Sending {group['segment_name']} to {len(group['customer_ids'])} customers.",
+                agent="Dispatch-Agent",
+                kind="dispatch",
+            )
+            channel.log(
+                f"[Round {round_num}] Sending {group['segment_name']} to {len(group['customer_ids'])} customers "
+                f"at {send_time_str}"
+            )
+
+            campaign_ids = await send_segment(
+                group["segment_name"],
+                group["variant"],
+                group["customer_ids"],
+                send_time_str,
+                channel,
+            )
+
+            metrics = await fetch_segment_metrics(
+                group["segment_name"],
+                group["segment_id"],
+                campaign_ids,
+                group["customer_ids"],
+                group["variant"],
+                channel,
+            )
+            segment_results.append(metrics)
+            channel.emit_thinking(
+                (
+                    f"{group['segment_name']} delivered. "
+                    f"Open rate {metrics['open_rate']}%, click rate {metrics['click_rate']}%."
+                ),
+                agent="Metrics-Agent",
+                kind="metrics",
+            )
+
+            live = aggregate_metrics(segment_results)
+            channel.emit_event(
+                "live_metrics",
+                {
+                    "round": round_num,
+                    "sent": live["sent"],
+                    "opened": live["opened"],
+                    "clicked": live["clicked"],
+                    "openRate": live["open_rate"],
+                    "clickRate": live["click_rate"],
+                    "bySegment": [
+                        {
+                            "segmentName": str(item.get("segment_name", "")),
+                            "sent": int(item.get("total_sent", 0)),
+                            "opened": int(item.get("total_opened", 0)),
+                            "clicked": int(item.get("total_clicked", 0)),
+                            "openRate": float(item.get("open_rate", 0.0)),
+                            "clickRate": float(item.get("click_rate", 0.0)),
+                        }
+                        for item in segment_results
+                    ],
+                },
+            )
+
+        round_totals = aggregate_metrics(segment_results)
+        round_summary = {
+            "round": round_num,
+            "audience": round_totals["sent"],
+            "open_rate": round_totals["open_rate"],
+            "click_rate": round_totals["click_rate"],
+            "segments": len(segment_results),
+        }
+        all_round_metrics.append(round_summary)
+        all_segment_results.extend(segment_results)
+        channel.emit_thinking(
+            (
+                f"Round {round_num} complete. Audience {round_summary['audience']}, "
+                f"open {round_summary['open_rate']}%, click {round_summary['click_rate']}%."
+            ),
+            agent="Optimizer",
+            kind="summary",
+        )
+
+        channel.emit_event(
+            "round_complete",
+            {
+                "round": round_num,
+                "summary": {
+                    "audience": round_summary["audience"],
+                    "openRate": round_summary["open_rate"],
+                    "clickRate": round_summary["click_rate"],
+                    "segments": round_summary["segments"],
+                },
+            },
+        )
+
+        # Prepare next optimization round candidates (warm + cold)
+        warm_ids: list[str] = []
+        cold_ids: list[str] = []
+        for item in segment_results:
+            opened = set(item.get("opened_ids", []))
+            clicked = set(item.get("clicked_ids", []))
+            customer_ids = set(item.get("customer_ids", []))
+
+            warm_ids.extend([cid for cid in opened if cid not in clicked])
+            cold_ids.extend([cid for cid in customer_ids if cid not in opened])
+
+        # Round control: ask user after each round except the configured final round.
+        if round_num >= rounds:
+            break
+
+        next_round_input = await channel.wait_for_human(
+            "next_round",
+            {
+                "title": f"Start optimization round {round_num + 1}?",
+                "message": "Approve to continue with warm/cold retargeting.",
+                "round": round_num,
+                "maxRounds": rounds,
+                "metrics": {
+                    "audience": round_summary["audience"],
+                    "openRate": round_summary["open_rate"],
+                    "clickRate": round_summary["click_rate"],
+                },
+            },
+            auto_payload={"continueOptimization": False},
+        )
+
+        if not to_bool(next_round_input.get("continueOptimization"), default=False):
+            channel.emit_thinking(
+                f"Human chose to stop after round {round_num}.",
+                agent="Human-Gate",
+                kind="decision",
+            )
+            channel.log(f"[Round {round_num}] Human chose to stop optimization rounds.")
+            break
+
+        if not warm_ids and not cold_ids:
+            channel.log(f"[Round {round_num}] No warm/cold audience left. Stopping optimization.")
+            break
+
+        # Build groups for next optimization round.
+        next_groups: list[dict[str, Any]] = []
+        if warm_ids:
+            warm_segment = {
+                "segment_id": f"warm_r{round_num + 1}",
+                "segment_name": "Warm Leads Retarget",
+                "customer_ids": warm_ids,
+                "size": len(warm_ids),
+                "criteria": "Opened previous email but did not click",
+                "tone": "urgent",
+                "focus": "strong CTA and urgency",
+                "emoji_level": "moderate",
+                "tier": "Gold",
+            }
+            warm_variant = await generate_segment_variant(brief, str(state.get("strategy", "")), warm_segment)
+            next_groups.append(
+                {
+                    "segment_id": warm_segment["segment_id"],
+                    "segment_name": warm_segment["segment_name"],
+                    "customer_ids": warm_ids,
+                    "variant": warm_variant,
+                }
+            )
+
+        if cold_ids:
+            cold_segment = {
+                "segment_id": f"cold_r{round_num + 1}",
+                "segment_name": "Cold Leads Retarget",
+                "customer_ids": cold_ids,
+                "size": len(cold_ids),
+                "criteria": "Did not open previous email",
+                "tone": "friendly",
+                "focus": "fresh subject line and curiosity",
+                "emoji_level": "moderate",
+                "tier": "Reactivate",
+            }
+            cold_variant = await generate_segment_variant(brief, str(state.get("strategy", "")), cold_segment)
+            next_groups.append(
+                {
+                    "segment_id": cold_segment["segment_id"],
+                    "segment_name": cold_segment["segment_name"],
+                    "customer_ids": cold_ids,
+                    "variant": cold_variant,
+                }
+            )
+
+        if not next_groups:
+            channel.log(f"[Round {round_num}] No optimization groups generated.")
+            break
+
+        current_groups = next_groups
+
+    print_header("FINAL CAMPAIGN SUMMARY")
+    channel.emit_thinking(
+        "Compiling final campaign summary and cumulative performance.",
+        agent="Orchestrator",
+        kind="final",
+    )
+    for item in all_round_metrics:
+        channel.log(
+            f"Round {item['round']}: audience={item['audience']}, "
+            f"open={item['open_rate']}%, click={item['click_rate']}%"
+        )
+
+    unique_audience = set(str(cid) for cid in state.get("target_customer_ids", []))
+    opened_unique = set()
+    clicked_unique = set()
+
+    for result in all_segment_results:
+        opened_unique.update(str(cid) for cid in result.get("opened_ids", []))
+        clicked_unique.update(str(cid) for cid in result.get("clicked_ids", []))
+
+    denominator = len(unique_audience) if unique_audience else max(1, len(opened_unique | clicked_unique))
+    final_open = round((len(opened_unique) / denominator) * 100, 1) if denominator else 0.0
+    final_click = round((len(clicked_unique) / denominator) * 100, 1) if denominator else 0.0
+
+    final_result = {
+        "brief": brief,
+        "strategy": state.get("strategy", ""),
+        "strategy_reasoning": state.get("strategy_reasoning", ""),
+        "target_customer_ids": state.get("target_customer_ids", []),
+        "customer_count": int(state.get("customer_count", 0)),
+        "content_variants": state.get("content_variants", []),
+        "segments": [
+            {
+                "name": str(seg.get("segment_name", "Segment")),
+                "size": int(seg.get("size", 0)),
+                "criteria": str(seg.get("criteria", "")),
+                "tone": str(seg.get("tone", "")),
+                "focus": str(seg.get("focus", "")),
+            }
+            for seg in state.get("segments", [])
+        ],
+        "segment_variants": {
+            sid: {
+                "subject": str(variant.get("subject", "")),
+                "body": str(variant.get("body", "")),
+                "tone": str(variant.get("tone", "professional")),
+                "tags": [str(x) for x in variant.get("tags", [])]
+                if isinstance(variant.get("tags"), list)
+                else [],
+            }
+            for sid, variant in (state.get("segment_variants", {}) or {}).items()
+        },
+        "metrics_progression": all_round_metrics,
+        "final_open_rate": final_open,
+        "final_click_rate": final_click,
+        "steps": state.get("steps", []),
+        "round_summaries": all_round_metrics,
+    }
+
+    return final_result
+
+
+async def run_full_pipeline(brief: str, rounds: int = DEFAULT_OPTIMIZATION_ROUNDS, interactive: bool = False) -> dict[str, Any]:
+    channel = RuntimeChannel(interactive=interactive)
+
+    print_header("STEP 1: ReAct Planner + Human-in-the-Loop")
+    channel.log(f"Brief: {brief}")
+    channel.log(f"Configured max optimization rounds: {rounds}")
+
+    return await run_react_planner_executor(brief=brief, rounds=rounds, channel=channel)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="CampaignX ReAct agent orchestrator")
+    parser.add_argument("brief", nargs="*", help="Campaign brief text")
+    parser.add_argument("--rounds", type=int, default=DEFAULT_OPTIMIZATION_ROUNDS)
+    parser.add_argument("--interactive", action="store_true", help="Enable human-in-the-loop pauses")
+    return parser.parse_args()
 
 
 async def main():
-    brief, rounds = parse_args()
-    result = await run_full_pipeline(brief, rounds)
+    args = parse_args()
+    brief = " ".join(args.brief).strip() if args.brief else DEFAULT_BRIEF
+    rounds = max(1, int(args.rounds or DEFAULT_OPTIMIZATION_ROUNDS))
 
-    with open("agent_output.json", "w", encoding="utf-8") as f:
-        json.dump(result, f, indent=2, ensure_ascii=False, default=str)
-    print(f"\n💾 Full output saved to: agent_output.json")
+    result = await run_full_pipeline(brief=brief, rounds=rounds, interactive=bool(args.interactive))
+
+    with open(OUTPUT_FILE, "w", encoding="utf-8") as fh:
+        json.dump(result, fh, indent=2, ensure_ascii=False, default=str)
+
+    print(f"\nSaved final output to {OUTPUT_FILE}", flush=True)
 
 
 if __name__ == "__main__":
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     asyncio.run(main())

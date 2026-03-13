@@ -12,20 +12,19 @@
 2. [Data Ingestion Layer](#2-data-ingestion-layer)
 3. [Data-Aware Segment Engine](#3-data-aware-segment-engine)
 4. [Strategy Agent](#4-strategy-agent)
-5. [Contextual Bandit (Thompson Sampling)](#5-contextual-bandit-thompson-sampling)
-6. [Multi-Agent War Room](#6-multi-agent-war-room)
-7. [Digital Twin Simulator](#7-digital-twin-simulator)
-8. [1:1 Personalization Engine](#8-11-personalization-engine)
-9. [API Dispatch & Batch Routing](#9-api-dispatch--batch-routing)
-10. [Send-Time Optimization (STO)](#10-send-time-optimization-sto)
-11. [Metric Fetcher & Dynamic Polling](#11-metric-fetcher--dynamic-polling)
-12. [Analysis Agent (Intelligent Simulation)](#12-analysis-agent-intelligent-simulation)
-13. [Optimization Cascade (Multi-Round Re-targeting)](#13-optimization-cascade-multi-round-re-targeting)
-14. [Engagement Memory System](#14-engagement-memory-system)
-15. [Propensity Scoring Model](#15-propensity-scoring-model)
-16. [Persistence & Observability](#16-persistence--observability)
-17. [Data Schemas](#17-data-schemas)
-18. [File Map](#18-file-map)
+5. [Multi-Agent War Room](#5-multi-agent-war-room)
+6. [Digital Twin Simulator](#6-digital-twin-simulator)
+7. [1:1 Personalization Engine](#7-11-personalization-engine)
+8. [API Dispatch & Batch Routing](#8-api-dispatch--batch-routing)
+9. [Send-Time Optimization (STO)](#9-send-time-optimization-sto)
+10. [Metric Fetcher & Dynamic Polling](#10-metric-fetcher--dynamic-polling)
+11. [Analysis Agent (Intelligent Simulation)](#11-analysis-agent-intelligent-simulation)
+12. [Optimization Cascade (Multi-Round Re-targeting)](#12-optimization-cascade-multi-round-re-targeting)
+13. [Engagement Memory System](#13-engagement-memory-system)
+14. [Propensity Scoring Model](#14-propensity-scoring-model)
+15. [Persistence & Observability](#15-persistence--observability)
+16. [Data Schemas](#16-data-schemas)
+17. [File Map](#17-file-map)
 
 ---
 
@@ -43,11 +42,10 @@ graph TD
     F --> G["CampaignX API: send_campaign"]
     G --> H["Metric Fetcher: Polling Loop"]
     H --> I["Analysis Agent: Compute Metrics"]
-    I --> J["Bandit Update: RL Posterior"]
-    J --> K{"More Rounds?"}
-    K -- Yes --> L["Warm/Cold Audience Split"]
-    L --> D
-    K -- No --> M["Final Summary + Unique Reach"]
+    I --> J{"More Rounds?"}
+    J -- Yes --> K["Warm/Cold Audience Split"]
+    K --> D
+    J -- No --> L["Final Summary + Unique Reach"]
 ```
 
 **Graph definition** (`graph.py`):
@@ -150,41 +148,7 @@ Temperature: `0.7` (creative but structured).
 
 ---
 
-## 5. Contextual Bandit (Thompson Sampling)
-
-**File**: `bandit.py`
-
-### The Explore-Exploit Mechanism
-
-For each `(Tier, Angle)` pair, we maintain a Beta distribution:
-
-| Parameter     | Formula                           | Meaning   |
-| ------------- | --------------------------------- | --------- |
-| **α (alpha)** | `1 + total_clicks`                | Successes |
-| **β (beta)**  | `1 + (total_sent - total_clicks)` | Failures  |
-
-### Action Selection (`select_action`)
-
-```python
-for each angle in [curiosity, urgency, social_proof, authority]:
-    θ = np.random.beta(α, β)  # Sample from posterior
-best_angle = argmax(θ)
-```
-
-### State Grid (4 × 4 = 16 arms)
-
-|                | curiosity | urgency   | social_proof | authority |
-| -------------- | --------- | --------- | ------------ | --------- |
-| **Diamond**    | Beta(α,β) | Beta(α,β) | Beta(α,β)    | Beta(α,β) |
-| **Gold**       | Beta(α,β) | Beta(α,β) | Beta(α,β)    | Beta(α,β) |
-| **Silver**     | Beta(α,β) | Beta(α,β) | Beta(α,β)    | Beta(α,β) |
-| **Reactivate** | Beta(α,β) | Beta(α,β) | Beta(α,β)    | Beta(α,β) |
-
-Persistence: `bandit_state.json` (survives across runs).
-
----
-
-## 6. Multi-Agent War Room
+## 5. Multi-Agent War Room
 
 **File**: `war_room.py`
 
@@ -209,7 +173,7 @@ sequenceDiagram
 
 ---
 
-## 7. Digital Twin Simulator
+## 6. Digital Twin Simulator
 
 **File**: `twin_simulator.py`
 
@@ -233,7 +197,7 @@ If killed, the War Room regenerates (up to 3 attempts). If all 3 fail, the last 
 
 ---
 
-## 8. 1:1 Personalization Engine
+## 7. 1:1 Personalization Engine
 
 **File**: `personalization.py`
 
@@ -247,7 +211,7 @@ Transforms template placeholders into real customer data:
 
 ### Dynamic Snippet Injection
 
-If the bandit selected `social_proof` as the angle:
+If the segment strategy selected `social_proof` as the angle:
 
 ```
 "P.S. 32 other Software Engineers in Mumbai also opened this deposit this week."
@@ -255,7 +219,7 @@ If the bandit selected `social_proof` as the angle:
 
 ---
 
-## 9. API Dispatch & Batch Routing
+## 8. API Dispatch & Batch Routing
 
 **File**: `main.py` → `send_segment()` | **API Client**: `campaignx_api.py`
 
@@ -284,7 +248,7 @@ All customers in a segment are sent in a single API call. For segments larger th
 
 ---
 
-## 10. Send-Time Optimization (STO)
+## 9. Send-Time Optimization (STO)
 
 **File**: `main.py` (within `run_full_pipeline`)
 
@@ -311,7 +275,7 @@ This prevents the CampaignX API `422: send_time cannot be in the past` error.
 
 ---
 
-## 11. Metric Fetcher & Dynamic Polling
+## 10. Metric Fetcher & Dynamic Polling
 
 **File**: `main.py` → `fetch_segment_metrics()`
 
@@ -331,7 +295,7 @@ On HTTP `429`, the system generates stub records `{EO: "N", EC: "N"}` to prevent
 
 ---
 
-## 12. Analysis Agent (Intelligent Simulation)
+## 11. Analysis Agent (Intelligent Simulation)
 
 **File**: `analysis_agent.py`
 
@@ -356,7 +320,7 @@ Each customer gets a deterministic open/click state based on their ID hash, ensu
 
 ---
 
-## 13. Optimization Cascade (Multi-Round Re-targeting)
+## 12. Optimization Cascade (Multi-Round Re-targeting)
 
 ### Audience Segmentation for Re-targeting
 
@@ -374,8 +338,7 @@ graph TD
     G --> H
     H --> I["Send via API"]
     I --> J["Fetch Real Metrics"]
-    J --> K["Update Bandit Posteriors"]
-    K --> A
+    J --> A
 ```
 
 ### Cumulative Unique Reach
@@ -394,7 +357,7 @@ unique_open_rate = len(all_unique_opens) / total_audience * 100
 
 ---
 
-## 14. Engagement Memory System
+## 13. Engagement Memory System
 
 **File**: `memory.py`
 
@@ -428,7 +391,7 @@ unique_open_rate = len(all_unique_opens) / total_audience * 100
 
 ---
 
-## 15. Propensity Scoring Model
+## 14. Propensity Scoring Model
 
 **File**: `propensity.py`
 
@@ -440,7 +403,7 @@ engagement_score = (0.7 × P_click) + (0.3 × demographic_prior)
 
 Where:
 
-- `P_click = α_posterior / (α_posterior + β_posterior)` — Bayesian click probability
+- `P_click` — Calculated historical click probability
 - `demographic_prior = capacity_score(0.4) + digital_score(0.3) + credit_score(0.3)`
 
 ### Tier Thresholds
@@ -454,7 +417,7 @@ Where:
 
 ---
 
-## 16. Persistence & Observability
+## 15. Persistence & Observability
 
 ### Storage Layer (`supabase_client.py`)
 
@@ -465,23 +428,19 @@ Where:
 | `campaign_variants`             | Email variants per campaign          |
 | `optimization_suggestions`      | AI-generated optimization ideas      |
 | `campaign_optimization_history` | Round-by-round performance history   |
-| `agent_traces`                  | LangSmith-style execution audit logs |
+| `agent_traces`                  | Execution audit logs |
 
-### Tracing (`langsmith_config.py`)
-
-All LangChain/LangGraph calls are auto-traced via LangSmith when `LANGCHAIN_TRACING_V2=true`.
 
 ### Local Persistence Files
 
 | File                     | Purpose                          |
 | ------------------------ | -------------------------------- |
-| `bandit_state.json`      | Thompson Sampling α/β parameters |
 | `engagement_memory.json` | Per-user psychographic profiles  |
 | `agent_output.json`      | Final pipeline results (JSON)    |
 
 ---
 
-## 17. Data Schemas
+## 16. Data Schemas
 
 ### WorkflowState (LangGraph Shared Memory)
 
@@ -519,7 +478,7 @@ brief → crm_data → customer_count → target_customer_ids
 
 ---
 
-## 18. File Map
+## 17. File Map
 
 | File                  | Lines | Role                                             |
 | --------------------- | ----- | ------------------------------------------------ |
@@ -531,7 +490,6 @@ brief → crm_data → customer_count → target_customer_ids
 | `content_agent.py`    | 184   | Segment-aware variant generation                 |
 | `war_room.py`         | 68    | Copywriter + Psychologist agents                 |
 | `twin_simulator.py`   | 73    | Pre-send validation gate                         |
-| `bandit.py`           | 84    | Thompson Sampling RL engine                      |
 | `personalization.py`  | 45    | 1:1 template injection                           |
 | `analysis_agent.py`   | 237   | Metric computation + simulation                  |
 | `memory.py`           | 76    | Per-user behavioral memory                       |
@@ -540,4 +498,4 @@ brief → crm_data → customer_count → target_customer_ids
 | `state.py`            | 96    | TypedDict schemas + reducers                     |
 | `config.py`           | 57    | Environment configuration                        |
 | `supabase_client.py`  | 224   | Database CRUD operations                         |
-| `langsmith_config.py` | 49    | LangSmith tracing setup                          |
+

@@ -153,7 +153,7 @@ CREATE TABLE IF NOT EXISTS agent_traces (
 CREATE TABLE IF NOT EXISTS campaign_embeddings (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     content TEXT NOT NULL,
-    embedding vector(768),  -- Use 768 for Gemini embedding-001
+    embedding vector(768),  -- 768-dimension embedding storage
     metadata JSONB,
     source VARCHAR(255),  -- e.g., "bfsi_best_practices", "historical_campaign"
     created_at TIMESTAMPTZ DEFAULT NOW()

@@ -17,7 +17,6 @@ from agents.state import WorkflowState
 from agents.cohort_agent import load_cohort
 from agents.strategy_agent import plan_strategy
 from agents.content_agent import generate_content
-from agents.langsmith_config import configure_tracing
 from agents.supabase_client import persist_agent_trace
 
 
@@ -48,11 +47,6 @@ async def run_campaign_graph(brief: str) -> dict:
     
     Returns dict with segments, segment_variants, and per-segment content.
     """
-    try:
-        configure_tracing()
-    except Exception as e:
-        print(f"[LangSmith] Tracing setup failed: {e}")
-
     started_at = time.time()
     run_id = str(uuid.uuid4())
 

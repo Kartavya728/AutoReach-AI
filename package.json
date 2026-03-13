@@ -1,6 +1,5 @@
 {
   "dependencies": {
-    "@google/genai": "^1.43.0",
-    "langsmith": "^0.5.7"
+    "@google/genai": "^1.43.0"
   }
 }

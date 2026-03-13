@@ -1,4 +1,4 @@
-// ── Core Records ──
+// Core records
 
 export interface CustomerRecord {
   customer_id: string;
@@ -30,18 +30,13 @@ export interface CustomerCRMRecord {
   existing_customer?: string | null;
   credit_score?: number | null;
   social_media_active?: string | null;
-  
-  // Tracking
   emails_sent: number;
   emails_opened: number;
   emails_clicked: number;
   topics_list: string[];
-  
-  // Weights
   w1: number;
   w2: number;
   w3: number;
-  
   created_at: string;
   updated_at: string;
 }
@@ -87,15 +82,7 @@ export interface GetReportResponse {
   message: string;
 }
 
-// ── Gemini / AI ──
-
-export interface GeminiCampaignRequest {
-  brief: string;
-  temperature?: number;
-  useEmojis?: boolean;
-  tone?: string;
-  additionalParams?: string;
-}
+// Agent runtime
 
 export interface GeneratedEmailVariant {
   subject: string;
@@ -105,23 +92,104 @@ export interface GeneratedEmailVariant {
   tags: string[];
 }
 
-// ── LangGraph Agent ──
+export type AgentPauseType = "segment_approval" | "content_approval" | "next_round" | string;
 
-export interface CampaignAgentStep {
-  step: string;
+export interface AgentThinkingStep {
   agent: string;
+  step: string;
+  kind?: string;
 }
 
-export interface CampaignAgentResponse {
+export interface AgentSegmentCard {
+  segmentId: string;
+  name: string;
+  size: number;
+  criteria?: string;
+  tone?: string;
+  focus?: string;
+  tier?: string;
+}
+
+export interface AgentDraftCard {
+  segmentId: string;
+  segmentName: string;
+  size: number;
+  subject: string;
+  body: string;
+  tone?: string;
+  tags?: string[];
+}
+
+export interface AgentPausePayload {
+  pauseType: AgentPauseType;
+  title?: string;
+  message?: string;
+  round?: number;
+  maxRounds?: number;
+  segments?: AgentSegmentCard[];
+  variants?: AgentDraftCard[];
+  metrics?: {
+    audience?: number;
+    openRate?: number;
+    clickRate?: number;
+  };
+}
+
+export interface AgentLiveMetrics {
+  round: number;
+  sent: number;
+  opened: number;
+  clicked: number;
+  openRate: number;
+  clickRate: number;
+  bySegment: Array<{
+    segmentName: string;
+    sent: number;
+    opened: number;
+    clicked: number;
+    openRate: number;
+    clickRate: number;
+  }>;
+}
+
+export interface AgentRoundComplete {
+  round: number;
+  summary: {
+    audience: number;
+    openRate: number;
+    clickRate: number;
+    segments: number;
+  };
+}
+
+export interface AgentRunResult {
   brief: string;
   strategy: string;
+  strategyReasoning: string;
   contentVariants: GeneratedEmailVariant[];
+  segments: Array<{
+    name: string;
+    size: number;
+    criteria: string;
+    tone: string;
+    focus: string;
+  }>;
+  metricsProgression: Array<{
+    round: number;
+    audience: number;
+    openRate: number;
+    clickRate: number;
+    segments: number;
+  }>;
   customerCount: number;
-  campaignReady: boolean;
-  steps: CampaignAgentStep[];
+  targetCustomerIds: string[];
+  savedCampaignId: string | null;
+  finalOpenRate: number;
+  finalClickRate: number;
+  rawResult: unknown;
 }
 
-// ── Supabase Campaign ──
+// Supabase campaign
 
 export interface CampaignRow {
   id: string;
@@ -142,11 +210,9 @@ export interface CampaignRow {
   click_rate?: number | null;
   total_opened?: number | null;
   total_clicked?: number | null;
-  
   target_customer_ids?: string[] | null;
   strategy_reasoning?: string | null;
   json_output?: any | null;
-  
   created_at: string;
   updated_at: string;
   approved_by?: string | null;
@@ -199,7 +265,7 @@ export interface OptimizationHistoryRow {
   created_at: string;
 }
 
-// ── Request/Response shapes for new API routes ──
+// API payloads
 
 export interface CreateCampaignPayload {
   name: string;
@@ -271,7 +337,7 @@ export interface DashboardStats {
   pendingApprovals: number;
 }
 
-// ── Computed Analysis Report (from CampaignX report records) ──
+// Computed analysis report
 
 export interface ComputedAnalysisReport {
   campaignId: string;

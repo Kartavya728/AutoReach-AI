@@ -5,7 +5,7 @@ Collaborates to generate highly persuasive campaign templates.
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage
-from agents.config import GEMINI_API_KEY, GEMINI_MODEL
+from agents.config import AGENTS_TEST_MODE, GEMINI_API_KEY, GEMINI_MODEL
 import json
 
 class WarRoom:
@@ -21,7 +21,29 @@ class WarRoom:
         Coordinates Copywriter -> Psychologist -> Controller to produce an email template.
         Supports 1:1 personalization fields via {{name}}, {{city}}, {{occupation}}, {{income}}.
         """
-        
+        if AGENTS_TEST_MODE:
+            subject_map = {
+                "curiosity": "What if your next deposit earned more than the market?",
+                "urgency": "Lock in higher XDeposit returns before the window shifts",
+                "social_proof": "Why more savers are moving to XDeposit this quarter",
+                "authority": "A smarter fixed-return move, backed by SuperBFSI",
+            }
+            body = (
+                "Hi {name},\n\n"
+                "As a {occupation} in {city}, you are likely evaluating safe ways to grow idle funds. "
+                "XDeposit from SuperBFSI currently offers 1 percentage point higher returns than competing term "
+                "deposit products. For eligible female senior citizens, the offer goes 0.25 percentage point higher.\n\n"
+                "Why this matters:\n"
+                "- Higher fixed returns versus comparable products\n"
+                "- Backed by SuperBFSI\n"
+                "- Simple next step to explore details and start\n\n"
+                "Explore now: https://superbfsi.com/xdeposit/explore/\n"
+            )
+            return {
+                "subject": subject_map.get(angle, "Explore the higher-return XDeposit opportunity"),
+                "body": body,
+            }
+
         # Agent 1: Copywriter
         prompt_cw = f"""You are the Lead Copywriter.
 Create an email for this Campaign Brief: {brief}

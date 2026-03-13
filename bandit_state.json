@@ -1,0 +1,74 @@
+{
+  "Diamond": {
+    "curiosity": {
+      "alpha": 1,
+      "beta": 2
+    },
+    "urgency": {
+      "alpha": 5,
+      "beta": 2
+    },
+    "social_proof": {
+      "alpha": 2,
+      "beta": 4
+    },
+    "authority": {
+      "alpha": 1,
+      "beta": 4
+    }
+  },
+  "Gold": {
+    "curiosity": {
+      "alpha": 2,
+      "beta": 5
+    },
+    "urgency": {
+      "alpha": 2,
+      "beta": 3
+    },
+    "social_proof": {
+      "alpha": 1,
+      "beta": 3
+    },
+    "authority": {
+      "alpha": 1,
+      "beta": 4
+    }
+  },
+  "Silver": {
+    "curiosity": {
+      "alpha": 1,
+      "beta": 2
+    },
+    "urgency": {
+      "alpha": 1,
+      "beta": 5
+    },
+    "social_proof": {
+      "alpha": 1,
+      "beta": 3
+    },
+    "authority": {
+      "alpha": 1,
+      "beta": 3
+    }
+  },
+  "Reactivate": {
+    "curiosity": {
+      "alpha": 2,
+      "beta": 2
+    },
+    "urgency": {
+      "alpha": 1,
+      "beta": 4
+    },
+    "social_proof": {
+      "alpha": 3,
+      "beta": 5
+    },
+    "authority": {
+      "alpha": 3,
+      "beta": 3
+    }
+  }
+}

@@ -1,6 +1,6 @@
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
-import { SystemMessage, HumanMessage } from "@langchain/core/messages";
-import { getServerConfig, requireServerEnv } from "@/src/lib/server/env";
+import { HumanMessage } from "@langchain/core/messages";
+import { getAIConfig, requireAIEnv } from "@/src/backend/ai-config";
 import {
   serverGetCampaignById,
   serverUpdateCampaign,
@@ -19,10 +19,10 @@ import { computeAnalysisFromReport } from "@/src/lib/server/analysis";
 import { serverGetCustomers, serverUpdateCustomerWeights } from "@/src/lib/server/customers";
 
 function getGeminiModel() {
-  const config = getServerConfig();
-  const apiKey = requireServerEnv("GEMINI_API_KEY");
+  const config = getAIConfig();
+  const apiKey = requireAIEnv("GEMINI_API_KEY");
   return new ChatGoogleGenerativeAI({
-    model: config.geminiModel ?? "gemini-2.0-flash",
+    model: config.geminiModel,
     apiKey,
     temperature: 0.7,
   });

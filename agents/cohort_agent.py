@@ -12,17 +12,8 @@ Corresponds to: `load_cohort` node in langgraph.js
 from __future__ import annotations
 import asyncio
 from agents.state import WorkflowState, CustomerRecord
-from agents.supabase_client import get_customers
 from agents.segment_engine import segment_customers
 
-
-def _fetch_from_supabase() -> list[dict]:
-    """Fetch customer data from Supabase."""
-    try:
-        return get_customers()
-    except Exception as e:
-        print(f"[Cohort Agent] Supabase fetch failed: {e}")
-        return []
 
 
 async def _fetch_from_api() -> list[dict]:
@@ -36,44 +27,34 @@ async def _fetch_from_api() -> list[dict]:
         return []
 
 
-def _merge_and_condense(sb_customers: list[dict], api_customers: list[dict]) -> list[CustomerRecord]:
+def _prepare_crm_data(api_customers: list[dict]) -> list[CustomerRecord]:
     """
-    Merge Supabase + API data and condense to targeting fields.
-    API data has richer demographics; Supabase has weights.
+    Condense API data to targeting fields.
     """
-    # Build lookup from Supabase by customer_id
-    sb_lookup = {c.get("customer_id", ""): c for c in sb_customers}
-
-    # Build lookup from API by customer_id
-    api_lookup = {c.get("customer_id", ""): c for c in api_customers}
-
-    # Merge: prefer API demographics + Supabase weights
-    all_ids = set(list(sb_lookup.keys()) + list(api_lookup.keys()))
-    all_ids.discard("")
-
     records: list[CustomerRecord] = []
-    for cid in sorted(all_ids):
-        sb = sb_lookup.get(cid, {})
-        api = api_lookup.get(cid, {})
-
+    for api in api_customers:
+        cid = api.get("customer_id", "")
+        if not cid:
+            continue
+            
         records.append({
             "id": cid,
-            "age": api.get("Age") or sb.get("age"),
-            "gender": api.get("Gender") or sb.get("gender"),
-            "occupation": api.get("Occupation") or sb.get("occupation"),
-            "income": api.get("Monthly_Income") or sb.get("monthly_income"),
-            "city": api.get("City") or sb.get("city"),
-            "marital_status": api.get("Marital_Status") or sb.get("marital_status"),
-            "credit_score": api.get("Credit score") or sb.get("credit_score"),
-            "kyc_status": api.get("KYC status") or sb.get("kyc_status"),
-            "app_installed": api.get("App_Installed") or sb.get("app_installed"),
-            "existing_customer": api.get("Existing Customer") or sb.get("existing_customer"),
-            "social_media_active": api.get("Social_Media_Active") or sb.get("social_media_active"),
-            "family_size": api.get("Family_Size") or sb.get("family_size"),
-            "kids": api.get("Kids_in_Household") or sb.get("kids"),
-            "w1": float(sb.get("w1", 0) or 0),
-            "w2": float(sb.get("w2", 0) or 0),
-            "w3": float(sb.get("w3", 0) or 0),
+            "age": api.get("Age"),
+            "gender": api.get("Gender"),
+            "occupation": api.get("Occupation"),
+            "income": api.get("Monthly_Income"),
+            "city": api.get("City"),
+            "marital_status": api.get("Marital_Status"),
+            "credit_score": api.get("Credit score"),
+            "kyc_status": api.get("KYC status"),
+            "app_installed": api.get("App_Installed"),
+            "existing_customer": api.get("Existing Customer"),
+            "social_media_active": api.get("Social_Media_Active"),
+            "family_size": api.get("Family_Size"),
+            "kids": api.get("Kids_in_Household"),
+            "w1": 0.0,
+            "w2": 0.0,
+            "w3": 0.0,
         })
 
     return records
@@ -90,14 +71,13 @@ async def load_cohort(state: WorkflowState) -> dict:
     """
     print(f"[Cohort Agent] Starting — brief: {state.get('brief', '')[:80]}...")
 
-    # Fetch from both sources in parallel
-    sb_customers = _fetch_from_supabase()
+    # Fetch from API
     api_customers = await _fetch_from_api()
 
-    print(f"[Cohort Agent] Supabase: {len(sb_customers)} records, API: {len(api_customers)} records")
+    print(f"[Cohort Agent] Fetched: {len(api_customers)} records from CampaignX API")
 
-    # Merge and condense
-    crm_data = _merge_and_condense(sb_customers, api_customers)
+    # Condense
+    crm_data = _prepare_crm_data(api_customers)
     customer_count = len(crm_data)
 
     if not crm_data:
@@ -121,7 +101,7 @@ async def load_cohort(state: WorkflowState) -> dict:
         "steps": [
             {
                 "agent": "Cohort-Agent",
-                "step": f"Fetched {customer_count} customers (Supabase + API), created {len(segments)} segments.",
+                "step": f"Fetched {customer_count} customers (API), created {len(segments)} segments.",
             }
         ],
     }

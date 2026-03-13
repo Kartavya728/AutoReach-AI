@@ -10,7 +10,7 @@ Tests all available CampaignX API endpoints and writes full responses +
 analysis to  api_output.txt.
 
 Usage:
-    pip install requests python-dotenv langsmith
+    pip install requests python-dotenv
     python test.py
 """
 
@@ -331,33 +331,6 @@ def print_api_summary() -> None:
     info(f"Auth Header : X-API-Key: {API_KEY[:16]}...")
     info("429 Too Many Requests = daily quota exceeded")
 
-# ─── 6. LangSmith setup note ────────────────────────────────────────────────────
-
-def langsmith_setup_note() -> None:
-    banner("LANGSMITH OBSERVABILITY NOTE")
-    info("LangSmith traces every LLM call and agent decision in the pipeline.")
-    info("Required .env variables:")
-    raw("""
-  LANGCHAIN_TRACING_V2   = true
-  LANGCHAIN_ENDPOINT     = https://api.smith.langchain.com
-  LANGCHAIN_API_KEY      = <your_langsmith_key>
-  LANGCHAIN_PROJECT      = CampaignX
-""")
-    info("Install: pip install langsmith langchain langchain-google-genai")
-    info("Dashboard: https://smith.langchain.com  -> Project 'CampaignX'")
-
-    try:
-        from langsmith import Client
-        ls_key = os.getenv("LANGCHAIN_API_KEY", "")
-        if ls_key:
-            client   = Client(api_key=ls_key)
-            projects = list(client.list_projects())
-            ok(f"LangSmith connected -- {len(projects)} project(s) found")
-        else:
-            warn("LANGCHAIN_API_KEY not set in environment / .env")
-    except ImportError:
-        warn("langsmith not installed. Run: pip install langsmith")
-
 # ─── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
@@ -400,9 +373,6 @@ def main():
 
         # ── STEP 4B: Get Report for Variant B ──
         report_b = test_get_report(campaign_id_b, variant="B")
-
-        # ── LangSmith note ──
-        langsmith_setup_note()
 
         # ── Summary ──
         write_file_footer(

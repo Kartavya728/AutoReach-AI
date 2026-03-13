@@ -8,11 +8,12 @@ campaign brief AND actual customer data statistics (ranges, distributions).
 from __future__ import annotations
 import json
 import operator
+import sys
 from collections import Counter
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from agents.state import CustomerRecord, CustomerSegment
-from agents.config import GEMINI_API_KEY, GEMINI_MODEL
+from agents.config import AGENTS_TEST_MODE, GEMINI_API_KEY, GEMINI_MODEL
 
 
 def _get_model() -> ChatGoogleGenerativeAI:
@@ -21,6 +22,12 @@ def _get_model() -> ChatGoogleGenerativeAI:
         model=GEMINI_MODEL or "gemini-2.5-flash",
         temperature=0.2,
     )
+
+
+def _safe_print(message: str):
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    safe_message = message.encode(encoding, errors="replace").decode(encoding, errors="replace")
+    print(safe_message)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -147,6 +154,50 @@ async def generate_dynamic_segments(brief: str, crm_data: list[CustomerRecord]) 
     Single-call approach: Gemini sees the brief + real data profile + sample records,
     then identifies key factors AND generates segments in one shot.
     """
+    if AGENTS_TEST_MODE:
+        return [
+            {
+                "segment_id": "female_senior",
+                "segment_name": "Senior Women Extra Returns",
+                "criteria": "Female customers aged 60 or older",
+                "tone": "empathetic",
+                "focus": "0.25% additional return for female senior citizens",
+                "emoji_level": "none",
+                "tier": "Diamond",
+                "logic": [{"AND": [{"field": "gender", "op": "==", "value": "Female"}, {"field": "age", "op": ">=", "value": 60}]}],
+            },
+            {
+                "segment_id": "high_income",
+                "segment_name": "High Income Earners",
+                "criteria": "Customers with monthly income above 150000",
+                "tone": "confident",
+                "focus": "1 percentage point higher returns than competitors",
+                "emoji_level": "none",
+                "tier": "Gold",
+                "logic": [{"AND": [{"field": "income", "op": ">", "value": 150000}]}],
+            },
+            {
+                "segment_id": "new_customers",
+                "segment_name": "New Customers",
+                "criteria": "Customers not yet marked as existing customers",
+                "tone": "welcoming",
+                "focus": "Introduce XDeposit and build trust",
+                "emoji_level": "none",
+                "tier": "Silver",
+                "logic": [{"AND": [{"field": "existing_customer", "op": "!=", "value": "yes"}]}],
+            },
+            {
+                "segment_id": "catch_all",
+                "segment_name": "All Other Customers",
+                "criteria": "All remaining customers",
+                "tone": "informative",
+                "focus": "Broad product benefits and CTA",
+                "emoji_level": "none",
+                "tier": "Reactivate",
+                "logic": [],
+            },
+        ]
+
     llm = _get_model()
 
     # Build the data profile from ALL records
@@ -163,7 +214,7 @@ async def generate_dynamic_segments(brief: str, crm_data: list[CustomerRecord]) 
 
 STEP 1: Read the Campaign Brief and identify what types of customers to prioritize.
 STEP 2: Study the REAL DATA PROFILE below to understand the actual distribution of customer attributes.
-STEP 3: Design 3-5 segments using ONLY the available CRM fields and realistic value thresholds based on the data profile.
+STEP 3: Design a MINIMUM of 4 distinct segments, but dynamically create as many as needed based on the mathematical clustering in the provided real data profile to maximize reach.
 
 {data_profile}
 
@@ -212,7 +263,7 @@ Last segment MUST have empty "logic": [] as a catch-all.
             segments = json.loads(content[start:end + 1])
             return segments
     except Exception as e:
-        print(f"⚠️ Error parsing LLM segments: {e}")
+        _safe_print(f"[Segment Engine] Warning: error parsing LLM segments: {e}")
 
     return []
 
@@ -226,14 +277,14 @@ async def segment_customers(crm_data: list[CustomerRecord], brief: str = "") -> 
     assigned: set[str] = set()
     segments: list[CustomerSegment] = []
 
-    print("\n[Segment Engine] Profiling customer data and asking LLM to generate targeting logic...")
+    _safe_print("\n[Segment Engine] Profiling customer data and asking LLM to generate targeting logic...")
     dynamic_defs = await generate_dynamic_segments(brief, crm_data)
 
     if not dynamic_defs:
-        print("[Segment Engine] ⚠️ Dynamic generation failed, falling back to all-inclusive segment.")
+        _safe_print("[Segment Engine] Warning: dynamic generation failed, falling back to all-inclusive segment.")
         dynamic_defs = [{
             "segment_id": "all",
-            "segment_name": "🎯 Target Audience",
+            "segment_name": "Target Audience",
             "criteria": "All customers",
             "tone": "persuasive",
             "focus": "Campaign offer",
@@ -245,7 +296,10 @@ async def segment_customers(crm_data: list[CustomerRecord], brief: str = "") -> 
     # Print the factors the LLM identified
     for seg_def in dynamic_defs:
         tier = seg_def.get("tier", "Reactivate")
-        print(f"    📌 {seg_def.get('segment_name', '?')} → Tier: {tier} | Logic: {len(seg_def.get('logic', []))} rules")
+        _safe_print(
+            f"    [Segment] {seg_def.get('segment_name', '?')} -> Tier: {tier} | "
+            f"Logic: {len(seg_def.get('logic', []))} rules"
+        )
 
     for seg_def in dynamic_defs:
         customer_ids = []
@@ -287,10 +341,10 @@ async def segment_customers(crm_data: list[CustomerRecord], brief: str = "") -> 
         segments.append(segment)
 
     total = sum(s["size"] for s in segments)
-    print(f"\n[Segment Engine] Dynamically segmented {total} customers into {len(segments)} groups:")
+    _safe_print(f"\n[Segment Engine] Dynamically segmented {total} customers into {len(segments)} groups:")
     for s in segments:
         pct = round(s["size"] / total * 100, 1) if total > 0 else 0
-        print(f"  {s['segment_name']}: {s['size']} customers ({pct}%) → Tier: {s.get('tier', '?')}")
+        _safe_print(f"  {s['segment_name']}: {s['size']} customers ({pct}%) -> Tier: {s.get('tier', '?')}")
 
     return segments
 

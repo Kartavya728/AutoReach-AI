@@ -12,7 +12,7 @@ import json
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from agents.state import WorkflowState
-from agents.config import GEMINI_API_KEY, GEMINI_MODEL
+from agents.config import AGENTS_TEST_MODE, GEMINI_API_KEY, GEMINI_MODEL
 
 
 def _get_model() -> ChatGoogleGenerativeAI:
@@ -39,9 +39,41 @@ async def plan_strategy(state: WorkflowState) -> dict:
     """
     print(f"[Strategy Agent] Starting — {len(state.get('segments', []))} segments available")
 
-    llm = _get_model()
     segments = state.get("segments", [])
     crm_data = state.get("crm_data", [])
+
+    if AGENTS_TEST_MODE:
+        strategy = "\n".join(
+            [
+                "* Lead with the 1 percentage point rate advantage across all audiences.",
+                "* Give female senior citizens a dedicated message around the extra 0.25 percentage point bonus.",
+                "* Use trust-forward messaging for affluent and existing customers.",
+                "* Use onboarding and clarity-driven messaging for new customers.",
+                "* Keep the CTA visible in every email and prioritize open-rate friendly subject lines.",
+            ]
+        )
+        return {
+            "brief": state.get("brief", ""),
+            "strategy": strategy,
+            "strategy_reasoning": (
+                "In test mode, the strategy prioritizes the strongest value proposition first, "
+                "then adapts message framing by segment maturity, trust level, and bonus eligibility."
+            ),
+            "content_variants": state.get("content_variants", []),
+            "crm_data": crm_data,
+            "customer_count": state.get("customer_count", 0),
+            "target_customer_ids": state.get("target_customer_ids", []),
+            "segments": segments,
+            "segment_variants": state.get("segment_variants", {}),
+            "steps": [
+                {
+                    "agent": "Strategy-Agent",
+                    "step": f"Multi-segment strategy generated for {len(segments)} audience groups.",
+                }
+            ],
+        }
+
+    llm = _get_model()
 
     # Build segment summary for the LLM
     segment_summary = "\n".join(

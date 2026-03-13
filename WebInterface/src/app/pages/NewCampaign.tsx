@@ -1,1157 +1,1336 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { motion, AnimatePresence } from "motion/react";
-import { useState, useEffect } from "react";
+import { AnimatePresence, motion } from "motion/react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ElementType, type ReactNode } from "react";
 import {
-  Send, Sliders, RefreshCw, CheckCircle, Clock, Users,
-  ArrowRight, ChevronLeft, Sparkles, Zap, Target,
-  Calendar, Mail, MessageSquare, Info, Cpu, ChevronDown,
+  Activity,
+  ArrowLeft,
+  ArrowRight,
+  BrainCircuit,
+  CheckCircle2,
+  ChevronRight,
+  Clock3,
+  Layers3,
+  Mail,
+  PauseCircle,
+  Play,
+  Radar,
+  RefreshCw,
+  Terminal,
+  Send,
+  ShieldCheck,
+  Sparkles,
+  TrendingUp,
+  Users,
+  Workflow,
+  XCircle,
 } from "lucide-react";
 import { Navbar } from "../components/Navbar";
 import { AIProcessing } from "../components/AIProcessing";
-import { ContentVariants, type EmailVariantCard } from "../components/ContentVariants";
-import { CustomizeParams } from "../components/CustomizeParams";
+import { streamCampaignAgent, type AgentPauseResponder } from "../../lib/agent-stream";
+import type {
+  AgentDraftCard,
+  AgentLiveMetrics,
+  AgentPausePayload,
+  AgentRoundComplete,
+  AgentRunResult,
+  AgentSegmentCard,
+  AgentThinkingStep,
+} from "../../lib/types";
 
-import { getCustomerCohort, sendCampaign } from "../../lib/campaignx-api";
-import { generateCampaignContent } from "../../lib/gemini";
-import { runCampaignAgent } from "../../lib/langgraph";
+const DEFAULT_BRIEF =
+  "Run email campaign for launching XDeposit, a flagship term deposit product from SuperBFSI, that gives 1 percentage point higher returns than its competitors. Announce an additional 0.25 percentage point higher returns for female senior citizens. Optimise for open rate and click rate. Don't skip emails to customers marked 'inactive'. Include the call to action: https://superbfsi.com/xdeposit/explore/";
+const DEFAULT_ROUNDS = 3;
+const IDLE_THRESHOLD_MS = 950;
 
-const DEFAULT_BRIEF = "Run email campaign for launching XDeposit, a flagship term deposit product from SuperBFSI, that gives 1 percentage point higher returns than its competitors. Announce an additional 0.25 percentage point higher returns for female senior citizens. Optimise for open rate and click rate. Don't skip emails to customers marked 'inactive'. Include the call to action: https://superbfsi.com/xdeposit/explore/";
+type RunPhase = "idle" | "running" | "paused" | "complete" | "error";
 
-const STEPS = [
-  { id: 1, label: "Campaign Brief" },
-  { id: 2, label: "AI Planning" },
-  { id: 3, label: "Review Content" },
-  { id: 4, label: "Configure & Approve" },
-];
-
-function wait(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function formatPercent(value?: number | null) {
+  const safe = Number(value ?? 0);
+  return `${safe.toFixed(1)}%`;
 }
 
-function toCampaignXDateTime(sendDate: string, sendTime: string) {
-  // CampaignX API format: DD:MM:YY HH:MM:SS
-  const [year, month, day] = sendDate.split("-");
-  const now = new Date();
+function formatCount(value?: number | null) {
+  return (Number(value ?? 0) || 0).toLocaleString();
+}
 
-  // Build the intended datetime
-  const intended = new Date(`${sendDate}T${sendTime}:00`);
+function phaseLabel(phase: RunPhase) {
+  switch (phase) {
+    case "running":
+      return "Streaming live";
+    case "paused":
+      return "Waiting for approval";
+    case "complete":
+      return "Completed";
+    case "error":
+      return "Run failed";
+    default:
+      return "Ready";
+  }
+}
 
-  // If intended time is in the past, use now + 5 minutes
-  if (intended <= now) {
-    const future = new Date(now.getTime() + 5 * 60 * 1000);
-    const dd = String(future.getDate()).padStart(2, "0");
-    const mm = String(future.getMonth() + 1).padStart(2, "0");
-    const yy = String(future.getFullYear()).slice(-2);
-    const hh = String(future.getHours()).padStart(2, "0");
-    const mi = String(future.getMinutes()).padStart(2, "0");
-    const ss = String(future.getSeconds()).padStart(2, "0");
-    return `${dd}:${mm}:${yy} ${hh}:${mi}:${ss}`;
+function phaseColor(phase: RunPhase) {
+  switch (phase) {
+    case "running":
+      return { text: "#99f6e4", bg: "rgba(20,184,166,0.12)", border: "rgba(20,184,166,0.28)" };
+    case "paused":
+      return { text: "#fdba74", bg: "rgba(249,115,22,0.12)", border: "rgba(249,115,22,0.28)" };
+    case "complete":
+      return { text: "#86efac", bg: "rgba(34,197,94,0.12)", border: "rgba(34,197,94,0.28)" };
+    case "error":
+      return { text: "#fca5a5", bg: "rgba(239,68,68,0.12)", border: "rgba(239,68,68,0.28)" };
+    default:
+      return { text: "#cbd5e1", bg: "rgba(148,163,184,0.12)", border: "rgba(148,163,184,0.22)" };
+  }
+}
+
+function toSegmentCardsFromResult(result: AgentRunResult | null): AgentSegmentCard[] {
+  if (!result) {
+    return [];
   }
 
-  return `${day}:${month}:${year.slice(-2)} ${sendTime}:00`;
+  return result.segments.map((segment, index) => ({
+    segmentId: `segment-${index + 1}`,
+    name: segment.name,
+    size: segment.size,
+    criteria: segment.criteria,
+    tone: segment.tone,
+    focus: segment.focus,
+    tier: index === 0 ? "Priority" : "Active",
+  }));
 }
 
-function mapGeneratedVariantToCard(
-  subject: string,
-  body: string,
-  tone: string,
-  variant: string,
-  index: number
-): EmailVariantCard {
-  const variantId = `var-${String.fromCharCode(97 + index)}`;
-  const toneLower = tone.toLowerCase();
-  const badgeColor =
-    toneLower.includes("urgent") ? "orange" : toneLower.includes("friendly") ? "purple" : "blue";
+function toDraftCardsFromResult(result: AgentRunResult | null): AgentDraftCard[] {
+  if (!result) {
+    return [];
+  }
 
-  return {
-    id: variantId,
-    label: `Variant ${variant || String.fromCharCode(65 + index)}`,
-    badge: tone || "AI Generated",
-    badgeColor,
-    subject,
-    body,
-    tags: ["ai-generated", tone.toLowerCase()],
+  return result.contentVariants.map((draft, index) => ({
+    segmentId: `draft-${index + 1}`,
+    segmentName: draft.variant || `Audience ${index + 1}`,
+    size: 0,
+    subject: draft.subject,
+    body: draft.body,
+    tone: draft.tone,
+    tags: draft.tags,
+  }));
+}
+
+function pushUniqueStep(
+  current: AgentThinkingStep[],
+  next: AgentThinkingStep,
+  limit = 48
+): AgentThinkingStep[] {
+  const normalized = {
+    agent: next.agent || "Agent",
+    step: next.step || "",
+    kind: next.kind || "status",
   };
+  const last = current[current.length - 1];
+  if (last && last.agent === normalized.agent && last.step === normalized.step && last.kind === normalized.kind) {
+    return current;
+  }
+  return [...current, normalized].slice(-limit);
+}
+
+function Surface({
+  title,
+  eyebrow,
+  right,
+  children,
+}: {
+  title: string;
+  eyebrow?: string;
+  right?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <section
+      className="rounded-[30px] p-5 md:p-6"
+      style={{
+        background: "linear-gradient(180deg, rgba(6,14,25,0.92) 0%, rgba(9,16,30,0.98) 100%)",
+        border: "1px solid rgba(148,163,184,0.14)",
+        boxShadow: "0 24px 80px rgba(2, 6, 23, 0.35)",
+      }}
+    >
+      <div className="flex items-start gap-4 justify-between mb-5">
+        <div>
+          {eyebrow && (
+            <div className="uppercase tracking-[0.2em] text-slate-500" style={{ fontSize: "0.68rem" }}>
+              {eyebrow}
+            </div>
+          )}
+          <h3 className="text-white mt-1" style={{ fontSize: "1rem", fontWeight: 700 }}>
+            {title}
+          </h3>
+        </div>
+        {right}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function StatTile({
+  label,
+  value,
+  hint,
+  accent,
+  icon: Icon,
+}: {
+  label: string;
+  value: string;
+  hint: string;
+  accent: string;
+  icon: ElementType;
+}) {
+  return (
+    <div
+      className="rounded-[24px] p-4"
+      style={{
+        background: `${accent}12`,
+        border: `1px solid ${accent}24`,
+      }}
+    >
+      <div className="flex items-center justify-between mb-4">
+        <span className="text-slate-300" style={{ fontSize: "0.75rem" }}>
+          {label}
+        </span>
+        <div
+          className="w-9 h-9 rounded-2xl flex items-center justify-center"
+          style={{ background: `${accent}18`, border: `1px solid ${accent}28` }}
+        >
+          <Icon className="w-4 h-4" style={{ color: accent }} />
+        </div>
+      </div>
+      <div className="text-white" style={{ fontSize: "1.5rem", fontWeight: 700 }}>
+        {value}
+      </div>
+      <div className="mt-1" style={{ color: accent, fontSize: "0.72rem" }}>
+        {hint}
+      </div>
+    </div>
+  );
 }
 
 export default function NewCampaign() {
   const router = useRouter();
-  const [step, setStep] = useState(1);
-  const [brief, setBrief] = useState(DEFAULT_BRIEF);
-  const [agentSteps, setAgentSteps] = useState<{ step: string; agent: string }[]>([]);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [processingDone, setProcessingDone] = useState(false);
-  const [selectedVariant, setSelectedVariant] = useState<string | null>(null);
-  const [emailVariants, setEmailVariants] = useState<EmailVariantCard[]>([]);
-  const [showCustomize, setShowCustomize] = useState(false);
-  const [customParams, setCustomParams] = useState({
-    useEmojis: true,
-    temperature: 0.7,
-    tone: "friendly",
-    includeURL: true,
-    personalizeNames: false,
-    includeStats: false,
-    urgency: false,
-    customAddOn: "",
-  });
-  const [sendTime, setSendTime] = useState("10:00");
-  const [sendDate, setSendDate] = useState(
-    new Date().toISOString().split("T")[0]
-  );
-  const [isLaunching, setIsLaunching] = useState(false);
-  const [launched, setLaunched] = useState(false);
-  const [customerCohortSize, setCustomerCohortSize] = useState(0);
-  const [launchError, setLaunchError] = useState<string | null>(null);
-  const [savedCampaignId, setSavedCampaignId] = useState<string | null>(null);
-  const [targetCustomerIds, setTargetCustomerIds] = useState<string[]>([]);
-  const [cohortData, setCohortData] = useState<{ active: number; inactive: number; total: number } | null>(null);
-  const [selectedModel, setSelectedModel] = useState("gemini-2.5-flash");
-  const [availableModels, setAvailableModels] = useState<{ id: string; name: string; isDefault: boolean }[]>([]);
-  const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
+  const pauseResponderRef = useRef<AgentPauseResponder | null>(null);
+  const lastActivityAtRef = useRef(Date.now());
 
-  // Fetch available models
-  useEffect(() => {
-    fetch("/api/models")
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.models) {
-          setAvailableModels(data.models);
-          const defaultModel = data.models.find((m: { isDefault: boolean }) => m.isDefault);
-          if (defaultModel) setSelectedModel(defaultModel.id);
-        }
-      })
-      .catch(() => { });
+  const [brief, setBrief] = useState(DEFAULT_BRIEF);
+  const [phase, setPhase] = useState<RunPhase>("idle");
+  const [isIdle, setIsIdle] = useState(false);
+  const [thinkingSteps, setThinkingSteps] = useState<AgentThinkingStep[]>([]);
+  const [pendingPause, setPendingPause] = useState<AgentPausePayload | null>(null);
+  const [segmentCards, setSegmentCards] = useState<AgentSegmentCard[]>([]);
+  const [draftCards, setDraftCards] = useState<AgentDraftCard[]>([]);
+  const [metricsHistory, setMetricsHistory] = useState<AgentLiveMetrics[]>([]);
+  const [roundHistory, setRoundHistory] = useState<AgentRoundComplete[]>([]);
+  const [result, setResult] = useState<AgentRunResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [terminalOpen, setTerminalOpen] = useState(true);
+  const [displayedTerminal, setDisplayedTerminal] = useState("");
+  const terminalRef = useRef<HTMLPreElement>(null);
+  const pendingCharsRef = useRef<string[]>([]);
+  const rafIdRef = useRef<number | null>(null);
+
+  const TERMINAL_MAX = 32_000;
+  const CHARS_PER_FRAME = 3;
+
+  // Typewriter reveal loop — pulls chars from buffer into displayed state
+  const startTypewriter = useCallback(() => {
+    if (rafIdRef.current !== null) return; // already running
+
+    const tick = () => {
+      const pending = pendingCharsRef.current;
+      if (pending.length === 0) {
+        rafIdRef.current = requestAnimationFrame(tick);
+        return;
+      }
+
+      const batch = pending.splice(0, CHARS_PER_FRAME).join("");
+      setDisplayedTerminal((prev) => {
+        const next = prev + batch;
+        return next.length > TERMINAL_MAX ? next.slice(-TERMINAL_MAX) : next;
+      });
+
+      rafIdRef.current = requestAnimationFrame(tick);
+    };
+
+    rafIdRef.current = requestAnimationFrame(tick);
   }, []);
 
-  const handleGeneratePlan = async () => {
-    if (!brief.trim()) return;
-    setIsProcessing(true);
-    setAgentSteps([]);
-    setStep(2);
-
-    try {
-      const agentResult = await runCampaignAgent(brief, (step, agent) => {
-        setAgentSteps((prev) => [...prev, { step, agent }]);
+  const stopTypewriter = useCallback(() => {
+    if (rafIdRef.current !== null) {
+      cancelAnimationFrame(rafIdRef.current);
+      rafIdRef.current = null;
+    }
+    // Flush remaining buffer immediately
+    if (pendingCharsRef.current.length > 0) {
+      const remaining = pendingCharsRef.current.splice(0).join("");
+      setDisplayedTerminal((prev) => {
+        const next = prev + remaining;
+        return next.length > TERMINAL_MAX ? next.slice(-TERMINAL_MAX) : next;
       });
+    }
+  }, []);
 
-      // Save the campaign ID returned by the agent
-      if (agentResult.savedCampaignId) {
-        setSavedCampaignId(agentResult.savedCampaignId);
+  const enqueueTerminal = useCallback((text: string) => {
+    for (const ch of text) {
+      pendingCharsRef.current.push(ch);
+    }
+  }, []);
+
+  // Start/stop typewriter based on phase
+  useEffect(() => {
+    if (phase === "running") {
+      startTypewriter();
+    } else {
+      stopTypewriter();
+    }
+    return () => {
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current);
+        rafIdRef.current = null;
       }
+    };
+  }, [phase, startTypewriter, stopTypewriter]);
 
-      if (Array.isArray(agentResult.contentVariants) && agentResult.contentVariants.length > 0) {
-        const mappedVariants = agentResult.contentVariants.map((item, index) => {
-          const safe = item as {
-            subject?: string;
-            body?: string;
-            tone?: string;
-            variant?: string;
-          };
-          return mapGeneratedVariantToCard(
-            safe.subject ?? `Variant ${index + 1}`,
-            safe.body ?? "",
-            safe.tone ?? "Professional",
-            safe.variant ?? String.fromCharCode(65 + index),
-            index
-          );
-        });
-        setEmailVariants(mappedVariants);
-        setSelectedVariant(mappedVariants[0]?.id ?? null);
-      }
+  // Auto-scroll terminal when new text is revealed
+  useEffect(() => {
+    const el = terminalRef.current;
+    if (!el) return;
+    requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight;
+    });
+  }, [displayedTerminal]);
 
-      // Update customer count from agent result
-      if (agentResult.targetCustomerIds) {
-        setTargetCustomerIds(agentResult.targetCustomerIds);
-        setCustomerCohortSize(agentResult.targetCustomerIds.length);
-      } else if (agentResult.customerCount) {
-        setCustomerCohortSize(agentResult.customerCount);
-      }
+  useEffect(() => {
+    if (phase !== "running") {
+      setIsIdle(false);
+      return;
+    }
 
-      setTimeout(() => {
-        setIsProcessing(false);
-        setProcessingDone(true);
-        setTimeout(() => setStep(3), 800);
-      }, 1000);
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Failed to run campaign planning.";
-      setAgentSteps((prev) => [
-        ...prev,
-        { step: `Error: ${message}`, agent: "Orchestrator" },
-      ]);
-      setIsProcessing(false);
-      setProcessingDone(false);
+    const timer = window.setInterval(() => {
+      setIsIdle(Date.now() - lastActivityAtRef.current > IDLE_THRESHOLD_MS);
+    }, 180);
+
+    return () => window.clearInterval(timer);
+  }, [phase]);
+
+  const latestMetrics = useMemo(
+    () => metricsHistory[metricsHistory.length - 1] ?? null,
+    [metricsHistory]
+  );
+
+  const displayedSegments = useMemo(() => {
+    if (segmentCards.length > 0) {
+      return segmentCards;
+    }
+    return toSegmentCardsFromResult(result);
+  }, [result, segmentCards]);
+
+  const displayedDrafts = useMemo(() => {
+    if (draftCards.length > 0) {
+      return draftCards;
+    }
+    return toDraftCardsFromResult(result);
+  }, [draftCards, result]);
+
+  const currentPalette = phaseColor(phase);
+  const canStart = brief.trim().length > 0 && phase !== "running" && phase !== "paused";
+
+  const touchActivity = (syncIdle = false) => {
+    lastActivityAtRef.current = Date.now();
+    if (syncIdle) {
+      setIsIdle(false);
     }
   };
 
-  const handleRegenerate = async (params: typeof customParams) => {
-    setCustomParams(params);
-    setIsProcessing(true);
-    setProcessingDone(false);
-    setAgentSteps([]);
-    setStep(2);
-
-    const regenSteps = [
-      { step: `Applying new parameters: tone=${params.tone}, temp=${params.temperature}`, agent: "Orchestrator" },
-      { step: `Emoji usage: ${params.useEmojis ? "enabled" : "disabled"}`, agent: "Content-Generator" },
-      { step: "Regenerating Variant A with updated settings...", agent: "Content-Generator" },
-      { step: "Regenerating Variant B with updated settings...", agent: "Content-Generator" },
-      { step: "Regenerating Variant C with updated settings...", agent: "Content-Generator" },
-      { step: "Quality check and ranking variants...", agent: "Strategy-Agent" },
-      { step: "New content variants ready!", agent: "Orchestrator" },
-    ];
-
-    for (const stepData of regenSteps) {
-      await wait(450);
-      setAgentSteps((prev) => [...prev, stepData]);
-    }
-
-    try {
-      const generated = await generateCampaignContent({
-        brief,
-        tone: params.tone,
-        temperature: params.temperature,
-        useEmojis: params.useEmojis,
-        additionalParams: params.customAddOn,
-      });
-      if (generated.length > 0) {
-        const mappedVariants = generated.map((variant, index) =>
-          mapGeneratedVariantToCard(
-            variant.subject,
-            variant.body,
-            variant.tone,
-            variant.variant,
-            index
-          )
-        );
-        setEmailVariants(mappedVariants);
-        setSelectedVariant(mappedVariants[0]?.id ?? null);
-      }
-    } catch {
-      setAgentSteps((prev) => [
-        ...prev,
-        { step: "Regeneration failed. Using last successful variants.", agent: "Orchestrator" },
-      ]);
-    }
-
-    setIsProcessing(false);
-    setProcessingDone(true);
-    setTimeout(() => setStep(3), 800);
+  const resetRun = () => {
+    pauseResponderRef.current = null;
+    setPhase("idle");
+    setIsIdle(false);
+    setThinkingSteps([]);
+    setPendingPause(null);
+    setSegmentCards([]);
+    setDraftCards([]);
+    setMetricsHistory([]);
+    setRoundHistory([]);
+    setResult(null);
+    setError(null);
+    setDisplayedTerminal("");
+    pendingCharsRef.current = [];
+    setTerminalOpen(true);
+    touchActivity(true);
   };
 
-  const handleLaunch = async () => {
-    setIsLaunching(true);
-    setStep(4);
-    setLaunchError(null);
+  const answerCheckpoint = (response: Record<string, unknown>) => {
+    const responder = pauseResponderRef.current;
+    if (!responder) {
+      return;
+    }
+    pauseResponderRef.current = null;
+    setPendingPause(null);
+    setPhase("running");
+    touchActivity(true);
+    responder(response);
+  };
+
+  const handleApprove = () => {
+    if (!pendingPause) {
+      return;
+    }
+    if (pendingPause.pauseType === "next_round") {
+      answerCheckpoint({ continueOptimization: true });
+      return;
+    }
+    answerCheckpoint({ approved: true });
+  };
+
+  const handleStopOptimization = () => {
+    answerCheckpoint({ continueOptimization: false });
+  };
+
+  const handleStart = async () => {
+    if (!brief.trim()) {
+      return;
+    }
+
+    pauseResponderRef.current = null;
+    setPhase("running");
+    setIsIdle(false);
+    setThinkingSteps([]);
+    setPendingPause(null);
+    setSegmentCards([]);
+    setDraftCards([]);
+    setMetricsHistory([]);
+    setRoundHistory([]);
+    setResult(null);
+    setError(null);
+    setDisplayedTerminal("");
+    pendingCharsRef.current = [];
+    touchActivity(true);
 
     try {
-      const cohort = await getCustomerCohort();
-
-      // Use the AI targeted subset if available, otherwise fallback to the active cohort
-      let finalCustomerIds = targetCustomerIds;
-      if (!finalCustomerIds || finalCustomerIds.length === 0) {
-        finalCustomerIds = cohort.data.map((customer) => customer.customer_id);
-      }
-
-      setCustomerCohortSize(finalCustomerIds.length);
-      setCohortData({
-        total: cohort.total_count,
-        active: cohort.data.filter((c) => c.status !== "inactive").length,
-        inactive: cohort.data.filter((c) => c.status === "inactive").length,
-      });
-
-      const selected = emailVariants.find((variant) => variant.id === selectedVariant);
-      if (!selected) {
-        throw new Error("No email variant selected.");
-      }
-
-      const sendResult = await sendCampaign({
-        subject: selected.subject,
-        body: selected.body,
-        list_customer_ids: finalCustomerIds,
-        send_time: toCampaignXDateTime(sendDate, sendTime),
-      });
-
-      // Update campaign in Supabase with external campaign ID
-      if (savedCampaignId) {
-        try {
-          await fetch(`/api/campaigns/${savedCampaignId}`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              external_campaign_id: sendResult.campaign_id,
-              status: "active",
-              send_time: new Date(`${sendDate}T${sendTime}`).toISOString(),
-              total_customers: finalCustomerIds.length,
-              target_customer_ids: finalCustomerIds,
-              subject: selected.subject,
-              body: selected.body,
-            }),
+      const finalResult = await streamCampaignAgent(brief, {
+        rounds: DEFAULT_ROUNDS,
+        onHeartbeat: () => {
+          touchActivity();
+        },
+        onThinking: (step) => {
+          touchActivity(true);
+          setThinkingSteps((current) => pushUniqueStep(current, step));
+        },
+        onPause: (pause, respond) => {
+          touchActivity(true);
+          pauseResponderRef.current = respond;
+          setPendingPause(pause);
+          if (pause.segments && pause.segments.length > 0) {
+            setSegmentCards(pause.segments);
+          }
+          if (pause.variants && pause.variants.length > 0) {
+            setDraftCards(pause.variants);
+          }
+          setPhase("paused");
+        },
+        onLiveMetrics: (metrics) => {
+          touchActivity(true);
+          setPhase("running");
+          setMetricsHistory((current) => {
+            const previous = current[current.length - 1];
+            if (
+              previous &&
+              previous.round === metrics.round &&
+              previous.sent === metrics.sent &&
+              previous.opened === metrics.opened &&
+              previous.clicked === metrics.clicked
+            ) {
+              return current;
+            }
+            return [...current, metrics].slice(-24);
           });
-        } catch (err) {
-          console.warn("Failed to update campaign in Supabase:", err);
-        }
-      }
+        },
+        onTerminal: (text) => {
+          touchActivity();
+          enqueueTerminal(text);
+        },
+        onRoundComplete: (round) => {
+          touchActivity(true);
+          setRoundHistory((current) => {
+            const previous = current[current.length - 1];
+            if (previous && previous.round === round.round) {
+              return [...current.slice(0, -1), round];
+            }
+            return [...current, round];
+          });
+        },
+      });
 
-      setIsLaunching(false);
-      setLaunched(true);
-
-      // Navigate to analysis using saved campaign ID or external ID
-      const analysisId = savedCampaignId || sendResult.campaign_id;
-      setTimeout(() => {
-        router.push(`/campaign/${analysisId}/analysis`);
-      }, 1500);
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Campaign launch failed unexpectedly.";
-      setLaunchError(message);
-      setIsLaunching(false);
+      setResult(finalResult);
+      setSegmentCards((current) => (current.length > 0 ? current : toSegmentCardsFromResult(finalResult)));
+      setDraftCards((current) => (current.length > 0 ? current : toDraftCardsFromResult(finalResult)));
+      setPendingPause(null);
+      pauseResponderRef.current = null;
+      setPhase("complete");
+      touchActivity(true);
+    } catch (runError) {
+      const message = runError instanceof Error ? runError.message : "Campaign agent execution failed.";
+      setError(message);
+      setThinkingSteps((current) =>
+        pushUniqueStep(current, {
+          agent: "Orchestrator",
+          step: message,
+          kind: "final",
+        })
+      );
+      setPendingPause(null);
+      pauseResponderRef.current = null;
+      setPhase("error");
     }
   };
-
-  const selectedVariantData = emailVariants.find((v) => v.id === selectedVariant);
 
   return (
-    <div className="min-h-screen pt-20 pb-12 px-4">
+    <div
+      className="min-h-screen pt-20 pb-14 px-4 relative overflow-hidden"
+      style={{ background: "linear-gradient(180deg, #020617 0%, #07111f 45%, #0b1729 100%)" }}
+    >
       <Navbar />
 
-      <div className="max-w-4xl mx-auto">
-        {/* Header */}
+      <div className="pointer-events-none absolute inset-0 overflow-hidden">
+        <div
+          className="absolute -top-20 left-[-8%] w-[32rem] h-[32rem] rounded-full blur-3xl"
+          style={{ background: "rgba(20, 184, 166, 0.14)" }}
+        />
+        <div
+          className="absolute top-[28%] right-[-12%] w-[34rem] h-[34rem] rounded-full blur-3xl"
+          style={{ background: "rgba(249, 115, 22, 0.12)" }}
+        />
+        <div
+          className="absolute bottom-[-12rem] left-[24%] w-[28rem] h-[28rem] rounded-full blur-3xl"
+          style={{ background: "rgba(56, 189, 248, 0.08)" }}
+        />
+      </div>
+
+      <div className="max-w-7xl mx-auto relative z-10">
         <motion.div
-          initial={{ opacity: 0, y: -10 }}
+          initial={{ opacity: 0, y: -12 }}
           animate={{ opacity: 1, y: 0 }}
-          className="flex items-center gap-4 mb-8"
+          className="flex flex-wrap items-center gap-3 justify-between mb-8"
         >
           <button
             onClick={() => router.push("/dashboard")}
-            className="flex items-center gap-1.5 text-gray-400 hover:text-white transition-colors"
-            style={{ fontSize: "0.875rem" }}
+            className="flex items-center gap-2 text-slate-300 hover:text-white transition-colors"
+            style={{ fontSize: "0.86rem" }}
           >
-            <ChevronLeft className="w-4 h-4" />
-            Dashboard
+            <ArrowLeft className="w-4 h-4" />
+            Back to dashboard
           </button>
-          <span className="text-gray-600">/</span>
-          <span className="text-white" style={{ fontSize: "0.875rem" }}>
-            New Campaign
-          </span>
-        </motion.div>
 
-        {/* Step indicators */}
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="flex items-center gap-0 mb-10 overflow-x-auto pb-2"
-        >
-          {STEPS.map((s, i) => (
-            <div key={s.id} className="flex items-center">
-              <div
-                className="flex items-center gap-2 px-3 py-2 rounded-xl"
-                style={{
-                  background:
-                    step === s.id
-                      ? "rgba(139,92,246,0.2)"
-                      : step > s.id
-                        ? "rgba(16,185,129,0.1)"
-                        : "rgba(255,255,255,0.03)",
-                  border:
-                    step === s.id
-                      ? "1px solid rgba(139,92,246,0.4)"
-                      : step > s.id
-                        ? "1px solid rgba(16,185,129,0.3)"
-                        : "1px solid rgba(255,255,255,0.07)",
-                }}
-              >
-                <div
-                  className="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0"
-                  style={{
-                    background:
-                      step === s.id
-                        ? "rgba(139,92,246,0.6)"
-                        : step > s.id
-                          ? "rgba(16,185,129,0.6)"
-                          : "rgba(255,255,255,0.1)",
-                    fontSize: "0.65rem",
-                    color: "#fff",
-                    fontWeight: 700,
-                  }}
-                >
-                  {step > s.id ? <CheckCircle className="w-3 h-3" /> : s.id}
-                </div>
-                <span
-                  style={{
-                    fontSize: "0.75rem",
-                    color: step === s.id ? "#a78bfa" : step > s.id ? "#6ee7b7" : "#6b7280",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {s.label}
-                </span>
-              </div>
-              {i < STEPS.length - 1 && (
-                <div
-                  className="w-8 h-px mx-1"
-                  style={{
-                    background:
-                      step > s.id
-                        ? "rgba(16,185,129,0.5)"
-                        : "rgba(255,255,255,0.1)",
-                  }}
-                />
-              )}
-            </div>
-          ))}
-        </motion.div>
-
-        {/* Step 1: Campaign Brief */}
-        <AnimatePresence mode="wait">
-          {step === 1 && (
-            <motion.div
-              key="step1"
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -20 }}
+          <div className="flex flex-wrap items-center gap-2">
+            <div
+              className="px-3 py-1.5 rounded-full"
+              style={{
+                background: "rgba(15,23,42,0.86)",
+                border: "1px solid rgba(148,163,184,0.16)",
+                color: "#cbd5e1",
+                fontSize: "0.76rem",
+              }}
             >
-              <div className="mb-6">
-                <h2 className="text-white mb-2" style={{ fontSize: "1.5rem", fontWeight: 700 }}>
-                  Describe Your Campaign
-                </h2>
-                <p className="text-gray-400" style={{ fontSize: "0.875rem" }}>
-                  Write a natural language brief — the AI agents will plan everything automatically
-                </p>
+              WebSocket transport only
+            </div>
+            <div
+              className="px-3 py-1.5 rounded-full"
+              style={{
+                background: "rgba(15,23,42,0.86)",
+                border: "1px solid rgba(148,163,184,0.16)",
+                color: "#cbd5e1",
+                fontSize: "0.76rem",
+              }}
+            >
+              Default optimization rounds: {DEFAULT_ROUNDS}
+            </div>
+          </div>
+        </motion.div>
+
+        <motion.section
+          initial={{ opacity: 0, y: 18 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="rounded-[36px] p-6 md:p-8 mb-6"
+          style={{
+            background: "linear-gradient(135deg, rgba(10,25,47,0.96) 0%, rgba(15,23,42,0.96) 42%, rgba(8,47,73,0.88) 100%)",
+            border: "1px solid rgba(148,163,184,0.18)",
+            boxShadow: "0 30px 90px rgba(2, 6, 23, 0.45)",
+          }}
+        >
+          <div className="grid xl:grid-cols-[1.2fr,0.8fr] gap-8 items-start">
+            <div>
+              <div className="uppercase tracking-[0.24em] text-teal-300" style={{ fontSize: "0.72rem" }}>
+                Agent control room
+              </div>
+              <h1
+                className="text-white mt-3 max-w-3xl"
+                style={{ fontSize: "clamp(2rem, 4vw, 3.6rem)", lineHeight: 1.02, fontWeight: 800 }}
+              >
+                Frontend now brokers only the live agent stream.
+              </h1>
+              <p className="text-slate-300 mt-4 max-w-2xl" style={{ fontSize: "0.98rem", lineHeight: 1.75 }}>
+                The browser no longer generates content, picks models, or runs LangGraph logic. It opens the agent
+                websocket, renders reasoning, pauses at human checkpoints, sends your approval back, and shows final
+                campaign output when the agents runtime is done.
+              </p>
+            </div>
+
+            <div
+              className="rounded-[28px] p-5"
+              style={{
+                background: "rgba(3, 10, 20, 0.74)",
+                border: `1px solid ${currentPalette.border}`,
+              }}
+            >
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <div className="text-slate-400 uppercase tracking-[0.18em]" style={{ fontSize: "0.64rem" }}>
+                    Current run state
+                  </div>
+                  <div className="text-white mt-2" style={{ fontSize: "1.2rem", fontWeight: 700 }}>
+                    {phaseLabel(phase)}
+                  </div>
+                </div>
+                <div
+                  className="px-3 py-1.5 rounded-full"
+                  style={{
+                    background: currentPalette.bg,
+                    border: `1px solid ${currentPalette.border}`,
+                    color: currentPalette.text,
+                    fontSize: "0.76rem",
+                  }}
+                >
+                  {phase.toUpperCase()}
+                </div>
               </div>
 
-              {/* Brief input */}
-              <div
-                className="relative rounded-2xl overflow-hidden mb-6"
+              <div className="grid grid-cols-3 gap-3 mt-5">
+                <StatTile
+                  label="Audience"
+                  value={formatCount(result?.customerCount ?? latestMetrics?.sent)}
+                  hint="Tracked from agents"
+                  accent="#2dd4bf"
+                  icon={Users}
+                />
+                <StatTile
+                  label="Open rate"
+                  value={formatPercent(result?.finalOpenRate ?? latestMetrics?.openRate)}
+                  hint="Live performance"
+                  accent="#38bdf8"
+                  icon={TrendingUp}
+                />
+                <StatTile
+                  label="Click rate"
+                  value={formatPercent(result?.finalClickRate ?? latestMetrics?.clickRate)}
+                  hint="Live performance"
+                  accent="#fb7185"
+                  icon={Activity}
+                />
+              </div>
+            </div>
+          </div>
+        </motion.section>
+
+        <div className="grid xl:grid-cols-[1.25fr,0.75fr] gap-6 items-start">
+          <div className="space-y-6">
+            <Surface
+              eyebrow="Mission brief"
+              title="Campaign objective"
+              right={
+                <div className="flex items-center gap-2 text-slate-300" style={{ fontSize: "0.74rem" }}>
+                  <ShieldCheck className="w-4 h-4 text-teal-300" />
+                  agents/.env only
+                </div>
+              }
+            >
+              <textarea
+                value={brief}
+                onChange={(event) => setBrief(event.target.value)}
+                disabled={phase === "running" || phase === "paused"}
+                className="w-full min-h-[12rem] resize-none rounded-[24px] p-5 outline-none"
                 style={{
-                  background: "rgba(255,255,255,0.02)",
-                  border: "1px solid rgba(255,255,255,0.1)",
+                  background: "rgba(2, 6, 23, 0.86)",
+                  border: "1px solid rgba(148,163,184,0.16)",
+                  color: "#e2e8f0",
+                  fontSize: "0.95rem",
+                  lineHeight: 1.8,
+                }}
+              />
+
+              <div className="mt-5 flex flex-wrap gap-3">
+                <motion.button
+                  whileHover={canStart ? { scale: 1.02 } : {}}
+                  whileTap={canStart ? { scale: 0.98 } : {}}
+                  onClick={handleStart}
+                  disabled={!canStart}
+                  className="inline-flex items-center gap-2 px-5 py-3 rounded-[18px] text-white"
+                  style={{
+                    background: canStart
+                      ? "linear-gradient(135deg, #14b8a6 0%, #0ea5e9 100%)"
+                      : "rgba(51,65,85,0.55)",
+                    border: "1px solid rgba(148,163,184,0.16)",
+                    fontSize: "0.9rem",
+                    fontWeight: 600,
+                    cursor: canStart ? "pointer" : "not-allowed",
+                    opacity: canStart ? 1 : 0.6,
+                  }}
+                >
+                  <Play className="w-4 h-4" />
+                  Start agent run
+                </motion.button>
+
+                <button
+                  onClick={resetRun}
+                  disabled={phase === "running" || phase === "paused"}
+                  className="inline-flex items-center gap-2 px-5 py-3 rounded-[18px] text-slate-200"
+                  style={{
+                    background: "rgba(15,23,42,0.82)",
+                    border: "1px solid rgba(148,163,184,0.16)",
+                    fontSize: "0.9rem",
+                    opacity: phase === "running" || phase === "paused" ? 0.5 : 1,
+                    cursor: phase === "running" || phase === "paused" ? "not-allowed" : "pointer",
+                  }}
+                >
+                  <RefreshCw className="w-4 h-4" />
+                  Reset board
+                </button>
+              </div>
+            </Surface>
+
+            <AIProcessing
+              steps={thinkingSteps}
+              isComplete={phase === "complete"}
+              isIdle={isIdle}
+              title="Campaign Agent Thinking"
+            />
+
+            {(phase !== "idle" || displayedTerminal) && (
+              <section
+                className="rounded-[28px] overflow-hidden"
+                style={{
+                  background: "linear-gradient(180deg, rgba(2,6,15,0.96) 0%, rgba(4,10,19,0.99) 100%)",
+                  border: "1px solid rgba(148,163,184,0.14)",
+                  boxShadow: "0 16px 60px rgba(2, 6, 23, 0.3)",
                 }}
               >
-                <div
-                  className="px-4 py-3 flex items-center gap-2"
-                  style={{ borderBottom: "1px solid rgba(255,255,255,0.05)" }}
+                <button
+                  type="button"
+                  onClick={() => setTerminalOpen((o) => !o)}
+                  className="w-full px-6 py-4 flex items-center justify-between"
+                  style={{
+                    borderBottom: terminalOpen ? "1px solid rgba(148,163,184,0.1)" : "none",
+                    background: "rgba(15,23,42,0.6)",
+                  }}
                 >
-                  <MessageSquare className="w-4 h-4 text-violet-400" />
-                  <span className="text-gray-400" style={{ fontSize: "0.75rem" }}>
-                    Campaign Brief (natural language)
-                  </span>
+                  <div className="flex items-center gap-3">
+                    <div
+                      className="w-9 h-9 rounded-xl flex items-center justify-center"
+                      style={{ background: "rgba(16,185,129,0.14)", border: "1px solid rgba(16,185,129,0.2)" }}
+                    >
+                      <Terminal className="w-4 h-4 text-emerald-400" />
+                    </div>
+                    <div>
+                      <div className="text-white tracking-[0.14em] uppercase" style={{ fontSize: "0.68rem" }}>
+                        Live process output
+                      </div>
+                      <div className="text-slate-300 mt-0.5" style={{ fontSize: "0.84rem", fontWeight: 600 }}>
+                        Agent Terminal
+                      </div>
+                    </div>
+                  </div>
+                  <motion.div animate={{ rotate: terminalOpen ? 90 : 0 }} transition={{ duration: 0.2 }}>
+                    <ChevronRight className="w-4 h-4 text-slate-400" />
+                  </motion.div>
+                </button>
+
+                <AnimatePresence initial={false}>
+                  {terminalOpen && (
+                    <motion.div
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: "auto", opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={{ duration: 0.25, ease: "easeInOut" }}
+                      style={{ overflow: "hidden" }}
+                    >
+                      <pre
+                        ref={terminalRef}
+                        className="px-5 py-4 max-h-[24rem] overflow-y-auto"
+                        style={{
+                          fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace",
+                          fontSize: "0.78rem",
+                          lineHeight: 1.7,
+                          color: "#94a3b8",
+                          whiteSpace: "pre-wrap",
+                          wordBreak: "break-word",
+                          margin: 0,
+                          background: "transparent",
+                        }}
+                      >
+                        {displayedTerminal ? (
+                          <>
+                            {displayedTerminal}
+                            {phase === "running" && (
+                              <motion.span
+                                animate={{ opacity: [1, 0, 1] }}
+                                transition={{ duration: 0.8, repeat: Infinity }}
+                                style={{ color: "#2dd4bf" }}
+                              >
+                                ▋
+                              </motion.span>
+                            )}
+                          </>
+                        ) : (
+                          <span style={{ color: "#475569" }}>
+                            Waiting for agent process output...
+                          </span>
+                        )}
+                      </pre>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </section>
+            )}
+
+            {result && (
+              <Surface
+                eyebrow="Final output"
+                title="Strategy and campaign result"
+                right={
+                  result.savedCampaignId ? (
+                    <button
+                      onClick={() => router.push(`/campaign/${result.savedCampaignId}/analysis`)}
+                      className="inline-flex items-center gap-2 px-4 py-2 rounded-[16px] text-slate-100"
+                      style={{
+                        background: "rgba(20,184,166,0.14)",
+                        border: "1px solid rgba(20,184,166,0.24)",
+                        fontSize: "0.76rem",
+                      }}
+                    >
+                      Open analysis
+                      <ArrowRight className="w-4 h-4" />
+                    </button>
+                  ) : null
+                }
+              >
+                <div className="grid md:grid-cols-2 gap-4">
                   <div
-                    className="ml-auto flex items-center gap-3"
+                    className="rounded-[24px] p-5"
+                    style={{ background: "rgba(15,23,42,0.7)", border: "1px solid rgba(148,163,184,0.14)" }}
                   >
-                    {/* Model selector — premium dropdown */}
-                    <div className="relative">
+                    <div className="flex items-center gap-2 text-teal-300 mb-3" style={{ fontSize: "0.74rem" }}>
+                      <BrainCircuit className="w-4 h-4" />
+                      Strategy summary
+                    </div>
+                    <p className="text-slate-100 whitespace-pre-wrap" style={{ fontSize: "0.88rem", lineHeight: 1.8 }}>
+                      {result.strategyReasoning ||
+                        result.strategy ||
+                        "The agent completed the workflow and returned the final campaign package."}
+                    </p>
+                  </div>
+
+                  <div className="grid gap-4">
+                    <div
+                      className="rounded-[24px] p-5"
+                      style={{ background: "rgba(15,23,42,0.7)", border: "1px solid rgba(148,163,184,0.14)" }}
+                    >
+                      <div className="text-slate-400 uppercase tracking-[0.16em]" style={{ fontSize: "0.64rem" }}>
+                        Final rates
+                      </div>
+                      <div className="grid grid-cols-2 gap-3 mt-4">
+                        <div>
+                          <div className="text-white" style={{ fontSize: "1.5rem", fontWeight: 700 }}>
+                            {formatPercent(result.finalOpenRate)}
+                          </div>
+                          <div className="text-slate-400 mt-1" style={{ fontSize: "0.74rem" }}>
+                            Final open rate
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-white" style={{ fontSize: "1.5rem", fontWeight: 700 }}>
+                            {formatPercent(result.finalClickRate)}
+                          </div>
+                          <div className="text-slate-400 mt-1" style={{ fontSize: "0.74rem" }}>
+                            Final click rate
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div
+                      className="rounded-[24px] p-5"
+                      style={{ background: "rgba(15,23,42,0.7)", border: "1px solid rgba(148,163,184,0.14)" }}
+                    >
+                      <div className="text-slate-400 uppercase tracking-[0.16em]" style={{ fontSize: "0.64rem" }}>
+                        Delivery footprint
+                      </div>
+                      <div className="flex items-end gap-6 mt-4">
+                        <div>
+                          <div className="text-white" style={{ fontSize: "1.5rem", fontWeight: 700 }}>
+                            {formatCount(result.customerCount)}
+                          </div>
+                          <div className="text-slate-400 mt-1" style={{ fontSize: "0.74rem" }}>
+                            Total customers
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-white" style={{ fontSize: "1.5rem", fontWeight: 700 }}>
+                            {formatCount(result.metricsProgression.length)}
+                          </div>
+                          <div className="text-slate-400 mt-1" style={{ fontSize: "0.74rem" }}>
+                            Completed rounds
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </Surface>
+            )}
+          </div>
+
+          <div className="space-y-6">
+            <Surface
+              eyebrow="Run telemetry"
+              title="Mission state"
+              right={
+                <div
+                  className="px-3 py-1.5 rounded-full"
+                  style={{
+                    background: currentPalette.bg,
+                    border: `1px solid ${currentPalette.border}`,
+                    color: currentPalette.text,
+                    fontSize: "0.74rem",
+                  }}
+                >
+                  {phaseLabel(phase)}
+                </div>
+              }
+            >
+              <div className="grid grid-cols-2 gap-3">
+                <StatTile
+                  label="Reasoning steps"
+                  value={formatCount(thinkingSteps.length)}
+                  hint="Structured events"
+                  accent="#2dd4bf"
+                  icon={Workflow}
+                />
+                <StatTile
+                  label="Live rounds"
+                  value={formatCount(roundHistory.length)}
+                  hint="Closed rounds"
+                  accent="#f59e0b"
+                  icon={Clock3}
+                />
+                <StatTile
+                  label="Categories"
+                  value={formatCount(displayedSegments.length)}
+                  hint="Approval-ready groups"
+                  accent="#38bdf8"
+                  icon={Layers3}
+                />
+                <StatTile
+                  label="Drafts"
+                  value={formatCount(displayedDrafts.length)}
+                  hint="Audience messages"
+                  accent="#fb7185"
+                  icon={Mail}
+                />
+              </div>
+            </Surface>
+
+            <AnimatePresence initial={false}>
+              {pendingPause && (
+                <motion.div
+                  key={pendingPause.pauseType}
+                  initial={{ opacity: 0, y: 14 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                >
+                  <Surface
+                    eyebrow="Human checkpoint"
+                    title={pendingPause.title || "Approval required"}
+                    right={<PauseCircle className="w-5 h-5 text-orange-300" />}
+                  >
+                    <p className="text-slate-300" style={{ fontSize: "0.86rem", lineHeight: 1.7 }}>
+                      {pendingPause.message ||
+                        "The agent has paused and is waiting for your decision before continuing."}
+                    </p>
+
+                    {pendingPause.pauseType === "next_round" && pendingPause.metrics && (
+                      <div className="grid grid-cols-3 gap-3 mt-5">
+                        <StatTile
+                          label="Audience"
+                          value={formatCount(pendingPause.metrics.audience)}
+                          hint="Current round"
+                          accent="#2dd4bf"
+                          icon={Users}
+                        />
+                        <StatTile
+                          label="Open"
+                          value={formatPercent(pendingPause.metrics.openRate)}
+                          hint="Current round"
+                          accent="#38bdf8"
+                          icon={TrendingUp}
+                        />
+                        <StatTile
+                          label="Click"
+                          value={formatPercent(pendingPause.metrics.clickRate)}
+                          hint="Current round"
+                          accent="#fb7185"
+                          icon={Activity}
+                        />
+                      </div>
+                    )}
+
+                    <div className="mt-5 flex flex-wrap gap-3">
                       <motion.button
                         whileHover={{ scale: 1.02 }}
                         whileTap={{ scale: 0.98 }}
-                        type="button"
-                        onClick={() => setModelDropdownOpen(!modelDropdownOpen)}
-                        className="flex items-center gap-2 px-3 py-1.5 rounded-xl cursor-pointer transition-all"
+                        onClick={handleApprove}
+                        className="inline-flex items-center gap-2 px-5 py-3 rounded-[18px] text-white"
                         style={{
-                          background: "linear-gradient(135deg, rgba(139,92,246,0.12), rgba(236,72,153,0.08))",
-                          border: modelDropdownOpen
-                            ? "1px solid rgba(139,92,246,0.5)"
-                            : "1px solid rgba(139,92,246,0.2)",
-                          boxShadow: modelDropdownOpen
-                            ? "0 0 16px rgba(139,92,246,0.15)"
-                            : "none",
+                          background: "linear-gradient(135deg, #14b8a6 0%, #0ea5e9 100%)",
+                          fontSize: "0.88rem",
+                          fontWeight: 600,
                         }}
                       >
-                        <Cpu className="w-3.5 h-3.5 text-violet-400" />
-                        <span className="text-violet-300 font-medium" style={{ fontSize: "0.72rem" }}>
-                          {availableModels.find((m) => m.id === selectedModel)?.name ?? "Gemini 2.5 Flash"}
-                        </span>
-                        <ChevronDown
-                          className={`w-3 h-3 text-violet-400 transition-transform duration-200 ${modelDropdownOpen ? "rotate-180" : ""}`}
-                        />
+                        <CheckCircle2 className="w-4 h-4" />
+                        {pendingPause.pauseType === "next_round" ? "Run next round" : "Approve all"}
                       </motion.button>
 
-                      <AnimatePresence>
-                        {modelDropdownOpen && (
-                          <>
-                            <div
-                              className="fixed inset-0 z-40"
-                              onClick={() => setModelDropdownOpen(false)}
-                            />
-                            <motion.div
-                              initial={{ opacity: 0, y: -6, scale: 0.96 }}
-                              animate={{ opacity: 1, y: 0, scale: 1 }}
-                              exit={{ opacity: 0, y: -6, scale: 0.96 }}
-                              transition={{ duration: 0.15, ease: "easeOut" }}
-                              className="absolute right-0 top-full mt-2 z-50 min-w-[220px] rounded-xl overflow-hidden"
-                              style={{
-                                background: "rgba(12, 12, 30, 0.98)",
-                                backdropFilter: "blur(24px)",
-                                border: "1px solid rgba(139,92,246,0.25)",
-                                boxShadow: "0 12px 40px rgba(0,0,0,0.6), 0 0 1px rgba(139,92,246,0.3)",
-                              }}
-                            >
-                              <div
-                                className="px-3.5 py-2.5 flex items-center gap-2"
-                                style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}
-                              >
-                                <Cpu className="w-3 h-3 text-gray-500" />
-                                <span
-                                  className="text-gray-500 uppercase tracking-widest"
-                                  style={{ fontSize: "0.6rem", fontWeight: 700, letterSpacing: "0.12em" }}
-                                >
-                                  AI Model
-                                </span>
-                              </div>
-                              {(availableModels.length > 0
-                                ? availableModels
-                                : [{ id: "gemini-2.5-flash", name: "Gemini 2.5 Flash", isDefault: true }]
-                              ).map((m) => {
-                                const isActive = selectedModel === m.id;
-                                return (
-                                  <button
-                                    key={m.id}
-                                    type="button"
-                                    onClick={() => {
-                                      setSelectedModel(m.id);
-                                      setModelDropdownOpen(false);
-                                    }}
-                                    className="w-full flex items-center gap-3 px-3.5 py-3 transition-all group"
-                                    style={{
-                                      background: isActive
-                                        ? "linear-gradient(135deg, rgba(139,92,246,0.12), rgba(236,72,153,0.06))"
-                                        : "transparent",
-                                      borderBottom: "1px solid rgba(255,255,255,0.04)",
-                                    }}
-                                  >
-                                    <div
-                                      className="w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0 transition-all"
-                                      style={{
-                                        background: isActive ? "rgba(139,92,246,0.7)" : "rgba(255,255,255,0.06)",
-                                        border: isActive ? "2px solid #a78bfa" : "2px solid rgba(255,255,255,0.12)",
-                                        boxShadow: isActive ? "0 0 8px rgba(139,92,246,0.35)" : "none",
-                                      }}
-                                    >
-                                      {isActive && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
-                                    </div>
-                                    <div className="flex flex-col items-start gap-0.5">
-                                      <span
-                                        className={`font-medium transition-colors ${isActive ? "text-violet-300" : "text-gray-300 group-hover:text-white"}`}
-                                        style={{ fontSize: "0.78rem" }}
-                                      >
-                                        {m.name}
-                                      </span>
-                                      {m.isDefault && (
-                                        <span
-                                          className="text-violet-500/70"
-                                          style={{ fontSize: "0.58rem", letterSpacing: "0.05em" }}
-                                        >
-                                          RECOMMENDED
-                                        </span>
-                                      )}
-                                    </div>
-                                    {isActive && (
-                                      <motion.div
-                                        initial={{ scale: 0 }}
-                                        animate={{ scale: 1 }}
-                                        className="ml-auto"
-                                      >
-                                        <CheckCircle className="w-3.5 h-3.5 text-violet-400" />
-                                      </motion.div>
-                                    )}
-                                  </button>
-                                );
-                              })}
-                            </motion.div>
-                          </>
-                        )}
-                      </AnimatePresence>
+                      {pendingPause.pauseType === "next_round" && (
+                        <button
+                          onClick={handleStopOptimization}
+                          className="inline-flex items-center gap-2 px-5 py-3 rounded-[18px] text-slate-100"
+                          style={{
+                            background: "rgba(127,29,29,0.22)",
+                            border: "1px solid rgba(248,113,113,0.24)",
+                            fontSize: "0.88rem",
+                          }}
+                        >
+                          <XCircle className="w-4 h-4" />
+                          Stop here
+                        </button>
+                      )}
                     </div>
-                    <div
-                      className="flex items-center gap-1 px-2 py-0.5 rounded-full"
-                      style={{
-                        background: "rgba(139,92,246,0.1)",
-                        border: "1px solid rgba(139,92,246,0.2)",
-                      }}
-                    >
-                      <Sparkles className="w-3 h-3 text-violet-400" />
-                      <span className="text-violet-400" style={{ fontSize: "0.65rem" }}>
-                        AI will analyze
-                      </span>
-                    </div>
-                  </div>
-                </div>
-                <textarea
-                  value={brief}
-                  onChange={(e) => setBrief(e.target.value)}
-                  placeholder="Describe your campaign goal, product details, target audience, tone, and any specific requirements..."
-                  rows={7}
-                  className="w-full p-5 bg-transparent text-white placeholder-gray-600 resize-none outline-none"
-                  style={{ fontSize: "0.9rem", lineHeight: "1.7" }}
-                />
-                <div
-                  className="px-4 py-3 flex items-center justify-between"
-                  style={{ borderTop: "1px solid rgba(255,255,255,0.05)" }}
-                >
-                  <span className="text-gray-600" style={{ fontSize: "0.72rem" }}>
-                    {brief.length} characters
-                  </span>
-                  <span className="text-gray-600" style={{ fontSize: "0.72rem" }}>
-                    Max 2000 chars recommended
-                  </span>
-                </div>
-              </div>
-
-
-
-              <div className="flex gap-4">
-                <motion.button
-                  whileHover={{ scale: 1.03, boxShadow: "0 0 40px rgba(139,92,246,0.4)" }}
-                  whileTap={{ scale: 0.97 }}
-                  onClick={handleGeneratePlan}
-                  disabled={!brief.trim()}
-                  className="flex-1 flex items-center justify-center gap-3 py-4 rounded-2xl text-white font-semibold transition-all"
-                  style={{
-                    background: brief.trim()
-                      ? "linear-gradient(135deg, #7c3aed, #ec4899)"
-                      : "rgba(255,255,255,0.05)",
-                    fontSize: "1rem",
-                    cursor: brief.trim() ? "pointer" : "not-allowed",
-                    opacity: brief.trim() ? 1 : 0.5,
-                  }}
-                >
-                  <Sparkles className="w-5 h-5" />
-                  Generate Campaign Plan with AI
-                  <ArrowRight className="w-4 h-4" />
-                </motion.button>
-              </div>
-            </motion.div>
-          )}
-
-          {/* Step 2: AI Processing */}
-          {step === 2 && (
-            <motion.div
-              key="step2"
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -20 }}
-            >
-              <div className="mb-6">
-                <h2 className="text-white mb-2" style={{ fontSize: "1.5rem", fontWeight: 700 }}>
-                  AI Agents at Work
-                </h2>
-                <p className="text-gray-400" style={{ fontSize: "0.875rem" }}>
-                  LangGraph ReAct + RAG pipeline analyzing your brief and generating strategy
-                </p>
-              </div>
-
-              <AIProcessing
-                steps={agentSteps}
-                isComplete={processingDone}
-                title="Autoreach Multi-Agent Pipeline"
-              />
-
-              {/* Brief preview */}
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ delay: 0.5 }}
-                className="mt-4 p-4 rounded-xl"
-                style={{
-                  background: "rgba(255,255,255,0.02)",
-                  border: "1px solid rgba(255,255,255,0.06)",
-                }}
-              >
-                <div className="flex items-center gap-2 mb-2">
-                  <MessageSquare className="w-3.5 h-3.5 text-gray-500" />
-                  <span className="text-gray-500" style={{ fontSize: "0.72rem" }}>
-                    Processing Brief
-                  </span>
-                </div>
-                <p className="text-gray-400" style={{ fontSize: "0.8rem", lineHeight: "1.6" }}>
-                  {brief.substring(0, 200)}
-                  {brief.length > 200 && "..."}
-                </p>
-              </motion.div>
-
-              {processingDone && (
-                <motion.div
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="mt-4 p-4 rounded-xl flex items-center gap-3"
-                  style={{
-                    background: "rgba(16,185,129,0.1)",
-                    border: "1px solid rgba(16,185,129,0.3)",
-                  }}
-                >
-                  <CheckCircle className="w-5 h-5 text-emerald-400" />
-                  <div>
-                    <div className="text-emerald-400" style={{ fontSize: "0.875rem", fontWeight: 600 }}>
-                      Campaign plan generated successfully!
-                    </div>
-                    <div className="text-emerald-600" style={{ fontSize: "0.75rem" }}>
-                      3 content variants ready · Loading review screen...
-                    </div>
-                  </div>
+                  </Surface>
                 </motion.div>
               )}
-            </motion.div>
-          )}
+            </AnimatePresence>
 
-          {/* Step 3: Review Content */}
-          {step === 3 && (
-            <motion.div
-              key="step3"
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -20 }}
+            <Surface
+              eyebrow="Audience map"
+              title="Customer categories"
+              right={<Users className="w-5 h-5 text-teal-300" />}
             >
-              <div className="mb-6 flex items-start justify-between">
-                <div>
-                  <h2 className="text-white mb-2" style={{ fontSize: "1.5rem", fontWeight: 700 }}>
-                    Review Generated Content
-                  </h2>
-                  <p className="text-gray-400" style={{ fontSize: "0.875rem" }}>
-                    AI generated 3 variants. Select one and customize if needed.
-                  </p>
+              {displayedSegments.length === 0 ? (
+                <div
+                  className="rounded-[24px] p-5 text-slate-400"
+                  style={{ background: "rgba(15,23,42,0.56)", border: "1px dashed rgba(148,163,184,0.16)" }}
+                >
+                  Categories appear here after the segment approval checkpoint.
                 </div>
-                <div className="flex gap-3">
-                  <motion.button
-                    whileHover={{ scale: 1.05 }}
-                    whileTap={{ scale: 0.95 }}
-                    onClick={() => setShowCustomize(true)}
-                    className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-violet-400"
-                    style={{
-                      background: "rgba(139,92,246,0.1)",
-                      border: "1px solid rgba(139,92,246,0.3)",
-                      fontSize: "0.8rem",
-                    }}
-                  >
-                    <Sliders className="w-4 h-4" />
-                    Customize Params
-                  </motion.button>
-                  <motion.button
-                    whileHover={{ scale: 1.05 }}
-                    whileTap={{ scale: 0.95 }}
-                    onClick={() => handleRegenerate(customParams)}
-                    className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-gray-300"
-                    style={{
-                      background: "rgba(255,255,255,0.05)",
-                      border: "1px solid rgba(255,255,255,0.1)",
-                      fontSize: "0.8rem",
-                    }}
-                  >
-                    <RefreshCw className="w-4 h-4" />
-                    Regenerate
-                  </motion.button>
-                </div>
-              </div>
-
-              {/* Active params display */}
-              <div className="mb-4 flex flex-wrap gap-2">
-                {[
-                  { label: `Tone: ${customParams.tone}`, active: true },
-                  { label: `Temp: ${customParams.temperature}`, active: true },
-                  { label: "Emojis", active: customParams.useEmojis },
-                  { label: "CTA URL", active: customParams.includeURL },
-                  { label: "Personalized", active: customParams.personalizeNames },
-                  { label: "Urgency", active: customParams.urgency },
-                ].map(
-                  (tag) =>
-                    tag.active && (
-                      <span
-                        key={tag.label}
-                        className="px-2 py-0.5 rounded-full"
-                        style={{
-                          background: "rgba(139,92,246,0.1)",
-                          border: "1px solid rgba(139,92,246,0.2)",
-                          color: "#a78bfa",
-                          fontSize: "0.7rem",
-                        }}
-                      >
-                        {tag.label}
-                      </span>
-                    )
-                )}
-              </div>
-
-              <ContentVariants
-                selectedVariant={selectedVariant}
-                onSelectVariant={setSelectedVariant}
-                variants={emailVariants}
-                onUpdateVariant={(id, updated) => {
-                  setEmailVariants((prev) =>
-                    prev.map((v) =>
-                      v.id === id ? { ...v, ...updated } : v
-                    )
-                  );
-                }}
-              />
-
-              <motion.div
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.3 }}
-                className="mt-6 flex gap-4"
-              >
-                <button
-                  onClick={() => setStep(1)}
-                  className="px-6 py-3 rounded-xl text-gray-400 hover:text-white transition-colors"
-                  style={{
-                    background: "rgba(255,255,255,0.04)",
-                    border: "1px solid rgba(255,255,255,0.08)",
-                    fontSize: "0.875rem",
-                  }}
-                >
-                  ← Back to Brief
-                </button>
-                <motion.button
-                  whileHover={{ scale: 1.03, boxShadow: "0 0 30px rgba(139,92,246,0.4)" }}
-                  whileTap={{ scale: 0.97 }}
-                  onClick={() => setStep(4)}
-                  disabled={!selectedVariant}
-                  className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-white font-semibold"
-                  style={{
-                    background: selectedVariant
-                      ? "linear-gradient(135deg, #7c3aed, #ec4899)"
-                      : "rgba(255,255,255,0.05)",
-                    fontSize: "0.9rem",
-                    cursor: selectedVariant ? "pointer" : "not-allowed",
-                    opacity: selectedVariant ? 1 : 0.5,
-                  }}
-                >
-                  Proceed to Configuration
-                  <ArrowRight className="w-4 h-4" />
-                </motion.button>
-              </motion.div>
-            </motion.div>
-          )}
-
-          {/* Step 4: Configure & Launch */}
-          {step === 4 && !launched && (
-            <motion.div
-              key="step4"
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -20 }}
-            >
-              <div className="mb-6">
-                <h2 className="text-white mb-2" style={{ fontSize: "1.5rem", fontWeight: 700 }}>
-                  Review & Launch Campaign
-                </h2>
-                <p className="text-gray-400" style={{ fontSize: "0.875rem" }}>
-                  Human-in-Loop Approval — review everything before launch
-                </p>
-              </div>
-
-              {isLaunching ? (
-                <motion.div
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  className="text-center py-16"
-                >
-                  <motion.div
-                    animate={{
-                      scale: [1, 1.2, 1],
-                      rotate: [0, 180, 360],
-                    }}
-                    transition={{ duration: 2, repeat: Infinity }}
-                    className="w-20 h-20 rounded-2xl flex items-center justify-center mx-auto mb-6"
-                    style={{
-                      background: "linear-gradient(135deg, #7c3aed, #ec4899)",
-                    }}
-                  >
-                    <Send className="w-10 h-10 text-white" />
-                  </motion.div>
-                  <div className="text-white mb-2" style={{ fontSize: "1.2rem", fontWeight: 600 }}>
-                    Launching Campaign...
-                  </div>
-                  <div className="text-gray-400" style={{ fontSize: "0.875rem" }}>
-                    Calling Autoreach API · Scheduling emails · Setting up monitoring...
-                  </div>
-                  <div className="flex items-center justify-center gap-2 mt-4">
-                    {["Validating customer IDs", "Submitting to API", "Setting up tracking"].map(
-                      (s, i) => (
-                        <motion.div
-                          key={s}
-                          initial={{ opacity: 0 }}
-                          animate={{ opacity: 1 }}
-                          transition={{ delay: i * 0.8 }}
-                          className="flex items-center gap-1.5 px-3 py-1 rounded-full"
-                          style={{
-                            background: "rgba(139,92,246,0.1)",
-                            border: "1px solid rgba(139,92,246,0.2)",
-                            fontSize: "0.7rem",
-                            color: "#a78bfa",
-                          }}
-                        >
-                          <motion.div
-                            animate={{ opacity: [0.4, 1, 0.4] }}
-                            transition={{ duration: 1, repeat: Infinity, delay: i * 0.3 }}
-                            className="w-1.5 h-1.5 rounded-full bg-violet-400"
-                          />
-                          {s}
-                        </motion.div>
-                      )
-                    )}
-                  </div>
-                </motion.div>
               ) : (
-                <>
-                  <div className="grid md:grid-cols-2 gap-6 mb-6">
-                    {/* Selected variant summary */}
+                <div className="grid gap-3">
+                  {displayedSegments.map((segment) => (
                     <div
-                      className="p-5 rounded-2xl"
-                      style={{
-                        background: "rgba(139,92,246,0.05)",
-                        border: "1px solid rgba(139,92,246,0.2)",
-                      }}
+                      key={segment.segmentId}
+                      className="rounded-[24px] p-4"
+                      style={{ background: "rgba(15,23,42,0.58)", border: "1px solid rgba(148,163,184,0.12)" }}
                     >
-                      <div className="flex items-center gap-2 mb-4">
-                        <Mail className="w-4 h-4 text-violet-400" />
-                        <span className="text-white" style={{ fontSize: "0.875rem", fontWeight: 600 }}>
-                          Selected Email Variant
-                        </span>
-                        <span
-                          className="ml-auto px-2 py-0.5 rounded-full text-violet-400"
-                          style={{
-                            background: "rgba(139,92,246,0.15)",
-                            fontSize: "0.7rem",
-                          }}
-                        >
-                          {selectedVariantData?.label}
-                        </span>
-                      </div>
-                      <div className="space-y-3">
+                      <div className="flex items-start justify-between gap-3">
                         <div>
-                          <span className="text-gray-500" style={{ fontSize: "0.72rem" }}>
-                            Subject
-                          </span>
-                          <p className="text-white mt-0.5" style={{ fontSize: "0.82rem" }}>
-                            {selectedVariantData?.subject}
-                          </p>
-                        </div>
-                        <div>
-                          <span className="text-gray-500" style={{ fontSize: "0.72rem" }}>
-                            Preview
-                          </span>
-                          <p
-                            className="text-gray-400 mt-0.5 line-clamp-3"
-                            style={{ fontSize: "0.78rem", lineHeight: "1.5" }}
-                          >
-                            {selectedVariantData?.body.substring(0, 150)}...
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Campaign settings */}
-                    <div
-                      className="p-5 rounded-2xl"
-                      style={{
-                        background: "rgba(255,255,255,0.02)",
-                        border: "1px solid rgba(255,255,255,0.07)",
-                      }}
-                    >
-                      <div className="flex items-center gap-2 mb-4">
-                        <Target className="w-4 h-4 text-cyan-400" />
-                        <span className="text-white" style={{ fontSize: "0.875rem", fontWeight: 600 }}>
-                          Campaign Settings
-                        </span>
-                      </div>
-
-                      <div className="space-y-3">
-                        <div>
-                          <label className="text-gray-500" style={{ fontSize: "0.72rem" }}>
-                            Send Date
-                          </label>
-                          <input
-                            type="date"
-                            value={sendDate}
-                            onChange={(e) => setSendDate(e.target.value)}
-                            className="w-full mt-1 px-3 py-2 rounded-lg text-white outline-none"
-                            style={{
-                              background: "rgba(255,255,255,0.06)",
-                              border: "1px solid rgba(255,255,255,0.1)",
-                              fontSize: "0.8rem",
-                              colorScheme: "dark",
-                            }}
-                          />
-                        </div>
-                        <div>
-                          <label className="text-gray-500" style={{ fontSize: "0.72rem" }}>
-                            Send Time (IST)
-                          </label>
-                          <input
-                            type="time"
-                            value={sendTime}
-                            onChange={(e) => setSendTime(e.target.value)}
-                            className="w-full mt-1 px-3 py-2 rounded-lg text-white outline-none"
-                            style={{
-                              background: "rgba(255,255,255,0.06)",
-                              border: "1px solid rgba(255,255,255,0.1)",
-                              fontSize: "0.8rem",
-                              colorScheme: "dark",
-                            }}
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Target audience */}
-                  <div
-                    className="p-5 rounded-2xl mb-6"
-                    style={{
-                      background: "rgba(255,255,255,0.02)",
-                      border: "1px solid rgba(255,255,255,0.07)",
-                    }}
-                  >
-                    <div className="flex items-center gap-2 mb-4">
-                      <Users className="w-4 h-4 text-emerald-400" />
-                      <span className="text-white" style={{ fontSize: "0.875rem", fontWeight: 600 }}>
-                        Target Audience
-                      </span>
-                      <span
-                        className="ml-auto text-emerald-400 font-semibold"
-                        style={{ fontSize: "0.875rem" }}
-                      >
-                        {customerCohortSize.toLocaleString()} customers
-                      </span>
-                    </div>
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                      {[
-                        { label: "Active", value: cohortData ? cohortData.active.toLocaleString() : "—", color: "#7c3aed" },
-                        { label: "Inactive", value: cohortData ? cohortData.inactive.toLocaleString() : "—", color: "#6b7280" },
-                        { label: "Total", value: customerCohortSize.toLocaleString(), color: "#ec4899" },
-                        { label: "Segments", value: "All", color: "#0891b2" },
-                      ].map((item) => (
-                        <div
-                          key={item.label}
-                          className="p-3 rounded-xl text-center"
-                          style={{
-                            background: `${item.color}10`,
-                            border: `1px solid ${item.color}20`,
-                          }}
-                        >
-                          <div
-                            className="font-bold mb-0.5"
-                            style={{ color: item.color, fontSize: "1.1rem" }}
-                          >
-                            {item.value}
+                          <div className="text-white" style={{ fontSize: "0.9rem", fontWeight: 600 }}>
+                            {segment.name}
                           </div>
-                          <div className="text-gray-400" style={{ fontSize: "0.7rem" }}>
-                            {item.label}
+                          <div className="text-slate-400 mt-1" style={{ fontSize: "0.74rem" }}>
+                            {formatCount(segment.size)} customers
                           </div>
                         </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Approval warning */}
-                  <div
-                    className="p-4 rounded-xl mb-6 flex items-start gap-3"
-                    style={{
-                      background: "rgba(234,179,8,0.08)",
-                      border: "1px solid rgba(234,179,8,0.25)",
-                    }}
-                  >
-                    <Zap className="w-5 h-5 text-yellow-400 flex-shrink-0 mt-0.5" />
-                    <div>
-                      <div className="text-yellow-400" style={{ fontSize: "0.875rem", fontWeight: 600 }}>
-                        Human-in-Loop Approval Required
+                        <div className="flex flex-wrap gap-2 justify-end">
+                          {segment.tier && (
+                            <span
+                              className="px-2 py-1 rounded-full"
+                              style={{ background: "rgba(20,184,166,0.12)", color: "#99f6e4", fontSize: "0.68rem" }}
+                            >
+                              {segment.tier}
+                            </span>
+                          )}
+                          {segment.tone && (
+                            <span
+                              className="px-2 py-1 rounded-full"
+                              style={{ background: "rgba(56,189,248,0.12)", color: "#7dd3fc", fontSize: "0.68rem" }}
+                            >
+                              {segment.tone}
+                            </span>
+                          )}
+                        </div>
                       </div>
-                      <div className="text-yellow-600 mt-1" style={{ fontSize: "0.78rem" }}>
-                        By approving, you confirm that the campaign content, target segment, and send time
-                        have been reviewed. The AI agent will then execute the campaign via Autoreach API and
-                        begin performance monitoring automatically.
-                      </div>
-                    </div>
-                  </div>
-
-                  {launchError && (
-                    <div
-                      className="mb-4 p-3 rounded-xl"
-                      style={{
-                        background: "rgba(239,68,68,0.08)",
-                        border: "1px solid rgba(239,68,68,0.28)",
-                      }}
-                    >
-                      <p className="text-red-300" style={{ fontSize: "0.8rem" }}>
-                        {launchError}
+                      <p className="text-slate-300 mt-3" style={{ fontSize: "0.8rem", lineHeight: 1.7 }}>
+                        {segment.criteria || segment.focus || "Criteria not provided by the agent."}
                       </p>
                     </div>
-                  )}
-
-                  <div className="flex gap-4">
-                    <button
-                      onClick={() => setStep(3)}
-                      className="px-6 py-3 rounded-xl text-gray-400 hover:text-white"
-                      style={{
-                        background: "rgba(255,255,255,0.04)",
-                        border: "1px solid rgba(255,255,255,0.08)",
-                        fontSize: "0.875rem",
-                      }}
-                    >
-                      ← Back
-                    </button>
-                    <motion.button
-                      whileHover={{ scale: 1.03, boxShadow: "0 0 40px rgba(139,92,246,0.5)" }}
-                      whileTap={{ scale: 0.97 }}
-                      onClick={handleLaunch}
-                      className="flex-1 flex items-center justify-center gap-3 py-4 rounded-2xl text-white font-semibold"
-                      style={{
-                        background: "linear-gradient(135deg, #7c3aed, #ec4899)",
-                        fontSize: "1rem",
-                      }}
-                    >
-                      <CheckCircle className="w-5 h-5" />
-                      Approve & Launch Campaign
-                      <Send className="w-4 h-4" />
-                    </motion.button>
-                  </div>
-                </>
+                  ))}
+                </div>
               )}
-            </motion.div>
-          )}
+            </Surface>
 
-          {/* Launched success */}
-          {launched && (
-            <motion.div
-              key="success"
-              initial={{ opacity: 0, scale: 0.9 }}
-              animate={{ opacity: 1, scale: 1 }}
-              className="text-center py-16"
+            <Surface
+              eyebrow="Content approval"
+              title="Audience drafts"
+              right={<Send className="w-5 h-5 text-rose-300" />}
             >
-              <motion.div
-                initial={{ scale: 0 }}
-                animate={{ scale: 1 }}
-                transition={{ type: "spring", stiffness: 200 }}
-                className="w-24 h-24 rounded-full flex items-center justify-center mx-auto mb-6"
-                style={{
-                  background: "linear-gradient(135deg, rgba(16,185,129,0.3), rgba(16,185,129,0.1))",
-                  border: "2px solid rgba(16,185,129,0.5)",
-                }}
-              >
-                <CheckCircle className="w-12 h-12 text-emerald-400" />
-              </motion.div>
-              <h2 className="text-white mb-3" style={{ fontSize: "1.8rem", fontWeight: 700 }}>
-                Campaign Launched! 🚀
-              </h2>
-              <p className="text-gray-400 mb-2">
-                Campaign submitted to Autoreach API successfully
-              </p>
-              <p className="text-gray-500" style={{ fontSize: "0.8rem" }}>
-                Redirecting to analysis dashboard...
-              </p>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
+              {displayedDrafts.length === 0 ? (
+                <div
+                  className="rounded-[24px] p-5 text-slate-400"
+                  style={{ background: "rgba(15,23,42,0.56)", border: "1px dashed rgba(148,163,184,0.16)" }}
+                >
+                  Drafts appear here when the agent reaches the content approval checkpoint.
+                </div>
+              ) : (
+                <div className="grid gap-3">
+                  {displayedDrafts.map((draft, index) => (
+                    <div
+                      key={`${draft.segmentId}-${index}`}
+                      className="rounded-[24px] p-4"
+                      style={{ background: "rgba(15,23,42,0.58)", border: "1px solid rgba(148,163,184,0.12)" }}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="text-white" style={{ fontSize: "0.9rem", fontWeight: 600 }}>
+                            {draft.segmentName}
+                          </div>
+                          <div className="text-slate-400 mt-1" style={{ fontSize: "0.74rem" }}>
+                            Subject line ready for approval
+                          </div>
+                        </div>
+                        {draft.tone && (
+                          <span
+                            className="px-2 py-1 rounded-full"
+                            style={{ background: "rgba(251,113,133,0.12)", color: "#fda4af", fontSize: "0.68rem" }}
+                          >
+                            {draft.tone}
+                          </span>
+                        )}
+                      </div>
 
-      <CustomizeParams
-        isOpen={showCustomize}
-        onClose={() => setShowCustomize(false)}
-        onRegenerate={handleRegenerate}
-        initialParams={customParams}
-      />
+                      <div className="mt-4 rounded-[20px] p-4" style={{ background: "rgba(2,6,23,0.78)" }}>
+                        <div className="text-slate-500 uppercase tracking-[0.16em]" style={{ fontSize: "0.64rem" }}>
+                          Subject
+                        </div>
+                        <div className="text-slate-100 mt-2" style={{ fontSize: "0.84rem", fontWeight: 600 }}>
+                          {draft.subject}
+                        </div>
+                        <div
+                          className="text-slate-500 uppercase tracking-[0.16em] mt-4"
+                          style={{ fontSize: "0.64rem" }}
+                        >
+                          Body preview
+                        </div>
+                        <p
+                          className="text-slate-300 mt-2 whitespace-pre-wrap line-clamp-5"
+                          style={{ fontSize: "0.8rem", lineHeight: 1.7 }}
+                        >
+                          {draft.body}
+                        </p>
+                      </div>
+
+                      {draft.tags && draft.tags.length > 0 && (
+                        <div className="flex flex-wrap gap-2 mt-3">
+                          {draft.tags.slice(0, 4).map((tag) => (
+                            <span
+                              key={tag}
+                              className="px-2 py-1 rounded-full"
+                              style={{ background: "rgba(45,212,191,0.1)", color: "#99f6e4", fontSize: "0.66rem" }}
+                            >
+                              {tag}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Surface>
+          </div>
+        </div>
+
+        <div className="grid xl:grid-cols-[1fr,0.9fr] gap-6 mt-6">
+          <Surface
+            eyebrow="Live telemetry"
+            title="Performance stream"
+            right={<Radar className="w-5 h-5 text-cyan-300" />}
+          >
+            {!latestMetrics ? (
+              <div
+                className="rounded-[24px] p-5 text-slate-400"
+                style={{ background: "rgba(15,23,42,0.56)", border: "1px dashed rgba(148,163,184,0.16)" }}
+              >
+                Live open and click updates will land here once the agent starts dispatching.
+              </div>
+            ) : (
+              <>
+                <div className="grid md:grid-cols-3 gap-3 mb-4">
+                  <StatTile
+                    label="Sent"
+                    value={formatCount(latestMetrics.sent)}
+                    hint={`Round ${latestMetrics.round}`}
+                    accent="#2dd4bf"
+                    icon={Send}
+                  />
+                  <StatTile
+                    label="Opened"
+                    value={formatCount(latestMetrics.opened)}
+                    hint={formatPercent(latestMetrics.openRate)}
+                    accent="#38bdf8"
+                    icon={TrendingUp}
+                  />
+                  <StatTile
+                    label="Clicked"
+                    value={formatCount(latestMetrics.clicked)}
+                    hint={formatPercent(latestMetrics.clickRate)}
+                    accent="#fb7185"
+                    icon={Activity}
+                  />
+                </div>
+
+                <div className="grid gap-3">
+                  {latestMetrics.bySegment.map((segment) => (
+                    <div
+                      key={`${latestMetrics.round}-${segment.segmentName}`}
+                      className="rounded-[24px] p-4"
+                      style={{ background: "rgba(15,23,42,0.58)", border: "1px solid rgba(148,163,184,0.12)" }}
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <div className="text-white" style={{ fontSize: "0.86rem", fontWeight: 600 }}>
+                            {segment.segmentName}
+                          </div>
+                          <div className="text-slate-400 mt-1" style={{ fontSize: "0.72rem" }}>
+                            {formatCount(segment.sent)} delivered in this stream snapshot
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-4">
+                          <div className="text-right">
+                            <div className="text-slate-100" style={{ fontSize: "0.84rem", fontWeight: 600 }}>
+                              {formatPercent(segment.openRate)}
+                            </div>
+                            <div className="text-slate-500" style={{ fontSize: "0.66rem" }}>
+                              Open
+                            </div>
+                          </div>
+                          <div className="text-right">
+                            <div className="text-slate-100" style={{ fontSize: "0.84rem", fontWeight: 600 }}>
+                              {formatPercent(segment.clickRate)}
+                            </div>
+                            <div className="text-slate-500" style={{ fontSize: "0.66rem" }}>
+                              Click
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </Surface>
+
+          <Surface
+            eyebrow="Optimization trace"
+            title="Round history"
+            right={<Sparkles className="w-5 h-5 text-amber-300" />}
+          >
+            {roundHistory.length === 0 ? (
+              <div
+                className="rounded-[24px] p-5 text-slate-400"
+                style={{ background: "rgba(15,23,42,0.56)", border: "1px dashed rgba(148,163,184,0.16)" }}
+              >
+                Completed round summaries appear here after each optimization pass.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {roundHistory.map((round) => (
+                  <div
+                    key={round.round}
+                    className="rounded-[24px] p-4"
+                    style={{ background: "rgba(15,23,42,0.58)", border: "1px solid rgba(148,163,184,0.12)" }}
+                  >
+                    <div className="flex items-center justify-between gap-4">
+                      <div>
+                        <div className="text-white" style={{ fontSize: "0.88rem", fontWeight: 600 }}>
+                          Optimization round {round.round}
+                        </div>
+                        <div className="text-slate-400 mt-1" style={{ fontSize: "0.72rem" }}>
+                          {formatCount(round.summary.audience)} audience across {round.summary.segments} groups
+                        </div>
+                      </div>
+                      <ChevronRight className="w-4 h-4 text-slate-500" />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3 mt-4">
+                      <div
+                        className="rounded-[18px] p-3"
+                        style={{ background: "rgba(14,116,144,0.12)", border: "1px solid rgba(56,189,248,0.16)" }}
+                      >
+                        <div className="text-white" style={{ fontSize: "1.05rem", fontWeight: 700 }}>
+                          {formatPercent(round.summary.openRate)}
+                        </div>
+                        <div className="text-sky-300 mt-1" style={{ fontSize: "0.68rem" }}>
+                          Open rate
+                        </div>
+                      </div>
+                      <div
+                        className="rounded-[18px] p-3"
+                        style={{ background: "rgba(159,18,57,0.12)", border: "1px solid rgba(251,113,133,0.16)" }}
+                      >
+                        <div className="text-white" style={{ fontSize: "1.05rem", fontWeight: 700 }}>
+                          {formatPercent(round.summary.clickRate)}
+                        </div>
+                        <div className="text-rose-300 mt-1" style={{ fontSize: "0.68rem" }}>
+                          Click rate
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Surface>
+        </div>
+
+        {error && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mt-6 rounded-[28px] p-5"
+            style={{
+              background: "rgba(127,29,29,0.2)",
+              border: "1px solid rgba(248,113,113,0.24)",
+            }}
+          >
+            <div className="flex items-start gap-3">
+              <XCircle className="w-5 h-5 text-rose-300 flex-shrink-0 mt-0.5" />
+              <div>
+                <div className="text-rose-200" style={{ fontSize: "0.92rem", fontWeight: 600 }}>
+                  Agent run failed
+                </div>
+                <p className="text-rose-100/90 mt-1" style={{ fontSize: "0.82rem", lineHeight: 1.7 }}>
+                  {error}
+                </p>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </div>
     </div>
   );
 }

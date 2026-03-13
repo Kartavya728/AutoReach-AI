@@ -26,6 +26,13 @@ def require_env(name: str) -> str:
     return value
 
 
+def get_env_flag(name: str, default: bool = False) -> bool:
+    value = get_env(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 # ── CampaignX API ──
 CAMPAIGNX_BASE_URL = get_env("CAMPAIGNX_BASE_URL", "https://campaignx.inxiteout.ai")
 CAMPAIGNX_API_KEY = get_env("CAMPAIGNX_API_KEY")
@@ -34,17 +41,11 @@ CAMPAIGNX_API_KEY = get_env("CAMPAIGNX_API_KEY")
 GEMINI_API_KEY = get_env("GEMINI_API_KEY")
 GEMINI_MODEL = get_env("GEMINI_MODEL", "gemini-2.5-flash")
 
-# ── LangSmith / LangChain Observability ──
-LANGSMITH_API_KEY = get_env("LANGSMITH_API_KEY")
-LANGSMITH_PROJECT = get_env("LANGSMITH_PROJECT")
-LANGCHAIN_PROJECT = get_env("LANGCHAIN_PROJECT", "ai mailing agent")
-LANGCHAIN_ENDPOINT = get_env("LANGCHAIN_ENDPOINT", "https://api.smith.langchain.com")
-LANGCHAIN_TRACING_ENABLED = get_env("LANGCHAIN_TRACING_V2", "true") == "true"
-
 # ── Supabase ──
 SUPABASE_URL = get_env("NEXT_PUBLIC_SUPABASE_URL")
 SUPABASE_ANON_KEY = get_env("NEXT_PUBLIC_SUPABASE_ANON_KEY")
 SUPABASE_SERVICE_ROLE_KEY = get_env("SUPABASE_SERVICE_ROLE_KEY")
+AGENTS_TEST_MODE = get_env_flag("AGENTS_TEST_MODE", False)
 
 # ── Available Gemini Models ──
 AVAILABLE_MODELS = [

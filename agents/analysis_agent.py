@@ -76,12 +76,15 @@ def compute_analysis(
             eo_yes.append(r)
             
             # Determine Click (only if opened)
-            # Use a different hash multiplier so it's not linearly correlated with the open hash!
             c_hash_click = (c_hash * 17 + 43) % 100
+            # To ensure the final click rate (clicked/sent) approximates base_click,
+            # the probability of clicking given opening must be base_click / base_open
             click_threshold = base_click / base_open if base_open > 0 else 0
             if c_hash_click / 100 < click_threshold:
                 r["EC"] = "Y"
                 ec_yes.append(r)
+            else:
+                r["EC"] = "N"
         else:
             r["EO"] = "N"
             r["EC"] = "N"

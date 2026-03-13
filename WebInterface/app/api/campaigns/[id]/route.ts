@@ -8,7 +8,7 @@ import {
 import { fetchCampaignReportFromCampaignX } from "@/src/lib/server/campaignx";
 import { computeAnalysisFromReport } from "@/src/lib/server/analysis";
 import { serverGetCustomers } from "@/src/lib/server/customers";
-import { generateOptimizationSuggestions } from "@/src/lib/server/optimize";
+import { generateOptimizationSuggestions } from "@/src/backend/optimization-agent";
 
 import type { UpdateCampaignPayload, OptimizationSuggestionRow } from "@/src/lib/types";
 

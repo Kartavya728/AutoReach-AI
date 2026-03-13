@@ -4,7 +4,7 @@
  * In production, this would be fetched from:
  * - CampaignX API (customer cohort, campaign reports)
  * - Supabase (stored campaigns, history)
- * - Gemini API (AI-generated content)
+ * - AI-generated content
  */
 
 export const MOCK_CAMPAIGNS = [
