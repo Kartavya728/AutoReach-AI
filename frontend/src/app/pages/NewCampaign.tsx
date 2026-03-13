@@ -2,34 +2,23 @@
 
 import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "motion/react";
-import { useCallback, useEffect, useMemo, useRef, useState, type ElementType, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Activity,
   ArrowLeft,
-  ArrowRight,
-  BrainCircuit,
+  Bot,
   CheckCircle2,
-  ChevronRight,
   Clock3,
-  Layers3,
-  Mail,
-  PauseCircle,
+  LoaderCircle,
   Pencil,
   Play,
-  Radar,
-  RefreshCw,
-  Terminal,
   Send,
-  ShieldCheck,
   Sparkles,
-  TrendingUp,
-  Users,
-  Workflow,
+  StopCircle,
+  User,
   XCircle,
 } from "lucide-react";
 import { Navbar } from "../components/Navbar";
-import { AIProcessing } from "../components/AIProcessing";
-import { streamCampaignAgent, preloadAgentStream, type AgentPauseResponder } from "../../lib/agent-stream";
+import { preloadAgentStream, streamCampaignAgent, type AgentPauseResponder } from "../../lib/agent-stream";
 import type {
   AgentDraftCard,
   AgentLiveMetrics,
@@ -41,56 +30,44 @@ import type {
 } from "../../lib/types";
 
 const DEFAULT_BRIEF =
-  "Run email campaign for launching XDeposit, a flagship term deposit product from SuperBFSI, that gives 1 percentage point higher returns than its competitors. Announce an additional 0.25 percentage point higher returns for female senior citizens. Optimise for open rate and click rate. Don't skip emails to customers marked 'inactive'. Include the call to action: https://superbfsi.com/xdeposit/explore/";
+  "Run email campaign for launching XDeposit, a flagship term deposit product from SuperBFSI, that gives 1 percentage point higher returns than its competitors. Announce an additional 0.25 percentage point higher returns for female senior citizens. Optimise for open rate and click rate. Do not skip emails to customers marked inactive. Include the call to action: https://superbfsi.com/xdeposit/explore/";
 const DEFAULT_ROUNDS = 3;
-const IDLE_THRESHOLD_MS = 950;
 
 type RunPhase = "idle" | "running" | "paused" | "complete" | "error";
+type MessageRole = "user" | "agent" | "system";
+
+interface ChatMessage {
+  id: string;
+  role: MessageRole;
+  text: string;
+  kind?: string;
+  agent?: string;
+  timestamp: number;
+}
+
+function kindLabel(kind?: string) {
+  const value = (kind || "status").toLowerCase();
+  if (value === "thought") return "Thought";
+  if (value === "action") return "Action";
+  if (value === "observation") return "Observation";
+  if (value === "pause") return "Pause";
+  if (value === "resume") return "Resume";
+  if (value === "final") return "Final";
+  if (value === "metrics") return "Metrics";
+  if (value === "decision") return "Decision";
+  return "Status";
+}
 
 function formatPercent(value?: number | null) {
-  const safe = Number(value ?? 0);
-  return `${safe.toFixed(1)}%`;
+  return `${Number(value ?? 0).toFixed(1)}%`;
 }
 
 function formatCount(value?: number | null) {
   return (Number(value ?? 0) || 0).toLocaleString();
 }
 
-function phaseLabel(phase: RunPhase) {
-  switch (phase) {
-    case "running":
-      return "Streaming live";
-    case "paused":
-      return "Waiting for approval";
-    case "complete":
-      return "Completed";
-    case "error":
-      return "Run failed";
-    default:
-      return "Ready";
-  }
-}
-
-function phaseColor(phase: RunPhase) {
-  switch (phase) {
-    case "running":
-      return { text: "#99f6e4", bg: "rgba(20,184,166,0.12)", border: "rgba(20,184,166,0.28)" };
-    case "paused":
-      return { text: "#fdba74", bg: "rgba(249,115,22,0.12)", border: "rgba(249,115,22,0.28)" };
-    case "complete":
-      return { text: "#86efac", bg: "rgba(34,197,94,0.12)", border: "rgba(34,197,94,0.28)" };
-    case "error":
-      return { text: "#fca5a5", bg: "rgba(239,68,68,0.12)", border: "rgba(239,68,68,0.28)" };
-    default:
-      return { text: "#cbd5e1", bg: "rgba(148,163,184,0.12)", border: "rgba(148,163,184,0.22)" };
-  }
-}
-
 function toSegmentCardsFromResult(result: AgentRunResult | null): AgentSegmentCard[] {
-  if (!result) {
-    return [];
-  }
-
+  if (!result) return [];
   return result.segments.map((segment, index) => ({
     segmentId: `segment-${index + 1}`,
     name: segment.name,
@@ -103,10 +80,7 @@ function toSegmentCardsFromResult(result: AgentRunResult | null): AgentSegmentCa
 }
 
 function toDraftCardsFromResult(result: AgentRunResult | null): AgentDraftCard[] {
-  if (!result) {
-    return [];
-  }
-
+  if (!result) return [];
   return result.contentVariants.map((draft, index) => ({
     segmentId: `draft-${index + 1}`,
     segmentName: draft.variant || `Audience ${index + 1}`,
@@ -118,369 +92,193 @@ function toDraftCardsFromResult(result: AgentRunResult | null): AgentDraftCard[]
   }));
 }
 
-function pushUniqueStep(
-  current: AgentThinkingStep[],
-  next: AgentThinkingStep,
-  limit = 48
-): AgentThinkingStep[] {
-  const normalized = {
-    agent: next.agent || "Agent",
-    step: next.step || "",
-    kind: next.kind || "status",
-  };
-  const last = current[current.length - 1];
-  if (last && last.agent === normalized.agent && last.step === normalized.step && last.kind === normalized.kind) {
-    return current;
-  }
-  return [...current, normalized].slice(-limit);
+function sameThinkingStep(a: AgentThinkingStep | null, b: AgentThinkingStep) {
+  if (!a) return false;
+  return (a.agent || "Agent") === (b.agent || "Agent") && (a.step || "") === (b.step || "") && (a.kind || "status") === (b.kind || "status");
 }
 
-function Surface({
-  title,
-  eyebrow,
-  right,
-  children,
-}: {
-  title: string;
-  eyebrow?: string;
-  right?: ReactNode;
-  children: ReactNode;
-}) {
+function TypingDots() {
   return (
-    <section
-      className="rounded-[30px] p-5 md:p-6"
-      style={{
-        background: "linear-gradient(180deg, rgba(6,14,25,0.92) 0%, rgba(9,16,30,0.98) 100%)",
-        border: "1px solid rgba(148,163,184,0.14)",
-        boxShadow: "0 24px 80px rgba(2, 6, 23, 0.35)",
-      }}
-    >
-      <div className="flex items-start gap-4 justify-between mb-5">
-        <div>
-          {eyebrow && (
-            <div className="uppercase tracking-[0.2em] text-slate-500" style={{ fontSize: "0.68rem" }}>
-              {eyebrow}
-            </div>
-          )}
-          <h3 className="text-white mt-1" style={{ fontSize: "1rem", fontWeight: 700 }}>
-            {title}
-          </h3>
-        </div>
-        {right}
-      </div>
-      {children}
-    </section>
-  );
-}
-
-function StatTile({
-  label,
-  value,
-  hint,
-  accent,
-  icon: Icon,
-}: {
-  label: string;
-  value: string;
-  hint: string;
-  accent: string;
-  icon: ElementType;
-}) {
-  return (
-    <div
-      className="rounded-[24px] p-4"
-      style={{
-        background: `${accent}12`,
-        border: `1px solid ${accent}24`,
-      }}
-    >
-      <div className="flex items-center justify-between mb-4">
-        <span className="text-slate-300" style={{ fontSize: "0.75rem" }}>
-          {label}
-        </span>
-        <div
-          className="w-9 h-9 rounded-2xl flex items-center justify-center"
-          style={{ background: `${accent}18`, border: `1px solid ${accent}28` }}
-        >
-          <Icon className="w-4 h-4" style={{ color: accent }} />
-        </div>
-      </div>
-      <div className="text-white" style={{ fontSize: "1.5rem", fontWeight: 700 }}>
-        {value}
-      </div>
-      <div className="mt-1" style={{ color: accent, fontSize: "0.72rem" }}>
-        {hint}
-      </div>
+    <div className="inline-flex items-center gap-1">
+      {[0, 1, 2].map((dot) => (
+        <motion.span
+          key={dot}
+          className="w-1.5 h-1.5 rounded-full bg-emerald-300"
+          animate={{ opacity: [0.2, 1, 0.2], y: [0, -2, 0] }}
+          transition={{ duration: 0.9, repeat: Infinity, delay: dot * 0.14 }}
+        />
+      ))}
     </div>
   );
 }
 
 export default function NewCampaign() {
   const router = useRouter();
+  const chatRef = useRef<HTMLDivElement>(null);
   const pauseResponderRef = useRef<AgentPauseResponder | null>(null);
-  const lastActivityAtRef = useRef(Date.now());
+  const latestThinkingRef = useRef<AgentThinkingStep | null>(null);
 
-  const [brief, setBrief] = useState(DEFAULT_BRIEF);
+  const [brief, setBrief] = useState("");
   const [phase, setPhase] = useState<RunPhase>("idle");
-  const [isIdle, setIsIdle] = useState(false);
-  const [thinkingSteps, setThinkingSteps] = useState<AgentThinkingStep[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [pendingPause, setPendingPause] = useState<AgentPausePayload | null>(null);
   const [segmentCards, setSegmentCards] = useState<AgentSegmentCard[]>([]);
   const [draftCards, setDraftCards] = useState<AgentDraftCard[]>([]);
-  const [metricsHistory, setMetricsHistory] = useState<AgentLiveMetrics[]>([]);
+  const [editingDrafts, setEditingDrafts] = useState(false);
+  const [editedDrafts, setEditedDrafts] = useState<AgentDraftCard[]>([]);
+  const [latestMetrics, setLatestMetrics] = useState<AgentLiveMetrics | null>(null);
   const [roundHistory, setRoundHistory] = useState<AgentRoundComplete[]>([]);
   const [result, setResult] = useState<AgentRunResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [terminalOpen, setTerminalOpen] = useState(true);
-  const [displayedTerminal, setDisplayedTerminal] = useState("");
-  const [editingDrafts, setEditingDrafts] = useState(false);
-  const [editedDrafts, setEditedDrafts] = useState<AgentDraftCard[]>([]);
-  const terminalRef = useRef<HTMLPreElement>(null);
-  const pendingCharsRef = useRef<string[]>([]);
-  const rafIdRef = useRef<number | null>(null);
 
-  const TERMINAL_MAX = 32_000;
-  const CHARS_PER_FRAME = 3;
+  const hasConversation = messages.length > 0 || phase !== "idle";
+  const canStart = brief.trim().length > 0 && phase !== "running" && phase !== "paused";
 
-  // Typewriter reveal loop — pulls chars from buffer into displayed state
-  const startTypewriter = useCallback(() => {
-    if (rafIdRef.current !== null) return; // already running
-
-    const tick = () => {
-      const pending = pendingCharsRef.current;
-      if (pending.length === 0) {
-        rafIdRef.current = requestAnimationFrame(tick);
-        return;
-      }
-
-      const batch = pending.splice(0, CHARS_PER_FRAME).join("");
-      setDisplayedTerminal((prev) => {
-        const next = prev + batch;
-        return next.length > TERMINAL_MAX ? next.slice(-TERMINAL_MAX) : next;
-      });
-
-      rafIdRef.current = requestAnimationFrame(tick);
-    };
-
-    rafIdRef.current = requestAnimationFrame(tick);
-  }, []);
-
-  const stopTypewriter = useCallback(() => {
-    if (rafIdRef.current !== null) {
-      cancelAnimationFrame(rafIdRef.current);
-      rafIdRef.current = null;
-    }
-    // Flush remaining buffer immediately
-    if (pendingCharsRef.current.length > 0) {
-      const remaining = pendingCharsRef.current.splice(0).join("");
-      setDisplayedTerminal((prev) => {
-        const next = prev + remaining;
-        return next.length > TERMINAL_MAX ? next.slice(-TERMINAL_MAX) : next;
-      });
-    }
-  }, []);
-
-  const enqueueTerminal = useCallback((text: string) => {
-    for (const ch of text) {
-      pendingCharsRef.current.push(ch);
-    }
-  }, []);
-
-  // Start/stop typewriter based on phase
   useEffect(() => {
-    // Preload websocket connection so it's instantly ready when user hits Start
-    preloadAgentStream().catch(console.error);
+    preloadAgentStream().catch(() => {
+      // Preload is best-effort only.
+    });
+  }, []);
 
-    if (phase === "running") {
-      startTypewriter();
-    } else {
-      stopTypewriter();
-    }
-    return () => {
-      if (rafIdRef.current !== null) {
-        cancelAnimationFrame(rafIdRef.current);
-        rafIdRef.current = null;
-      }
-    };
-  }, [phase, startTypewriter, stopTypewriter]);
-
-  // Auto-scroll terminal when new text is revealed
   useEffect(() => {
-    const el = terminalRef.current;
+    const el = chatRef.current;
     if (!el) return;
     requestAnimationFrame(() => {
       el.scrollTop = el.scrollHeight;
     });
-  }, [displayedTerminal]);
+  }, [messages, pendingPause, editingDrafts]);
 
-  useEffect(() => {
-    if (phase !== "running") {
-      setIsIdle(false);
-      return;
-    }
+  const pushMessage = useCallback((message: Omit<ChatMessage, "id" | "timestamp">) => {
+    setMessages((current) => [
+      ...current,
+      {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        timestamp: Date.now(),
+        ...message,
+      },
+    ]);
+  }, []);
 
-    const timer = window.setInterval(() => {
-      setIsIdle(Date.now() - lastActivityAtRef.current > IDLE_THRESHOLD_MS);
-    }, 180);
-
-    return () => window.clearInterval(timer);
-  }, [phase]);
-
-  const latestMetrics = useMemo(
-    () => metricsHistory[metricsHistory.length - 1] ?? null,
-    [metricsHistory]
-  );
-
-  const displayedSegments = useMemo(() => {
-    if (segmentCards.length > 0) {
-      return segmentCards;
-    }
-    return toSegmentCardsFromResult(result);
-  }, [result, segmentCards]);
-
-  const displayedDrafts = useMemo(() => {
-    if (draftCards.length > 0) {
-      return draftCards;
-    }
-    return toDraftCardsFromResult(result);
-  }, [draftCards, result]);
-
-  const currentPalette = phaseColor(phase);
-  const canStart = brief.trim().length > 0 && phase !== "running" && phase !== "paused";
-
-  const touchActivity = (syncIdle = false) => {
-    lastActivityAtRef.current = Date.now();
-    if (syncIdle) {
-      setIsIdle(false);
-    }
-  };
-
-  const resetRun = () => {
+  const resetRunState = useCallback(() => {
     pauseResponderRef.current = null;
-    setPhase("idle");
-    setIsIdle(false);
-    setThinkingSteps([]);
+    latestThinkingRef.current = null;
     setPendingPause(null);
     setSegmentCards([]);
     setDraftCards([]);
-    setMetricsHistory([]);
+    setEditingDrafts(false);
+    setEditedDrafts([]);
+    setLatestMetrics(null);
     setRoundHistory([]);
     setResult(null);
     setError(null);
-    setDisplayedTerminal("");
-    pendingCharsRef.current = [];
-    setTerminalOpen(true);
-    setEditingDrafts(false);
-    setEditedDrafts([]);
-    touchActivity(true);
-  };
+  }, []);
 
-  const answerCheckpoint = (response: Record<string, unknown>) => {
+  const submitPauseResponse = useCallback((response: Record<string, unknown>) => {
     const responder = pauseResponderRef.current;
-    if (!responder) {
-      return;
-    }
+    if (!responder) return;
+
     pauseResponderRef.current = null;
     setPendingPause(null);
+    setEditingDrafts(false);
+    setEditedDrafts([]);
     setPhase("running");
-    touchActivity(true);
     responder(response);
-  };
+  }, []);
 
-  const handleApprove = () => {
-    if (!pendingPause) {
-      return;
-    }
+  const handleApprove = useCallback(() => {
+    if (!pendingPause) return;
+
     if (pendingPause.pauseType === "next_round") {
-      answerCheckpoint({ continueOptimization: true });
+      submitPauseResponse({ continueOptimization: true });
+      pushMessage({ role: "user", text: "Continue with next optimization round." });
       return;
     }
-    // If editing drafts, send edited variants with approval
-    if (editingDrafts && editedDrafts.length > 0) {
-      const editedVariants = editedDrafts.map((d) => ({
-        segmentId: d.segmentId,
-        subject: d.subject,
-        body: d.body,
-      }));
-      setEditingDrafts(false);
-      setEditedDrafts([]);
-      answerCheckpoint({ approved: true, editedVariants });
+
+    if (pendingPause.pauseType === "content_approval" && editingDrafts && editedDrafts.length > 0) {
+      submitPauseResponse({
+        approved: true,
+        editedVariants: editedDrafts.map((draft) => ({
+          segmentId: draft.segmentId,
+          subject: draft.subject,
+          body: draft.body,
+        })),
+      });
+      pushMessage({ role: "user", text: "Approved with edits." });
       return;
     }
-    setEditingDrafts(false);
-    setEditedDrafts([]);
-    answerCheckpoint({ approved: true });
-  };
 
-  const handleStopOptimization = () => {
-    answerCheckpoint({ continueOptimization: false });
-  };
+    submitPauseResponse({ approved: true });
+    pushMessage({ role: "user", text: "Approved." });
+  }, [editedDrafts, editingDrafts, pendingPause, pushMessage, submitPauseResponse]);
 
-  const handleEditDrafts = () => {
-    setEditedDrafts(displayedDrafts.map((d) => ({ ...d })));
+  const handleReject = useCallback(() => {
+    if (!pendingPause) return;
+
+    if (pendingPause.pauseType === "next_round") {
+      submitPauseResponse({ continueOptimization: false });
+      pushMessage({ role: "user", text: "Stop optimization after this round." });
+      return;
+    }
+
+    submitPauseResponse({ approved: false });
+    pushMessage({ role: "user", text: "Rejected." });
+  }, [pendingPause, pushMessage, submitPauseResponse]);
+
+  const handleEditDrafts = useCallback(() => {
+    setEditedDrafts(draftCards.map((draft) => ({ ...draft })));
     setEditingDrafts(true);
-  };
+  }, [draftCards]);
 
-  const handleCancelEdit = () => {
+  const handleCancelEdit = useCallback(() => {
     setEditingDrafts(false);
     setEditedDrafts([]);
-  };
+  }, []);
 
-  const updateEditedDraft = (index: number, field: "subject" | "body", value: string) => {
-    setEditedDrafts((prev) => {
-      const copy = [...prev];
+  const updateEditedDraft = useCallback((index: number, field: "subject" | "body", value: string) => {
+    setEditedDrafts((current) => {
+      const copy = [...current];
       copy[index] = { ...copy[index], [field]: value };
       return copy;
     });
-  };
+  }, []);
 
-  const handleStart = async () => {
-    if (!brief.trim()) {
-      return;
-    }
-
-    pauseResponderRef.current = null;
+  const runAgent = useCallback(async (prompt: string) => {
     setPhase("running");
-    setIsIdle(false);
-    setThinkingSteps([]);
-    setPendingPause(null);
-    setSegmentCards([]);
-    setDraftCards([]);
-    setMetricsHistory([]);
-    setRoundHistory([]);
-    setResult(null);
-    setError(null);
-    setDisplayedTerminal("");
-    pendingCharsRef.current = [];
-    touchActivity(true);
 
     try {
-      const finalResult = await streamCampaignAgent(brief, {
+      const finalResult = await streamCampaignAgent(prompt, {
         rounds: DEFAULT_ROUNDS,
-        onHeartbeat: () => {
-          touchActivity();
-        },
         onThinking: (step) => {
-          touchActivity(true);
-          setThinkingSteps((current) => pushUniqueStep(current, step));
+          if (sameThinkingStep(latestThinkingRef.current, step)) return;
+          latestThinkingRef.current = step;
+
+          pushMessage({
+            role: "agent",
+            agent: step.agent || "Agent",
+            kind: step.kind || "status",
+            text: step.step || "",
+          });
         },
         onPause: (pause, respond) => {
-          touchActivity(true);
           pauseResponderRef.current = respond;
           setPendingPause(pause);
+          setPhase("paused");
+
           if (pause.segments && pause.segments.length > 0) {
             setSegmentCards(pause.segments);
           }
           if (pause.variants && pause.variants.length > 0) {
             setDraftCards(pause.variants);
           }
-          setPhase("paused");
+
+          pushMessage({
+            role: "system",
+            kind: "pause",
+            text: pause.message || "Approval required to continue.",
+          });
         },
         onLiveMetrics: (metrics) => {
-          touchActivity(true);
-          setPhase("running");
-          setMetricsHistory((current) => {
-            const previous = current[current.length - 1];
+          setLatestMetrics((previous) => {
             if (
               previous &&
               previous.round === metrics.round &&
@@ -488,17 +286,19 @@ export default function NewCampaign() {
               previous.opened === metrics.opened &&
               previous.clicked === metrics.clicked
             ) {
-              return current;
+              return previous;
             }
-            return [...current, metrics].slice(-24);
+
+            pushMessage({
+              role: "system",
+              kind: "metrics",
+              text: `Round ${metrics.round}: sent ${formatCount(metrics.sent)}, open ${formatPercent(metrics.openRate)}, click ${formatPercent(metrics.clickRate)}.`,
+            });
+            return metrics;
           });
-        },
-        onTerminal: (text) => {
-          touchActivity();
-          enqueueTerminal(text);
+          setPhase("running");
         },
         onRoundComplete: (round) => {
-          touchActivity(true);
           setRoundHistory((current) => {
             const previous = current[current.length - 1];
             if (previous && previous.round === round.round) {
@@ -506,6 +306,15 @@ export default function NewCampaign() {
             }
             return [...current, round];
           });
+
+          pushMessage({
+            role: "system",
+            kind: "summary",
+            text: `Round ${round.round} complete. Open ${formatPercent(round.summary.openRate)} and click ${formatPercent(round.summary.clickRate)}.`,
+          });
+        },
+        onTerminal: () => {
+          // Intentionally ignored for chat-style UI.
         },
       });
 
@@ -515,1021 +324,397 @@ export default function NewCampaign() {
       setPendingPause(null);
       pauseResponderRef.current = null;
       setPhase("complete");
-      touchActivity(true);
+
+      pushMessage({
+        role: "agent",
+        agent: "Orchestrator",
+        kind: "final",
+        text: `Campaign plan is ready. Final open rate ${formatPercent(finalResult.finalOpenRate)} and click rate ${formatPercent(finalResult.finalClickRate)}.`,
+      });
     } catch (runError) {
       const message = runError instanceof Error ? runError.message : "Campaign agent execution failed.";
       setError(message);
-      setThinkingSteps((current) =>
-        pushUniqueStep(current, {
-          agent: "Orchestrator",
-          step: message,
-          kind: "final",
-        })
-      );
+      setPhase("error");
       setPendingPause(null);
       pauseResponderRef.current = null;
-      setPhase("error");
+
+      pushMessage({
+        role: "system",
+        kind: "final",
+        text: message,
+      });
     }
-  };
+  }, [pushMessage]);
+
+  const handleStart = useCallback(async () => {
+    const prompt = brief.trim();
+    if (!prompt || !canStart) return;
+
+    resetRunState();
+    setMessages([]);
+    pushMessage({ role: "user", text: prompt });
+    await runAgent(prompt);
+  }, [brief, canStart, pushMessage, resetRunState, runAgent]);
+
+  const statusText = useMemo(() => {
+    if (phase === "running") return "Agent is working";
+    if (phase === "paused") return "Waiting for your approval";
+    if (phase === "complete") return "Run complete";
+    if (phase === "error") return "Run failed";
+    return "Ready";
+  }, [phase]);
+
+  const approvalDrafts = editingDrafts ? editedDrafts : draftCards;
 
   return (
-    <div
-      className="min-h-screen pt-20 pb-14 px-4 relative overflow-hidden"
-      style={{ background: "linear-gradient(180deg, #020617 0%, #07111f 45%, #0b1729 100%)" }}
-    >
+    <div className="min-h-screen pt-20 pb-10 px-4" style={{ background: "linear-gradient(180deg, #070f19 0%, #0b1624 100%)" }}>
       <Navbar />
 
-      <div className="pointer-events-none absolute inset-0 overflow-hidden">
-        <div
-          className="absolute -top-20 left-[-8%] w-[32rem] h-[32rem] rounded-full blur-3xl"
-          style={{ background: "rgba(20, 184, 166, 0.14)" }}
-        />
-        <div
-          className="absolute top-[28%] right-[-12%] w-[34rem] h-[34rem] rounded-full blur-3xl"
-          style={{ background: "rgba(249, 115, 22, 0.12)" }}
-        />
-        <div
-          className="absolute bottom-[-12rem] left-[24%] w-[28rem] h-[28rem] rounded-full blur-3xl"
-          style={{ background: "rgba(56, 189, 248, 0.08)" }}
-        />
-      </div>
-
-      <div className="max-w-7xl mx-auto relative z-10">
-        <motion.div
-          initial={{ opacity: 0, y: -12 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="flex flex-wrap items-center gap-3 justify-between mb-8"
-        >
+      <div className="max-w-4xl mx-auto">
+        <div className="flex items-center justify-between mb-5">
           <button
             onClick={() => router.push("/dashboard")}
-            className="flex items-center gap-2 text-slate-300 hover:text-white transition-colors"
+            className="inline-flex items-center gap-2 text-slate-300 hover:text-white transition-colors"
             style={{ fontSize: "0.86rem" }}
           >
             <ArrowLeft className="w-4 h-4" />
             Back to dashboard
           </button>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <div
-              className="px-3 py-1.5 rounded-full"
-              style={{
-                background: "rgba(15,23,42,0.86)",
-                border: "1px solid rgba(148,163,184,0.16)",
-                color: "#cbd5e1",
-                fontSize: "0.76rem",
-              }}
-            >
-              WebSocket transport only
-            </div>
-            <div
-              className="px-3 py-1.5 rounded-full"
-              style={{
-                background: "rgba(15,23,42,0.86)",
-                border: "1px solid rgba(148,163,184,0.16)",
-                color: "#cbd5e1",
-                fontSize: "0.76rem",
-              }}
-            >
-              Default optimization rounds: {DEFAULT_ROUNDS}
-            </div>
+          <div
+            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full"
+            style={{
+              background: "rgba(15,23,42,0.75)",
+              border: "1px solid rgba(148,163,184,0.2)",
+              color: "#cbd5e1",
+              fontSize: "0.76rem",
+            }}
+          >
+            {phase === "running" ? <LoaderCircle className="w-3.5 h-3.5 animate-spin" /> : <Clock3 className="w-3.5 h-3.5" />}
+            {statusText}
           </div>
-        </motion.div>
+        </div>
 
-        <motion.section
-          initial={{ opacity: 0, y: 18 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="rounded-[36px] p-6 md:p-8 mb-6"
-          style={{
-            background: "linear-gradient(135deg, rgba(10,25,47,0.96) 0%, rgba(15,23,42,0.96) 42%, rgba(8,47,73,0.88) 100%)",
-            border: "1px solid rgba(148,163,184,0.18)",
-            boxShadow: "0 30px 90px rgba(2, 6, 23, 0.45)",
-          }}
-        >
-          <div className="grid xl:grid-cols-[1.2fr,0.8fr] gap-8 items-start">
-            <div>
-              <div className="uppercase tracking-[0.24em] text-teal-300" style={{ fontSize: "0.72rem" }}>
-                Agent control room
-              </div>
-              <h1
-                className="text-white mt-3 max-w-3xl"
-                style={{ fontSize: "clamp(2rem, 4vw, 3.6rem)", lineHeight: 1.02, fontWeight: 800 }}
-              >
-                Frontend now brokers only the live agent stream.
-              </h1>
-              <p className="text-slate-300 mt-4 max-w-2xl" style={{ fontSize: "0.98rem", lineHeight: 1.75 }}>
-                The browser no longer generates content, picks models, or runs LangGraph logic. It opens the agent
-                websocket, renders reasoning, pauses at human checkpoints, sends your approval back, and shows final
-                campaign output when the agents runtime is done.
-              </p>
-            </div>
-
-            <div
-              className="rounded-[28px] p-5"
+        {!hasConversation ? (
+          <div className="min-h-[68vh] flex items-center justify-center">
+            <motion.section
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="w-full rounded-[30px] p-6 md:p-8"
               style={{
-                background: "rgba(3, 10, 20, 0.74)",
-                border: `1px solid ${currentPalette.border}`,
+                background: "linear-gradient(135deg, rgba(8,18,33,0.96) 0%, rgba(12,25,42,0.95) 100%)",
+                border: "1px solid rgba(148,163,184,0.2)",
+                boxShadow: "0 30px 80px rgba(2, 6, 23, 0.45)",
               }}
             >
-              <div className="flex items-center justify-between gap-4">
-                <div>
-                  <div className="text-slate-400 uppercase tracking-[0.18em]" style={{ fontSize: "0.64rem" }}>
-                    Current run state
-                  </div>
-                  <div className="text-white mt-2" style={{ fontSize: "1.2rem", fontWeight: 700 }}>
-                    {phaseLabel(phase)}
-                  </div>
+              <div className="text-center mb-7">
+                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-sky-200" style={{ background: "rgba(14,116,144,0.2)", fontSize: "0.74rem" }}>
+                  <Sparkles className="w-3.5 h-3.5" />
+                  Campaign Assistant
                 </div>
-                <div
-                  className="px-3 py-1.5 rounded-full"
-                  style={{
-                    background: currentPalette.bg,
-                    border: `1px solid ${currentPalette.border}`,
-                    color: currentPalette.text,
-                    fontSize: "0.76rem",
-                  }}
-                >
-                  {phase.toUpperCase()}
-                </div>
+                <h1 className="text-white mt-4" style={{ fontSize: "clamp(1.7rem, 3.6vw, 2.6rem)", fontWeight: 800 }}>
+                  Start with one prompt
+                </h1>
+                <p className="text-slate-300 mt-2" style={{ fontSize: "0.95rem" }}>
+                  Enter your campaign brief and watch the agent thinking and approvals in chat.
+                </p>
               </div>
 
-              <div className="grid grid-cols-3 gap-3 mt-5">
-                <StatTile
-                  label="Audience"
-                  value={formatCount(result?.customerCount ?? latestMetrics?.sent)}
-                  hint="Tracked from agents"
-                  accent="#2dd4bf"
-                  icon={Users}
+              <div className="rounded-[20px] p-3" style={{ background: "rgba(15,23,42,0.72)", border: "1px solid rgba(148,163,184,0.2)" }}>
+                <textarea
+                  value={brief}
+                  onChange={(event) => setBrief(event.target.value)}
+                  rows={5}
+                  className="w-full bg-transparent text-slate-100 placeholder:text-slate-500 outline-none resize-none px-3 py-2"
+                  placeholder="Describe the campaign goal, audience, constraints, and CTA."
+                  style={{ fontSize: "0.94rem", lineHeight: 1.65 }}
                 />
-                <StatTile
-                  label="Open rate"
-                  value={formatPercent(result?.finalOpenRate ?? latestMetrics?.openRate)}
-                  hint="Live performance"
-                  accent="#38bdf8"
-                  icon={TrendingUp}
-                />
-                <StatTile
-                  label="Click rate"
-                  value={formatPercent(result?.finalClickRate ?? latestMetrics?.clickRate)}
-                  hint="Live performance"
-                  accent="#fb7185"
-                  icon={Activity}
-                />
+                <div className="flex justify-between items-center px-2 pb-1">
+                  <button
+                    onClick={() => setBrief(DEFAULT_BRIEF)}
+                    className="text-slate-400 hover:text-white transition-colors"
+                    style={{ fontSize: "0.78rem" }}
+                  >
+                    Use sample prompt
+                  </button>
+                  <motion.button
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    onClick={() => void handleStart()}
+                    disabled={!canStart}
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-white disabled:opacity-45 disabled:cursor-not-allowed"
+                    style={{ background: "linear-gradient(135deg, #0ea5e9 0%, #2563eb 100%)", fontSize: "0.84rem", fontWeight: 700 }}
+                  >
+                    <Send className="w-4 h-4" />
+                    Send prompt
+                  </motion.button>
+                </div>
               </div>
-            </div>
+            </motion.section>
           </div>
-        </motion.section>
-
-        <div className="grid xl:grid-cols-[1.25fr,0.75fr] gap-6 items-start">
-          <div className="space-y-6">
-            <Surface
-              eyebrow="Mission brief"
-              title="Campaign objective"
-              right={
-                <div className="flex items-center gap-2 text-slate-300" style={{ fontSize: "0.74rem" }}>
-                  <ShieldCheck className="w-4 h-4 text-teal-300" />
-                  agents/.env only
-                </div>
-              }
+        ) : (
+          <>
+            <div
+              ref={chatRef}
+              className="rounded-[28px] p-4 md:p-6 h-[66vh] overflow-y-auto"
+              style={{
+                background: "linear-gradient(180deg, rgba(8,18,33,0.94) 0%, rgba(11,24,40,0.95) 100%)",
+                border: "1px solid rgba(148,163,184,0.2)",
+              }}
             >
-              <textarea
-                value={brief}
-                onChange={(event) => setBrief(event.target.value)}
-                disabled={phase === "running" || phase === "paused"}
-                className="w-full min-h-[12rem] resize-none rounded-[24px] p-5 outline-none"
-                style={{
-                  background: "rgba(2, 6, 23, 0.86)",
-                  border: "1px solid rgba(148,163,184,0.16)",
-                  color: "#e2e8f0",
-                  fontSize: "0.95rem",
-                  lineHeight: 1.8,
-                }}
-              />
-
-              <div className="mt-5 flex flex-wrap gap-3">
-                <motion.button
-                  whileHover={canStart ? { scale: 1.02 } : {}}
-                  whileTap={canStart ? { scale: 0.98 } : {}}
-                  onClick={handleStart}
-                  disabled={!canStart}
-                  className="inline-flex items-center gap-2 px-5 py-3 rounded-[18px] text-white"
-                  style={{
-                    background: canStart
-                      ? "linear-gradient(135deg, #14b8a6 0%, #0ea5e9 100%)"
-                      : "rgba(51,65,85,0.55)",
-                    border: "1px solid rgba(148,163,184,0.16)",
-                    fontSize: "0.9rem",
-                    fontWeight: 600,
-                    cursor: canStart ? "pointer" : "not-allowed",
-                    opacity: canStart ? 1 : 0.6,
-                  }}
-                >
-                  <Play className="w-4 h-4" />
-                  Start agent run
-                </motion.button>
-
-                <button
-                  onClick={resetRun}
-                  disabled={phase === "running" || phase === "paused"}
-                  className="inline-flex items-center gap-2 px-5 py-3 rounded-[18px] text-slate-200"
-                  style={{
-                    background: "rgba(15,23,42,0.82)",
-                    border: "1px solid rgba(148,163,184,0.16)",
-                    fontSize: "0.9rem",
-                    opacity: phase === "running" || phase === "paused" ? 0.5 : 1,
-                    cursor: phase === "running" || phase === "paused" ? "not-allowed" : "pointer",
-                  }}
-                >
-                  <RefreshCw className="w-4 h-4" />
-                  Reset board
-                </button>
-              </div>
-            </Surface>
-
-            <AIProcessing
-              steps={thinkingSteps}
-              isComplete={phase === "complete"}
-              isIdle={isIdle}
-              title="Campaign Agent Thinking"
-            />
-
-            {(phase !== "idle" || displayedTerminal) && (
-              <section
-                className="rounded-[28px] overflow-hidden"
-                style={{
-                  background: "linear-gradient(180deg, rgba(2,6,15,0.96) 0%, rgba(4,10,19,0.99) 100%)",
-                  border: "1px solid rgba(148,163,184,0.14)",
-                  boxShadow: "0 16px 60px rgba(2, 6, 23, 0.3)",
-                }}
-              >
-                <button
-                  type="button"
-                  onClick={() => setTerminalOpen((o) => !o)}
-                  className="w-full px-6 py-4 flex items-center justify-between"
-                  style={{
-                    borderBottom: terminalOpen ? "1px solid rgba(148,163,184,0.1)" : "none",
-                    background: "rgba(15,23,42,0.6)",
-                  }}
-                >
-                  <div className="flex items-center gap-3">
-                    <div
-                      className="w-9 h-9 rounded-xl flex items-center justify-center"
-                      style={{ background: "rgba(16,185,129,0.14)", border: "1px solid rgba(16,185,129,0.2)" }}
-                    >
-                      <Terminal className="w-4 h-4 text-emerald-400" />
-                    </div>
-                    <div>
-                      <div className="text-white tracking-[0.14em] uppercase" style={{ fontSize: "0.68rem" }}>
-                        Live process output
-                      </div>
-                      <div className="text-slate-300 mt-0.5" style={{ fontSize: "0.84rem", fontWeight: 600 }}>
-                        Agent Terminal
-                      </div>
-                    </div>
-                  </div>
-                  <motion.div animate={{ rotate: terminalOpen ? 90 : 0 }} transition={{ duration: 0.2 }}>
-                    <ChevronRight className="w-4 h-4 text-slate-400" />
-                  </motion.div>
-                </button>
-
+              <div className="space-y-4">
                 <AnimatePresence initial={false}>
-                  {terminalOpen && (
-                    <motion.div
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: "auto", opacity: 1 }}
-                      exit={{ height: 0, opacity: 0 }}
-                      transition={{ duration: 0.25, ease: "easeInOut" }}
-                      style={{ overflow: "hidden" }}
-                    >
-                      <pre
-                        ref={terminalRef}
-                        className="px-5 py-4 max-h-[24rem] overflow-y-auto"
-                        style={{
-                          fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace",
-                          fontSize: "0.78rem",
-                          lineHeight: 1.7,
-                          color: "#94a3b8",
-                          whiteSpace: "pre-wrap",
-                          wordBreak: "break-word",
-                          margin: 0,
-                          background: "transparent",
-                        }}
+                  {messages.map((message) => {
+                    const isUser = message.role === "user";
+                    return (
+                      <motion.div
+                        key={message.id}
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -6 }}
+                        transition={{ duration: 0.2 }}
+                        className={`flex ${isUser ? "justify-end" : "justify-start"}`}
                       >
-                        {displayedTerminal ? (
-                          <>
-                            {displayedTerminal}
-                            {phase === "running" && (
-                              <motion.span
-                                animate={{ opacity: [1, 0, 1] }}
-                                transition={{ duration: 0.8, repeat: Infinity }}
-                                style={{ color: "#2dd4bf" }}
+                        <div
+                          className="max-w-[92%] md:max-w-[80%] rounded-2xl px-4 py-3"
+                          style={{
+                            background: isUser
+                              ? "linear-gradient(135deg, rgba(37,99,235,0.9) 0%, rgba(14,116,144,0.9) 100%)"
+                              : "rgba(15,23,42,0.82)",
+                            border: isUser ? "1px solid rgba(125,211,252,0.3)" : "1px solid rgba(148,163,184,0.2)",
+                          }}
+                        >
+                          <div className="flex items-center gap-2 mb-2">
+                            <span className="inline-flex items-center gap-1.5 text-slate-200" style={{ fontSize: "0.72rem" }}>
+                              {isUser ? <User className="w-3.5 h-3.5" /> : <Bot className="w-3.5 h-3.5" />}
+                              {isUser ? "You" : message.agent || "Agent"}
+                            </span>
+                            {!isUser && (
+                              <span
+                                className="px-2 py-0.5 rounded-full"
+                                style={{
+                                  fontSize: "0.66rem",
+                                  color: "#a5f3fc",
+                                  background: "rgba(8,145,178,0.2)",
+                                  border: "1px solid rgba(34,211,238,0.28)",
+                                }}
                               >
-                                ▋
-                              </motion.span>
+                                {kindLabel(message.kind)}
+                              </span>
                             )}
-                          </>
-                        ) : (
-                          <span style={{ color: "#475569" }}>
-                            Waiting for agent process output...
-                          </span>
-                        )}
-                      </pre>
-                    </motion.div>
-                  )}
+                          </div>
+                          <p className="text-slate-100 whitespace-pre-wrap" style={{ fontSize: "0.87rem", lineHeight: 1.65 }}>
+                            {message.text}
+                          </p>
+                        </div>
+                      </motion.div>
+                    );
+                  })}
                 </AnimatePresence>
-              </section>
-            )}
 
-            {result && (
-              <Surface
-                eyebrow="Final output"
-                title="Strategy and campaign result"
-                right={
-                  result.savedCampaignId ? (
-                    <button
-                      onClick={() => router.push(`/campaign/${result.savedCampaignId}/analysis`)}
-                      className="inline-flex items-center gap-2 px-4 py-2 rounded-[16px] text-slate-100"
-                      style={{
-                        background: "rgba(20,184,166,0.14)",
-                        border: "1px solid rgba(20,184,166,0.24)",
-                        fontSize: "0.76rem",
-                      }}
-                    >
-                      Open analysis
-                      <ArrowRight className="w-4 h-4" />
-                    </button>
-                  ) : null
-                }
-              >
-                <div className="grid md:grid-cols-2 gap-4">
-                  <div
-                    className="rounded-[24px] p-5"
-                    style={{ background: "rgba(15,23,42,0.7)", border: "1px solid rgba(148,163,184,0.14)" }}
+                {phase === "running" && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="flex justify-start"
                   >
-                    <div className="flex items-center gap-2 text-teal-300 mb-3" style={{ fontSize: "0.74rem" }}>
-                      <BrainCircuit className="w-4 h-4" />
-                      Strategy summary
-                    </div>
-                    <p className="text-slate-100 whitespace-pre-wrap" style={{ fontSize: "0.88rem", lineHeight: 1.8 }}>
-                      {result.strategyReasoning ||
-                        result.strategy ||
-                        "The agent completed the workflow and returned the final campaign package."}
-                    </p>
-                  </div>
-
-                  <div className="grid gap-4">
-                    <div
-                      className="rounded-[24px] p-5"
-                      style={{ background: "rgba(15,23,42,0.7)", border: "1px solid rgba(148,163,184,0.14)" }}
-                    >
-                      <div className="text-slate-400 uppercase tracking-[0.16em]" style={{ fontSize: "0.64rem" }}>
-                        Final rates
-                      </div>
-                      <div className="grid grid-cols-2 gap-3 mt-4">
-                        <div>
-                          <div className="text-white" style={{ fontSize: "1.5rem", fontWeight: 700 }}>
-                            {formatPercent(result.finalOpenRate)}
-                          </div>
-                          <div className="text-slate-400 mt-1" style={{ fontSize: "0.74rem" }}>
-                            Final open rate
-                          </div>
-                        </div>
-                        <div>
-                          <div className="text-white" style={{ fontSize: "1.5rem", fontWeight: 700 }}>
-                            {formatPercent(result.finalClickRate)}
-                          </div>
-                          <div className="text-slate-400 mt-1" style={{ fontSize: "0.74rem" }}>
-                            Final click rate
-                          </div>
-                        </div>
+                    <div className="rounded-2xl px-4 py-3" style={{ background: "rgba(15,23,42,0.82)", border: "1px solid rgba(148,163,184,0.2)" }}>
+                      <div className="flex items-center gap-2 text-slate-200" style={{ fontSize: "0.78rem" }}>
+                        <Bot className="w-3.5 h-3.5" />
+                        Agent thinking
+                        <TypingDots />
                       </div>
                     </div>
+                  </motion.div>
+                )}
 
-                    <div
-                      className="rounded-[24px] p-5"
-                      style={{ background: "rgba(15,23,42,0.7)", border: "1px solid rgba(148,163,184,0.14)" }}
-                    >
-                      <div className="text-slate-400 uppercase tracking-[0.16em]" style={{ fontSize: "0.64rem" }}>
-                        Delivery footprint
-                      </div>
-                      <div className="flex items-end gap-6 mt-4">
-                        <div>
-                          <div className="text-white" style={{ fontSize: "1.5rem", fontWeight: 700 }}>
-                            {formatCount(result.customerCount)}
-                          </div>
-                          <div className="text-slate-400 mt-1" style={{ fontSize: "0.74rem" }}>
-                            Total customers
-                          </div>
-                        </div>
-                        <div>
-                          <div className="text-white" style={{ fontSize: "1.5rem", fontWeight: 700 }}>
-                            {formatCount(result.metricsProgression.length)}
-                          </div>
-                          <div className="text-slate-400 mt-1" style={{ fontSize: "0.74rem" }}>
-                            Completed rounds
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </Surface>
-            )}
-          </div>
-
-          <div className="space-y-6">
-            <Surface
-              eyebrow="Run telemetry"
-              title="Mission state"
-              right={
-                <div
-                  className="px-3 py-1.5 rounded-full"
-                  style={{
-                    background: currentPalette.bg,
-                    border: `1px solid ${currentPalette.border}`,
-                    color: currentPalette.text,
-                    fontSize: "0.74rem",
-                  }}
-                >
-                  {phaseLabel(phase)}
-                </div>
-              }
-            >
-              <div className="grid grid-cols-2 gap-3">
-                <StatTile
-                  label="Reasoning steps"
-                  value={formatCount(thinkingSteps.length)}
-                  hint="Structured events"
-                  accent="#2dd4bf"
-                  icon={Workflow}
-                />
-                <StatTile
-                  label="Live rounds"
-                  value={formatCount(roundHistory.length)}
-                  hint="Closed rounds"
-                  accent="#f59e0b"
-                  icon={Clock3}
-                />
-                <StatTile
-                  label="Categories"
-                  value={formatCount(displayedSegments.length)}
-                  hint="Approval-ready groups"
-                  accent="#38bdf8"
-                  icon={Layers3}
-                />
-                <StatTile
-                  label="Drafts"
-                  value={formatCount(displayedDrafts.length)}
-                  hint="Audience messages"
-                  accent="#fb7185"
-                  icon={Mail}
-                />
-              </div>
-            </Surface>
-
-            <AnimatePresence initial={false}>
-              {pendingPause && (
-                <motion.div
-                  key={pendingPause.pauseType}
-                  initial={{ opacity: 0, y: 14 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -10 }}
-                >
-                  <Surface
-                    eyebrow="Human checkpoint"
-                    title={pendingPause.title || "Approval required"}
-                    right={<PauseCircle className="w-5 h-5 text-orange-300" />}
+                {pendingPause && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="rounded-2xl p-4"
+                    style={{
+                      background: "rgba(124,45,18,0.22)",
+                      border: "1px solid rgba(251,146,60,0.35)",
+                    }}
                   >
-                    <p className="text-slate-300" style={{ fontSize: "0.86rem", lineHeight: 1.7 }}>
-                      {pendingPause.message ||
-                        "The agent has paused and is waiting for your decision before continuing."}
-                    </p>
+                    <div className="text-amber-200" style={{ fontSize: "0.82rem", fontWeight: 700 }}>
+                      {pendingPause.title || "Approval required"}
+                    </div>
+                    {pendingPause.message && (
+                      <p className="text-amber-100 mt-1" style={{ fontSize: "0.8rem", lineHeight: 1.6 }}>
+                        {pendingPause.message}
+                      </p>
+                    )}
 
-                    {pendingPause.pauseType === "next_round" && pendingPause.metrics && (
-                      <div className="grid grid-cols-3 gap-3 mt-5">
-                        <StatTile
-                          label="Audience"
-                          value={formatCount(pendingPause.metrics.audience)}
-                          hint="Current round"
-                          accent="#2dd4bf"
-                          icon={Users}
-                        />
-                        <StatTile
-                          label="Open"
-                          value={formatPercent(pendingPause.metrics.openRate)}
-                          hint="Current round"
-                          accent="#38bdf8"
-                          icon={TrendingUp}
-                        />
-                        <StatTile
-                          label="Click"
-                          value={formatPercent(pendingPause.metrics.clickRate)}
-                          hint="Current round"
-                          accent="#fb7185"
-                          icon={Activity}
-                        />
+                    {segmentCards.length > 0 && (
+                      <div className="grid gap-2 mt-3">
+                        {segmentCards.map((segment) => (
+                          <div key={segment.segmentId} className="rounded-xl p-3" style={{ background: "rgba(2,6,23,0.65)", border: "1px solid rgba(251,191,36,0.2)" }}>
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="text-slate-100" style={{ fontSize: "0.8rem", fontWeight: 600 }}>{segment.name}</div>
+                              <div className="text-slate-300" style={{ fontSize: "0.72rem" }}>{formatCount(segment.size)} customers</div>
+                            </div>
+                            <p className="text-slate-300 mt-1" style={{ fontSize: "0.74rem" }}>{segment.criteria || segment.focus || "Segment details available."}</p>
+                          </div>
+                        ))}
                       </div>
                     )}
 
-                    <div className="mt-5 flex flex-wrap gap-3">
-                      <motion.button
-                        whileHover={{ scale: 1.02 }}
-                        whileTap={{ scale: 0.98 }}
-                        onClick={handleApprove}
-                        className="inline-flex items-center gap-2 px-5 py-3 rounded-[18px] text-white"
-                        style={{
-                          background: "linear-gradient(135deg, #14b8a6 0%, #0ea5e9 100%)",
-                          fontSize: "0.88rem",
-                          fontWeight: 600,
-                        }}
-                      >
-                        <CheckCircle2 className="w-4 h-4" />
-                        {pendingPause.pauseType === "next_round"
-                          ? "Run next round"
-                          : editingDrafts
-                            ? "Save & approve"
-                            : "Approve all"}
-                      </motion.button>
-
-                      {pendingPause.pauseType === "content_approval" && !editingDrafts && (
-                        <motion.button
-                          whileHover={{ scale: 1.02 }}
-                          whileTap={{ scale: 0.98 }}
-                          onClick={handleEditDrafts}
-                          className="inline-flex items-center gap-2 px-5 py-3 rounded-[18px] text-slate-100"
-                          style={{
-                            background: "rgba(99,102,241,0.16)",
-                            border: "1px solid rgba(129,140,248,0.28)",
-                            fontSize: "0.88rem",
-                            fontWeight: 600,
-                          }}
-                        >
-                          <Pencil className="w-4 h-4" />
-                          Edit drafts
-                        </motion.button>
-                      )}
-
-                      {pendingPause.pauseType === "content_approval" && editingDrafts && (
-                        <button
-                          onClick={handleCancelEdit}
-                          className="inline-flex items-center gap-2 px-5 py-3 rounded-[18px] text-slate-300"
-                          style={{
-                            background: "rgba(148,163,184,0.1)",
-                            border: "1px solid rgba(148,163,184,0.2)",
-                            fontSize: "0.88rem",
-                          }}
-                        >
-                          Cancel edit
-                        </button>
-                      )}
-
-                      {pendingPause.pauseType === "next_round" && (
-                        <button
-                          onClick={handleStopOptimization}
-                          className="inline-flex items-center gap-2 px-5 py-3 rounded-[18px] text-slate-100"
-                          style={{
-                            background: "rgba(127,29,29,0.22)",
-                            border: "1px solid rgba(248,113,113,0.24)",
-                            fontSize: "0.88rem",
-                          }}
-                        >
-                          <XCircle className="w-4 h-4" />
-                          Stop here
-                        </button>
-                      )}
-                    </div>
-                  </Surface>
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            <Surface
-              eyebrow="Audience map"
-              title="Customer categories"
-              right={<Users className="w-5 h-5 text-teal-300" />}
-            >
-              {displayedSegments.length === 0 ? (
-                <div
-                  className="rounded-[24px] p-5 text-slate-400"
-                  style={{ background: "rgba(15,23,42,0.56)", border: "1px dashed rgba(148,163,184,0.16)" }}
-                >
-                  Categories appear here after the segment approval checkpoint.
-                </div>
-              ) : (
-                <div className="grid gap-3">
-                  {displayedSegments.map((segment) => (
-                    <div
-                      key={segment.segmentId}
-                      className="rounded-[24px] p-4"
-                      style={{ background: "rgba(15,23,42,0.58)", border: "1px solid rgba(148,163,184,0.12)" }}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <div className="text-white" style={{ fontSize: "0.9rem", fontWeight: 600 }}>
-                            {segment.name}
+                    {approvalDrafts.length > 0 && (
+                      <div className="grid gap-2 mt-3">
+                        {approvalDrafts.map((draft, index) => (
+                          <div key={`${draft.segmentId}-${index}`} className="rounded-xl p-3" style={{ background: "rgba(2,6,23,0.65)", border: "1px solid rgba(251,191,36,0.2)" }}>
+                            <div className="text-slate-100" style={{ fontSize: "0.8rem", fontWeight: 600 }}>{draft.segmentName}</div>
+                            <div className="mt-2">
+                              <div className="text-slate-400" style={{ fontSize: "0.66rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>Subject</div>
+                              {editingDrafts ? (
+                                <input
+                                  value={draft.subject}
+                                  onChange={(event) => updateEditedDraft(index, "subject", event.target.value)}
+                                  className="w-full mt-1 px-2.5 py-1.5 rounded-lg bg-slate-800/80 text-slate-100 outline-none"
+                                  style={{ border: "1px solid rgba(148,163,184,0.35)", fontSize: "0.78rem" }}
+                                />
+                              ) : (
+                                <div className="text-slate-100 mt-1" style={{ fontSize: "0.78rem", fontWeight: 600 }}>{draft.subject}</div>
+                              )}
+                            </div>
+                            <div className="mt-2">
+                              <div className="text-slate-400" style={{ fontSize: "0.66rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>Body</div>
+                              {editingDrafts ? (
+                                <textarea
+                                  value={draft.body}
+                                  onChange={(event) => updateEditedDraft(index, "body", event.target.value)}
+                                  rows={4}
+                                  className="w-full mt-1 px-2.5 py-1.5 rounded-lg bg-slate-800/80 text-slate-200 outline-none resize-y"
+                                  style={{ border: "1px solid rgba(148,163,184,0.35)", fontSize: "0.76rem", lineHeight: 1.5 }}
+                                />
+                              ) : (
+                                <p className="text-slate-300 mt-1 line-clamp-4" style={{ fontSize: "0.75rem", lineHeight: 1.55 }}>{draft.body}</p>
+                              )}
+                            </div>
                           </div>
-                          <div className="text-slate-400 mt-1" style={{ fontSize: "0.74rem" }}>
-                            {formatCount(segment.size)} customers
-                          </div>
-                        </div>
-                        <div className="flex flex-wrap gap-2 justify-end">
-                          {segment.tier && (
-                            <span
-                              className="px-2 py-1 rounded-full"
-                              style={{ background: "rgba(20,184,166,0.12)", color: "#99f6e4", fontSize: "0.68rem" }}
-                            >
-                              {segment.tier}
-                            </span>
-                          )}
-                          {segment.tone && (
-                            <span
-                              className="px-2 py-1 rounded-full"
-                              style={{ background: "rgba(56,189,248,0.12)", color: "#7dd3fc", fontSize: "0.68rem" }}
-                            >
-                              {segment.tone}
-                            </span>
-                          )}
-                        </div>
+                        ))}
                       </div>
-                      <p className="text-slate-300 mt-3" style={{ fontSize: "0.8rem", lineHeight: 1.7 }}>
-                        {segment.criteria || segment.focus || "Criteria not provided by the agent."}
-                      </p>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </Surface>
+                    )}
 
-            <Surface
-              eyebrow="Content approval"
-              title="Audience drafts"
-              right={<Send className="w-5 h-5 text-rose-300" />}
-            >
-              {displayedDrafts.length === 0 ? (
-                <div
-                  className="rounded-[24px] p-5 text-slate-400"
-                  style={{ background: "rgba(15,23,42,0.56)", border: "1px dashed rgba(148,163,184,0.16)" }}
-                >
-                  Drafts appear here when the agent reaches the content approval checkpoint.
-                </div>
-              ) : (
-                <div className="grid gap-3">
-                  {(editingDrafts ? editedDrafts : displayedDrafts).map((draft, index) => (
-                    <div
-                      key={`${draft.segmentId}-${index}`}
-                      className="rounded-[24px] p-4"
-                      style={{ background: "rgba(15,23,42,0.58)", border: `1px solid ${editingDrafts ? "rgba(129,140,248,0.28)" : "rgba(148,163,184,0.12)"}` }}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <div className="text-white" style={{ fontSize: "0.9rem", fontWeight: 600 }}>
-                            {draft.segmentName}
-                          </div>
-                          <div className="text-slate-400 mt-1" style={{ fontSize: "0.74rem" }}>
-                            {editingDrafts ? "Editing — change subject and body below" : "Subject line ready for approval"}
-                          </div>
-                        </div>
-                        {draft.tone && (
-                          <span
-                            className="px-2 py-1 rounded-full"
-                            style={{ background: "rgba(251,113,133,0.12)", color: "#fda4af", fontSize: "0.68rem" }}
+                    <div className="flex flex-wrap gap-2 mt-4">
+                      {pendingPause.pauseType === "next_round" ? (
+                        <>
+                          <button
+                            onClick={handleApprove}
+                            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-white"
+                            style={{ background: "linear-gradient(135deg, #16a34a 0%, #15803d 100%)", fontSize: "0.76rem", fontWeight: 700 }}
                           >
-                            {draft.tone}
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="mt-4 rounded-[20px] p-4" style={{ background: "rgba(2,6,23,0.78)" }}>
-                        <div className="text-slate-500 uppercase tracking-[0.16em]" style={{ fontSize: "0.64rem" }}>
-                          Subject
-                        </div>
-                        {editingDrafts ? (
-                          <input
-                            value={draft.subject}
-                            onChange={(e) => updateEditedDraft(index, "subject", e.target.value)}
-                            className="w-full mt-2 px-3 py-2 rounded-[12px] text-slate-100 outline-none"
-                            style={{
-                              background: "rgba(30,41,59,0.8)",
-                              border: "1px solid rgba(129,140,248,0.3)",
-                              fontSize: "0.84rem",
-                              fontWeight: 600,
-                            }}
-                          />
-                        ) : (
-                          <div className="text-slate-100 mt-2" style={{ fontSize: "0.84rem", fontWeight: 600 }}>
-                            {draft.subject}
-                          </div>
-                        )}
-                        <div
-                          className="text-slate-500 uppercase tracking-[0.16em] mt-4"
-                          style={{ fontSize: "0.64rem" }}
-                        >
-                          Body preview
-                        </div>
-                        {editingDrafts ? (
-                          <textarea
-                            value={draft.body}
-                            onChange={(e) => updateEditedDraft(index, "body", e.target.value)}
-                            rows={6}
-                            className="w-full mt-2 px-3 py-2 rounded-[12px] text-slate-300 outline-none resize-y"
-                            style={{
-                              background: "rgba(30,41,59,0.8)",
-                              border: "1px solid rgba(129,140,248,0.3)",
-                              fontSize: "0.8rem",
-                              lineHeight: 1.7,
-                            }}
-                          />
-                        ) : (
-                          <p
-                            className="text-slate-300 mt-2 whitespace-pre-wrap line-clamp-5"
-                            style={{ fontSize: "0.8rem", lineHeight: 1.7 }}
+                            <Play className="w-4 h-4" />
+                            Continue
+                          </button>
+                          <button
+                            onClick={handleReject}
+                            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-white"
+                            style={{ background: "linear-gradient(135deg, #f97316 0%, #c2410c 100%)", fontSize: "0.76rem", fontWeight: 700 }}
                           >
-                            {draft.body}
-                          </p>
-                        )}
-                      </div>
-
-                      {draft.tags && draft.tags.length > 0 && (
-                        <div className="flex flex-wrap gap-2 mt-3">
-                          {draft.tags.slice(0, 4).map((tag) => (
-                            <span
-                              key={tag}
-                              className="px-2 py-1 rounded-full"
-                              style={{ background: "rgba(45,212,191,0.1)", color: "#99f6e4", fontSize: "0.66rem" }}
+                            <StopCircle className="w-4 h-4" />
+                            Stop here
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          {pendingPause.pauseType === "content_approval" && (
+                            <button
+                              onClick={editingDrafts ? handleCancelEdit : handleEditDrafts}
+                              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-slate-100"
+                              style={{ background: "rgba(30,41,59,0.8)", border: "1px solid rgba(148,163,184,0.35)", fontSize: "0.76rem", fontWeight: 700 }}
                             >
-                              {tag}
-                            </span>
-                          ))}
-                        </div>
+                              <Pencil className="w-4 h-4" />
+                              {editingDrafts ? "Cancel edit" : "Edit drafts"}
+                            </button>
+                          )}
+                          <button
+                            onClick={handleApprove}
+                            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-white"
+                            style={{ background: "linear-gradient(135deg, #16a34a 0%, #15803d 100%)", fontSize: "0.76rem", fontWeight: 700 }}
+                          >
+                            <CheckCircle2 className="w-4 h-4" />
+                            Approve
+                          </button>
+                          <button
+                            onClick={handleReject}
+                            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-white"
+                            style={{ background: "linear-gradient(135deg, #ef4444 0%, #b91c1c 100%)", fontSize: "0.76rem", fontWeight: 700 }}
+                          >
+                            <XCircle className="w-4 h-4" />
+                            Reject
+                          </button>
+                        </>
                       )}
                     </div>
-                  ))}
-                </div>
-              )}
-            </Surface>
-          </div>
-        </div>
-
-        <div className="grid xl:grid-cols-[1fr,0.9fr] gap-6 mt-6">
-          <Surface
-            eyebrow="Live telemetry"
-            title="Performance stream"
-            right={<Radar className="w-5 h-5 text-cyan-300" />}
-          >
-            {!latestMetrics ? (
-              <div
-                className="rounded-[24px] p-5 text-slate-400"
-                style={{ background: "rgba(15,23,42,0.56)", border: "1px dashed rgba(148,163,184,0.16)" }}
-              >
-                Live open and click updates will land here once the agent starts dispatching.
-              </div>
-            ) : (
-              <>
-                <div className="grid md:grid-cols-3 gap-3 mb-4">
-                  <StatTile
-                    label="Sent"
-                    value={formatCount(latestMetrics.sent)}
-                    hint={`Round ${latestMetrics.round}`}
-                    accent="#2dd4bf"
-                    icon={Send}
-                  />
-                  <StatTile
-                    label="Opened"
-                    value={formatCount(latestMetrics.opened)}
-                    hint={formatPercent(latestMetrics.openRate)}
-                    accent="#38bdf8"
-                    icon={TrendingUp}
-                  />
-                  <StatTile
-                    label="Clicked"
-                    value={formatCount(latestMetrics.clicked)}
-                    hint={formatPercent(latestMetrics.clickRate)}
-                    accent="#fb7185"
-                    icon={Activity}
-                  />
-                </div>
-
-                <div className="grid gap-3">
-                  {latestMetrics.bySegment.map((segment) => (
-                    <div
-                      key={`${latestMetrics.round}-${segment.segmentName}`}
-                      className="rounded-[24px] p-4"
-                      style={{ background: "rgba(15,23,42,0.58)", border: "1px solid rgba(148,163,184,0.12)" }}
-                    >
-                      <div className="flex flex-wrap items-center justify-between gap-3">
-                        <div>
-                          <div className="text-white" style={{ fontSize: "0.86rem", fontWeight: 600 }}>
-                            {segment.segmentName}
-                          </div>
-                          <div className="text-slate-400 mt-1" style={{ fontSize: "0.72rem" }}>
-                            {formatCount(segment.sent)} delivered in this stream snapshot
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-4">
-                          <div className="text-right">
-                            <div className="text-slate-100" style={{ fontSize: "0.84rem", fontWeight: 600 }}>
-                              {formatPercent(segment.openRate)}
-                            </div>
-                            <div className="text-slate-500" style={{ fontSize: "0.66rem" }}>
-                              Open
-                            </div>
-                          </div>
-                          <div className="text-right">
-                            <div className="text-slate-100" style={{ fontSize: "0.84rem", fontWeight: 600 }}>
-                              {formatPercent(segment.clickRate)}
-                            </div>
-                            <div className="text-slate-500" style={{ fontSize: "0.66rem" }}>
-                              Click
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
-          </Surface>
-
-          <Surface
-            eyebrow="Virtual testing trace"
-            title="Round history"
-            right={<Sparkles className="w-5 h-5 text-amber-300" />}
-          >
-            {roundHistory.length === 0 ? (
-              <div
-                className="rounded-[24px] p-5 text-slate-400"
-                style={{ background: "rgba(15,23,42,0.56)", border: "1px dashed rgba(148,163,184,0.16)" }}
-              >
-                Completed round summaries appear here after each virtual testing pass.
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {roundHistory.map((round) => (
-                  <div
-                    key={round.round}
-                    className="rounded-[24px] p-4"
-                    style={{ background: "rgba(15,23,42,0.58)", border: "1px solid rgba(148,163,184,0.12)" }}
-                  >
-                    <div className="flex items-center justify-between gap-4">
-                      <div>
-                        <div className="text-white" style={{ fontSize: "0.88rem", fontWeight: 600 }}>
-                          Virtual testing round {round.round}
-                        </div>
-                        <div className="text-slate-400 mt-1" style={{ fontSize: "0.72rem" }}>
-                          {formatCount(round.summary.audience)} audience across {round.summary.segments} groups
-                        </div>
-                      </div>
-                      <ChevronRight className="w-4 h-4 text-slate-500" />
-                    </div>
-                    <div className="grid grid-cols-2 gap-3 mt-4">
-                      <div
-                        className="rounded-[18px] p-3"
-                        style={{ background: "rgba(14,116,144,0.12)", border: "1px solid rgba(56,189,248,0.16)" }}
-                      >
-                        <div className="text-white" style={{ fontSize: "1.05rem", fontWeight: 700 }}>
-                          {formatPercent(round.summary.openRate)}
-                        </div>
-                        <div className="text-sky-300 mt-1" style={{ fontSize: "0.68rem" }}>
-                          Open rate
-                        </div>
-                      </div>
-                      <div
-                        className="rounded-[18px] p-3"
-                        style={{ background: "rgba(159,18,57,0.12)", border: "1px solid rgba(251,113,133,0.16)" }}
-                      >
-                        <div className="text-white" style={{ fontSize: "1.05rem", fontWeight: 700 }}>
-                          {formatPercent(round.summary.clickRate)}
-                        </div>
-                        <div className="text-rose-300 mt-1" style={{ fontSize: "0.68rem" }}>
-                          Click rate
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </Surface>
-        </div>
-
-        {error && (
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="mt-6 rounded-[28px] p-5"
-            style={{
-              background: "rgba(127,29,29,0.2)",
-              border: "1px solid rgba(248,113,113,0.24)",
-            }}
-          >
-            <div className="flex items-start gap-3">
-              <XCircle className="w-5 h-5 text-rose-300 flex-shrink-0 mt-0.5" />
-              <div>
-                <div className="text-rose-200" style={{ fontSize: "0.92rem", fontWeight: 600 }}>
-                  Agent run failed
-                </div>
-                <p className="text-rose-100/90 mt-1" style={{ fontSize: "0.82rem", lineHeight: 1.7 }}>
-                  {error}
-                </p>
+                  </motion.div>
+                )}
               </div>
             </div>
-          </motion.div>
-        )}
 
-        {phase === "complete" && result && (
-          <div className="mt-6 flex justify-center">
-            <motion.button
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
-              onClick={() => {
-                resetRun();
-                setPhase("running");
-                void (async () => {
-                  try {
-                    const optimResult = await streamCampaignAgent(brief, {
-                      rounds: 1,
-                      onHeartbeat: () => touchActivity(),
-                      onThinking: (step) => {
-                        touchActivity(true);
-                        setThinkingSteps((current) => pushUniqueStep(current, step));
-                      },
-                      onPause: (pause, respond) => {
-                        touchActivity(true);
-                        pauseResponderRef.current = respond;
-                        setPendingPause(pause);
-                        if (pause.segments && pause.segments.length > 0) {
-                          setSegmentCards(pause.segments);
-                        }
-                        if (pause.variants && pause.variants.length > 0) {
-                          setDraftCards(pause.variants);
-                        }
-                        setPhase("paused");
-                      },
-                      onLiveMetrics: (metrics) => {
-                        touchActivity(true);
-                        setPhase("running");
-                        setMetricsHistory((current) => {
-                          const previous = current[current.length - 1];
-                          if (
-                            previous &&
-                            previous.round === metrics.round &&
-                            previous.sent === metrics.sent &&
-                            previous.opened === metrics.opened &&
-                            previous.clicked === metrics.clicked
-                          ) {
-                            return current;
-                          }
-                          return [...current, metrics].slice(-24);
-                        });
-                      },
-                      onTerminal: (text) => {
-                        touchActivity();
-                        enqueueTerminal(text);
-                      },
-                      onRoundComplete: (round) => {
-                        touchActivity(true);
-                        setRoundHistory((current) => {
-                          const previous = current[current.length - 1];
-                          if (previous && previous.round === round.round) {
-                            return [...current.slice(0, -1), round];
-                          }
-                          return [...current, round];
-                        });
-                      },
-                    });
-                    setResult(optimResult);
-                    setSegmentCards((current) =>
-                      current.length > 0 ? current : toSegmentCardsFromResult(optimResult)
-                    );
-                    setDraftCards((current) =>
-                      current.length > 0 ? current : toDraftCardsFromResult(optimResult)
-                    );
-                    setPendingPause(null);
-                    pauseResponderRef.current = null;
-                    setPhase("complete");
-                    touchActivity(true);
-                  } catch (runError) {
-                    const message =
-                      runError instanceof Error
-                        ? runError.message
-                        : "Optimization round failed.";
-                    setError(message);
-                    setPhase("error");
+            {(latestMetrics || roundHistory.length > 0 || (phase === "complete" && result)) && (
+              <div className="grid md:grid-cols-3 gap-3 mt-4">
+                <div className="rounded-2xl p-4" style={{ background: "rgba(15,23,42,0.75)", border: "1px solid rgba(148,163,184,0.2)" }}>
+                  <div className="text-slate-400" style={{ fontSize: "0.72rem" }}>Latest Sent</div>
+                  <div className="text-white mt-1" style={{ fontSize: "1.3rem", fontWeight: 700 }}>{formatCount(latestMetrics?.sent || 0)}</div>
+                </div>
+                <div className="rounded-2xl p-4" style={{ background: "rgba(15,23,42,0.75)", border: "1px solid rgba(148,163,184,0.2)" }}>
+                  <div className="text-slate-400" style={{ fontSize: "0.72rem" }}>Open Rate</div>
+                  <div className="text-white mt-1" style={{ fontSize: "1.3rem", fontWeight: 700 }}>{formatPercent(result?.finalOpenRate ?? latestMetrics?.openRate ?? 0)}</div>
+                </div>
+                <div className="rounded-2xl p-4" style={{ background: "rgba(15,23,42,0.75)", border: "1px solid rgba(148,163,184,0.2)" }}>
+                  <div className="text-slate-400" style={{ fontSize: "0.72rem" }}>Click Rate</div>
+                  <div className="text-white mt-1" style={{ fontSize: "1.3rem", fontWeight: 700 }}>{formatPercent(result?.finalClickRate ?? latestMetrics?.clickRate ?? 0)}</div>
+                </div>
+              </div>
+            )}
+
+            {error && (
+              <div className="mt-4 rounded-2xl p-4" style={{ background: "rgba(127,29,29,0.25)", border: "1px solid rgba(248,113,113,0.35)" }}>
+                <div className="text-rose-200" style={{ fontSize: "0.84rem", fontWeight: 700 }}>Run failed</div>
+                <p className="text-rose-100 mt-1" style={{ fontSize: "0.8rem", lineHeight: 1.6 }}>{error}</p>
+              </div>
+            )}
+
+            <div className="mt-4 rounded-[24px] p-3" style={{ background: "rgba(8,18,33,0.96)", border: "1px solid rgba(148,163,184,0.2)" }}>
+              <textarea
+                value={brief}
+                onChange={(event) => setBrief(event.target.value)}
+                rows={3}
+                className="w-full bg-transparent text-slate-100 placeholder:text-slate-500 outline-none resize-none px-2 py-2"
+                placeholder="Enter a new campaign prompt"
+                style={{ fontSize: "0.9rem", lineHeight: 1.6 }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    void handleStart();
                   }
-                })();
-              }}
-              className="inline-flex items-center gap-3 px-8 py-4 rounded-[22px] text-white"
-              style={{
-                background: "linear-gradient(135deg, #f59e0b 0%, #ef4444 100%)",
-                fontSize: "0.96rem",
-                fontWeight: 700,
-                boxShadow: "0 4px 24px rgba(245,158,11,0.3)",
-              }}
-            >
-              <RefreshCw className="w-5 h-5" />
-              Run Optimization Round
-            </motion.button>
-          </div>
+                }}
+              />
+              <div className="flex justify-between items-center pt-1 px-1">
+                <button
+                  onClick={() => setBrief(DEFAULT_BRIEF)}
+                  className="text-slate-400 hover:text-white transition-colors"
+                  style={{ fontSize: "0.76rem" }}
+                >
+                  Load sample
+                </button>
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={() => void handleStart()}
+                  disabled={!canStart}
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-white disabled:opacity-45 disabled:cursor-not-allowed"
+                  style={{ background: "linear-gradient(135deg, #0ea5e9 0%, #2563eb 100%)", fontSize: "0.82rem", fontWeight: 700 }}
+                >
+                  <Send className="w-4 h-4" />
+                  {phase === "complete" || phase === "error" ? "Send new prompt" : "Send prompt"}
+                </motion.button>
+              </div>
+            </div>
+          </>
         )}
       </div>
     </div>

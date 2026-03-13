@@ -27,6 +27,26 @@ detect_python() {
   fi
 }
 
+prewarm_agent_connection() {
+  local endpoint="http://localhost:3000/api/agent/ws"
+  local max_attempts=60
+  local delay=1
+  local attempt=0
+
+  while [ $attempt -lt $max_attempts ]; do
+    local timestamp
+    timestamp=$(date +%s)
+    if curl -sSf "$endpoint?ts=$timestamp" >/dev/null 2>&1; then
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    sleep $delay
+  done
+
+  >&2 echo -e "${RED}Warning: Unable to pre-warm backend connection after ${max_attempts} attempts.${NC}"
+  return 1
+}
+
 PYTHON_BIN=$(detect_python)
 if [ -z "$PYTHON_BIN" ]; then
   echo -e "${RED}Error: Python not found. Install Python 3.10+ and ensure it's on your PATH.${NC}"
@@ -50,5 +70,6 @@ echo -e "\n${GREEN}[2/3] Installing frontend Node.js dependencies...${NC}"
 # The backend (Python) is spawned automatically by the frontend API routes
 # when a campaign is started through the UI.
 echo -e "\n${GREEN}[3/3] Starting CampaignX frontend dev server...${NC}"
-echo -e "       ${CYAN}Backend will be launched automatically when needed.${NC}\n"
+echo -e "       ${CYAN}Pre-warming backend connection in the background...${NC}\n"
+prewarm_agent_connection >/dev/null 2>&1 &
 (cd "$ROOT_DIR/frontend" && npm run dev)
