@@ -31,10 +31,12 @@ import type {
 
 const DEFAULT_BRIEF =
   "Run email campaign for launching XDeposit, a flagship term deposit product from SuperBFSI, that gives 1 percentage point higher returns than its competitors. Announce an additional 0.25 percentage point higher returns for female senior citizens. Optimise for open rate and click rate. Do not skip emails to customers marked inactive. Include the call to action: https://superbfsi.com/xdeposit/explore/";
-const DEFAULT_ROUNDS = 3;
+const DEFAULT_AUTO_OPTIMIZATION_ROUNDS = 2;
+const MAX_INTERACTIVE_OPTIMIZATION_ROUNDS = 10;
 
 type RunPhase = "idle" | "running" | "paused" | "complete" | "error";
 type MessageRole = "user" | "agent" | "system";
+type RunMode = "initial" | "optimization";
 
 interface ChatMessage {
   id: string;
@@ -130,6 +132,7 @@ export default function NewCampaign() {
   const [roundHistory, setRoundHistory] = useState<AgentRoundComplete[]>([]);
   const [result, setResult] = useState<AgentRunResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [latestPrompt, setLatestPrompt] = useState("");
 
   const hasConversation = messages.length > 0 || phase !== "idle";
   const canStart = brief.trim().length > 0 && phase !== "running" && phase !== "paused";
@@ -242,13 +245,20 @@ export default function NewCampaign() {
     });
   }, []);
 
-  const runAgent = useCallback(async (prompt: string) => {
+  const runAgent = useCallback(async (prompt: string, mode: RunMode) => {
     setPhase("running");
 
     try {
       const finalResult = await streamCampaignAgent(prompt, {
-        rounds: DEFAULT_ROUNDS,
+        rounds:
+          mode === "initial"
+            ? DEFAULT_AUTO_OPTIMIZATION_ROUNDS
+            : MAX_INTERACTIVE_OPTIMIZATION_ROUNDS,
+        interactive: mode === "optimization",
         onThinking: (step) => {
+          if (mode === "initial" && (step.kind === "metrics" || step.kind === "summary" || step.kind === "decision")) {
+            return;
+          }
           if (sameThinkingStep(latestThinkingRef.current, step)) return;
           latestThinkingRef.current = step;
 
@@ -260,6 +270,11 @@ export default function NewCampaign() {
           });
         },
         onPause: (pause, respond) => {
+          if (mode === "optimization" && pause.pauseType !== "next_round") {
+            respond({ approved: true });
+            return;
+          }
+
           pauseResponderRef.current = respond;
           setPendingPause(pause);
           setPhase("paused");
@@ -289,11 +304,13 @@ export default function NewCampaign() {
               return previous;
             }
 
-            pushMessage({
-              role: "system",
-              kind: "metrics",
-              text: `Round ${metrics.round}: sent ${formatCount(metrics.sent)}, open ${formatPercent(metrics.openRate)}, click ${formatPercent(metrics.clickRate)}.`,
-            });
+            if (mode === "optimization") {
+              pushMessage({
+                role: "system",
+                kind: "metrics",
+                text: `Round ${metrics.round}: sent ${formatCount(metrics.sent)}, open ${formatPercent(metrics.openRate)}, click ${formatPercent(metrics.clickRate)}.`,
+              });
+            }
             return metrics;
           });
           setPhase("running");
@@ -307,11 +324,13 @@ export default function NewCampaign() {
             return [...current, round];
           });
 
-          pushMessage({
-            role: "system",
-            kind: "summary",
-            text: `Round ${round.round} complete. Open ${formatPercent(round.summary.openRate)} and click ${formatPercent(round.summary.clickRate)}.`,
-          });
+          if (mode === "optimization") {
+            pushMessage({
+              role: "system",
+              kind: "summary",
+              text: `Round ${round.round} complete. Open ${formatPercent(round.summary.openRate)} and click ${formatPercent(round.summary.clickRate)}.`,
+            });
+          }
         },
         onTerminal: () => {
           // Intentionally ignored for chat-style UI.
@@ -352,9 +371,24 @@ export default function NewCampaign() {
 
     resetRunState();
     setMessages([]);
+    setLatestPrompt(prompt);
     pushMessage({ role: "user", text: prompt });
-    await runAgent(prompt);
+    await runAgent(prompt, "initial");
   }, [brief, canStart, pushMessage, resetRunState, runAgent]);
+
+  const handlePerformOptimizationRound = useCallback(async () => {
+    const prompt = latestPrompt || brief.trim();
+    if (!prompt || phase === "running" || phase === "paused") {
+      return;
+    }
+
+    resetRunState();
+    pushMessage({
+      role: "user",
+      text: "Perform an optimization round and ask me before every next round.",
+    });
+    await runAgent(prompt, "optimization");
+  }, [brief, latestPrompt, phase, pushMessage, resetRunState, runAgent]);
 
   const statusText = useMemo(() => {
     if (phase === "running") return "Agent is working";
@@ -668,6 +702,21 @@ export default function NewCampaign() {
                   <div className="text-slate-400" style={{ fontSize: "0.72rem" }}>Click Rate</div>
                   <div className="text-white mt-1" style={{ fontSize: "1.3rem", fontWeight: 700 }}>{formatPercent(result?.finalClickRate ?? latestMetrics?.clickRate ?? 0)}</div>
                 </div>
+              </div>
+            )}
+
+            {phase === "complete" && latestPrompt && (
+              <div className="mt-4 flex justify-center">
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={() => void handlePerformOptimizationRound()}
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-white"
+                  style={{ background: "linear-gradient(135deg, #16a34a 0%, #15803d 100%)", fontSize: "0.84rem", fontWeight: 700 }}
+                >
+                  <Play className="w-4 h-4" />
+                  Perform Optimization Round
+                </motion.button>
               </div>
             )}
 

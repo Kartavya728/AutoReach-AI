@@ -13,6 +13,7 @@ export type AgentPauseResponder = (response: Record<string, unknown>) => void;
 
 export interface StreamCampaignAgentOptions {
   rounds?: number;
+  interactive?: boolean;
   onHeartbeat?: () => void;
   onThinking?: (step: AgentThinkingStep) => void;
   onPause?: (pause: AgentPausePayload, respond: AgentPauseResponder) => void;
@@ -263,6 +264,7 @@ export async function streamCampaignAgent(
       type: "start",
       brief,
       rounds: options?.rounds,
+      interactive: Boolean(options?.interactive),
     });
 
     if (opened) {

@@ -7,7 +7,7 @@ import type { GeneratedEmailVariant } from "@/src/lib/types";
 
 export const runtime = "nodejs";
 
-const DEFAULT_OPTIMIZATION_ROUNDS = 3;
+const DEFAULT_OPTIMIZATION_ROUNDS = 2;
 const OUTPUT_FILE = "agent_output.json";
 
 type RunPayload = {

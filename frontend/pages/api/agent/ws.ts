@@ -14,7 +14,7 @@ export const config = {
   },
 };
 
-const DEFAULT_OPTIMIZATION_ROUNDS = 3;
+const DEFAULT_OPTIMIZATION_ROUNDS = 2;
 const OUTPUT_FILE = "agent_output.json";
 const CONTROL_PREFIX = "__AGENT_EVENT__";
 const CLIENT_DISCONNECT_KILL_DELAY_MS = 30_000;
@@ -363,13 +363,19 @@ function handleConnection(ws: WebSocket) {
         Number.isFinite(requestedRounds) && requestedRounds > 0
           ? Math.floor(requestedRounds)
           : DEFAULT_OPTIMIZATION_ROUNDS;
+      const interactive = Boolean(message.interactive);
 
       const pythonBin = env.PYTHON_BIN || "python";
-      const args = ["-u", "-m", "backend.main", brief, "--rounds", String(rounds), "--interactive"];
+      const args = ["-u", "-m", "backend.main", brief, "--rounds", String(rounds)];
+      if (interactive) {
+        args.push("--interactive");
+      }
 
       sendEvent(ws, "thinking", {
         agent: "Orchestrator",
-        step: `Starting agents pipeline with ${rounds} optimization rounds.`,
+        step: interactive
+          ? `Starting agents pipeline with up to ${rounds} optimization rounds.`
+          : "Starting agents pipeline.",
         kind: "status",
       });
 
