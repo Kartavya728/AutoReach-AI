@@ -299,24 +299,10 @@ On HTTP `429`, the system generates stub records `{EO: "N", EC: "N"}` to prevent
 
 **File**: `analysis_agent.py`
 
-### Deterministic Scenario Simulation
+### Direct Metrics Computation
 
-Since the CampaignX sandbox returns random EO/EC flags, the analysis agent applies a deterministic simulation formula:
+The analysis agent directly reads the `EO` (Email Opened) and `EC` (Email Clicked) flags from the incoming CampaignX report for each customer to compute accurate engagement metrics.
 
-```python
-hash_val = sum(ord(c) for c in campaign_id)
-base_open = 0.28 + ((hash_val % 10) / 100)   # 28-37%
-base_click = 0.11 + ((hash_val % 5) / 100)    # 11-15%
-
-# Retarget rounds get a pre-qualified audience multiplier
-if campaign_id.startswith("retarget_r"):
-    base_open = min(0.92, base_open * 2.8)     # Up to 92%
-    base_click = min(0.65, base_click * 3.8)    # Up to 65%
-```
-
-### Per-Customer Hash Assignment
-
-Each customer gets a deterministic open/click state based on their ID hash, ensuring consistency across runs.
 
 ---
 

@@ -31,6 +31,9 @@ from backend.content_agent import generate_content, generate_segment_variant
 from backend.segment_engine import segment_customers
 from backend.state import WorkflowState
 from backend.strategy_agent import plan_strategy
+from backend.config import GEMINI_API_KEY, GEMINI_MODEL
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.messages import HumanMessage
 
 
 DEFAULT_BRIEF = (
@@ -213,68 +216,93 @@ def apply_variant_approvals(
     return approved_segments, approved_variants, approved_variant_list
 
 
-def predict_open_click(
+async def predict_open_click(
     segments: list[dict[str, Any]],
     segment_variants: dict[str, dict[str, Any]],
     cta_link: str,
 ) -> dict[str, Any]:
+    """LLM-based open/click predictor — fully agentic, no hardcoded rates."""
     total_audience = 0
     predicted_opened = 0
     predicted_clicked = 0
     by_segment: list[dict[str, Any]] = []
 
-    for seg in segments:
-        seg_id = str(seg.get("segment_id", ""))
-        audience = int(seg.get("size", 0))
-        if audience <= 0:
-            continue
+    try:
+        from backend.config import GEMINI_API_KEY, GEMINI_MODEL
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        from langchain_core.messages import HumanMessage
 
-        variant = segment_variants.get(seg_id) or {}
-        subject = str(variant.get("subject", "")).lower()
-        body = str(variant.get("body", "")).lower()
-        tone = str(variant.get("tone", seg.get("tone", "professional"))).lower()
-        segment_name = str(seg.get("segment_name", "")).lower()
-
-        open_rate = 0.24
-        click_rate = 0.07
-
-        if cta_link and cta_link in str(variant.get("body", "")):
-            click_rate += 0.05
-        if any(word in subject for word in ["exclusive", "unlock", "higher", "bonus", "special"]):
-            open_rate += 0.06
-        if any(word in subject for word in ["today", "now", "limited", "before", "last"]):
-            open_rate += 0.03
-            click_rate += 0.02
-        if "warm" in segment_name or "retarget" in segment_name:
-            open_rate += 0.12
-            click_rate += 0.08
-        if "cold" in segment_name:
-            open_rate += 0.04
-            click_rate += 0.01
-        if tone in {"urgent", "assertive"}:
-            click_rate += 0.02
-        if tone in {"friendly", "empathetic"}:
-            open_rate += 0.02
-        if len(body) > 220:
-            click_rate -= 0.01
-
-        open_rate = max(0.05, min(0.92, open_rate))
-        click_rate = max(0.01, min(open_rate * 0.7, click_rate))
-
-        opened = min(audience, round(audience * open_rate))
-        clicked = min(opened, round(audience * click_rate))
-        total_audience += audience
-        predicted_opened += opened
-        predicted_clicked += clicked
-        by_segment.append(
-            {
-                "segmentId": seg_id,
-                "segmentName": str(seg.get("segment_name", "Segment")),
-                "audience": audience,
-                "predictedOpenRate": round((opened / audience) * 100, 1) if audience else 0.0,
-                "predictedClickRate": round((clicked / audience) * 100, 1) if audience else 0.0,
-            }
+        llm = ChatGoogleGenerativeAI(
+            api_key=GEMINI_API_KEY,
+            model=GEMINI_MODEL or "gemini-2.5-flash",
+            temperature=0.1,
         )
+
+        for seg in segments:
+            seg_id = str(seg.get("segment_id", ""))
+            audience = int(seg.get("size", 0))
+            if audience <= 0:
+                continue
+
+            variant = segment_variants.get(seg_id) or {}
+            subject = str(variant.get("subject", ""))
+            body = str(variant.get("body", ""))
+            tone = str(variant.get("tone", seg.get("tone", "professional")))
+            segment_name = str(seg.get("segment_name", ""))
+            has_cta = cta_link in body if cta_link else False
+
+            prompt = f"""You are an email marketing analytics expert predicting campaign performance.
+
+Segment: {segment_name} ({audience} customers)
+Tone: {tone}
+Subject line: "{subject}"
+Body length: {len(body)} chars
+CTA link present: {has_cta}
+Body preview: {body[:300]}
+
+Based on the subject line quality, body persuasiveness, CTA clarity, and audience type,
+predict the open rate and click rate as percentages.
+
+Return ONLY a JSON object: {{"open_rate": <number>, "click_rate": <number>}}
+"""
+            try:
+                resp = await llm.ainvoke([HumanMessage(content=prompt)])
+                content = str(resp.content).strip()
+                start = content.find("{")
+                end = content.rfind("}")
+                if start != -1 and end > start:
+                    import json as _json
+                    parsed = _json.loads(content[start:end + 1])
+                    seg_open = max(1.0, min(95.0, float(parsed.get("open_rate", 25))))
+                    seg_click = max(0.5, min(seg_open * 0.8, float(parsed.get("click_rate", 5))))
+                else:
+                    seg_open, seg_click = 25.0, 5.0
+            except Exception:
+                seg_open, seg_click = 25.0, 5.0
+
+            opened = min(audience, round(audience * seg_open / 100))
+            clicked = min(opened, round(audience * seg_click / 100))
+            total_audience += audience
+            predicted_opened += opened
+            predicted_clicked += clicked
+            by_segment.append(
+                {
+                    "segmentId": seg_id,
+                    "segmentName": segment_name,
+                    "audience": audience,
+                    "predictedOpenRate": round(seg_open, 1),
+                    "predictedClickRate": round(seg_click, 1),
+                }
+            )
+    except Exception:
+        # Graceful fallback if LLM is unavailable
+        for seg in segments:
+            audience = int(seg.get("size", 0))
+            if audience <= 0:
+                continue
+            total_audience += audience
+            predicted_opened += round(audience * 0.25)
+            predicted_clicked += round(audience * 0.05)
 
     open_rate = round((predicted_opened / total_audience) * 100, 1) if total_audience else 0.0
     click_rate = round((predicted_clicked / total_audience) * 100, 1) if total_audience else 0.0
@@ -551,25 +579,34 @@ def content_cards(
     return cards
 
 
-def recommended_send_time(segment_name: str) -> str:
+async def predicted_send_time(segment_name: str) -> str:
+    """Uses LLM to estimate the best time of day to send based on segment name."""
     now_utc = datetime.now(timezone.utc)
-    lowered = segment_name.lower()
-
-    if "professional" in lowered or "earner" in lowered:
-        slot = now_utc.replace(hour=12, minute=30, second=0, microsecond=0)
-    elif "senior" in lowered or "retired" in lowered:
-        slot = now_utc.replace(hour=3, minute=30, second=0, microsecond=0)
-    elif "young" in lowered or "digital" in lowered:
-        slot = now_utc.replace(hour=15, minute=30, second=0, microsecond=0)
-    else:
-        slot = now_utc + timedelta(minutes=5)
-
-    if slot < now_utc:
+    
+    prompt = (
+        f"You are a behavioral email marketer. What is the single best hour of the day (in UTC 0-23 format) "
+        f"to send an email to a customer segment named: '{segment_name}'?\n"
+        f"Assume young professionals check early/late, seniors check very early, businesses check mid-day.\n"
+        f"Reply ONLY with a single integer representing the hour (0-23). Nothing else."
+    )
+    
+    try:
+        llm = ChatGoogleGenerativeAI(
+            api_key=GEMINI_API_KEY,
+            model=GEMINI_MODEL or "gemini-2.5-flash",
+            temperature=0.1
+        )
+        resp = await llm.ainvoke([HumanMessage(content=prompt)])
+        hour = int(resp.content.strip())
+        hour = max(0, min(23, hour))
+    except Exception:
+        hour = (now_utc.hour + 1) % 24
+        
+    slot = now_utc.replace(hour=hour, minute=0, second=0, microsecond=0)
+    
+    if slot <= now_utc:
         slot += timedelta(days=1)
-
-    if slot < now_utc + timedelta(minutes=5):
-        slot = now_utc + timedelta(minutes=5)
-
+        
     return format_time(slot)
 
 
@@ -869,7 +906,7 @@ async def run_react_planner_executor(
     )
     channel.log(f"[HITL] Approved {len(approved_variants)} email drafts for {len(approved_ids)} customers.")
 
-    predictor_report = predict_open_click(segments, segment_variants, cta_link)
+    predictor_report = await predict_open_click(segments, segment_variants, cta_link)
     state["predicted_metrics"] = predictor_report
     channel.emit_thinking(
         (
@@ -935,7 +972,7 @@ async def run_react_planner_executor(
         segment_results: list[dict[str, Any]] = []
 
         for group in current_groups:
-            send_time_str = recommended_send_time(group["segment_name"])
+            send_time_str = await predicted_send_time(group["segment_name"])
             channel.emit_thinking(
                 f"Sending {group['segment_name']} to {len(group['customer_ids'])} customers.",
                 agent="Dispatch-Agent",
@@ -1060,6 +1097,7 @@ async def run_react_planner_executor(
         )
 
         # Prepare next optimization round candidates (warm + cold)
+        hot_ids: list[str] = []
         warm_ids: list[str] = []
         cold_ids: list[str] = []
         for item in segment_results:
@@ -1067,6 +1105,7 @@ async def run_react_planner_executor(
             clicked = set(item.get("clicked_ids", []))
             customer_ids = set(item.get("customer_ids", []))
 
+            hot_ids.extend(list(clicked))
             warm_ids.extend([cid for cid in opened if cid not in clicked])
             cold_ids.extend([cid for cid in customer_ids if cid not in opened])
 
@@ -1105,12 +1144,60 @@ async def run_react_planner_executor(
             channel.log(f"[Round {round_num}] Human chose to stop virtual testing.")
             break
 
-        if not warm_ids and not cold_ids:
-            channel.log(f"[Round {round_num}] No warm/cold audience left. Stopping virtual testing.")
+        if not hot_ids and not warm_ids and not cold_ids:
+            channel.log(f"[Round {round_num}] No audience left. Stopping virtual testing.")
             break
 
         # Build groups for next optimization round.
         next_groups: list[dict[str, Any]] = []
+        
+        # Helper for past metrics
+        if segment_results:
+            avg_open = sum(float(r.get("open_rate", 0)) for r in segment_results) / len(segment_results)
+            avg_click = sum(float(r.get("click_rate", 0)) for r in segment_results) / len(segment_results)
+            prev_variant = segment_results[0].get("variant_used", {})
+            past_metrics_base = {
+                "open_rate": round(avg_open, 1),
+                "click_rate": round(avg_click, 1),
+                "previous_subject": str(prev_variant.get("subject", "")),
+            }
+        else:
+            past_metrics_base = None
+
+        if hot_ids:
+            hot_segment = {
+                "segment_id": f"hot_r{round_num + 1}",
+                "segment_name": "Hot Leads Retarget",
+                "customer_ids": hot_ids,
+                "size": len(hot_ids),
+                "criteria": "Clicked the link in previous email",
+                "tone": "celebratory",
+                "focus": "upsell or next steps",
+                "emoji_level": "heavy",
+                "tier": "Diamond",
+            }
+            hot_variant = await generate_segment_variant(
+                brief,
+                str(state.get("strategy", "")),
+                hot_segment,
+                cta_link=str(state.get("cta_link", "")),
+                emit_progress=lambda payload: channel.emit_event("digital_twin", payload),
+                past_metrics=past_metrics_base,
+            )
+            hot_variant = ensure_variant_has_link(hot_variant, str(state.get("cta_link", "")))
+            next_groups.append(
+                {
+                    "segment_id": hot_segment["segment_id"],
+                    "segment_name": hot_segment["segment_name"],
+                    "customer_ids": hot_ids,
+                    "variant": hot_variant,
+                    "criteria": hot_segment["criteria"],
+                    "tone": hot_segment["tone"],
+                    "focus": hot_segment["focus"],
+                    "tier": hot_segment["tier"],
+                }
+            )
+
         if warm_ids:
             warm_segment = {
                 "segment_id": f"warm_r{round_num + 1}",
@@ -1123,12 +1210,14 @@ async def run_react_planner_executor(
                 "emoji_level": "moderate",
                 "tier": "Gold",
             }
+            warm_past_metrics = past_metrics_base
             warm_variant = await generate_segment_variant(
                 brief,
                 str(state.get("strategy", "")),
                 warm_segment,
                 cta_link=str(state.get("cta_link", "")),
                 emit_progress=lambda payload: channel.emit_event("digital_twin", payload),
+                past_metrics=warm_past_metrics,
             )
             warm_variant = ensure_variant_has_link(warm_variant, str(state.get("cta_link", "")))
             next_groups.append(
@@ -1156,12 +1245,20 @@ async def run_react_planner_executor(
                 "emoji_level": "moderate",
                 "tier": "Reactivate",
             }
+            # Build past metrics feedback for cold leads
+            cold_past_metrics = None
+            if segment_results:
+                avg_open = sum(float(r.get("open_rate", 0)) for r in segment_results) / len(segment_results)
+                avg_click = sum(float(r.get("click_rate", 0)) for r in segment_results) / len(segment_results)
+                prev_variant = segment_results[-1].get("variant_used", {})
+            cold_past_metrics = past_metrics_base
             cold_variant = await generate_segment_variant(
                 brief,
                 str(state.get("strategy", "")),
                 cold_segment,
                 cta_link=str(state.get("cta_link", "")),
                 emit_progress=lambda payload: channel.emit_event("digital_twin", payload),
+                past_metrics=cold_past_metrics,
             )
             cold_variant = ensure_variant_has_link(cold_variant, str(state.get("cta_link", "")))
             next_groups.append(
@@ -1233,7 +1330,7 @@ async def run_react_planner_executor(
             channel.log(f"[Round {round_num}] No optimization emails approved for next round.")
             break
 
-        latest_prediction = predict_open_click(next_segments, next_variants, str(state.get("cta_link", "")))
+        latest_prediction = await predict_open_click(next_segments, next_variants, str(state.get("cta_link", "")))
         channel.emit_thinking(
             (
                 "Open-Click-Predictor forecast for next round: "

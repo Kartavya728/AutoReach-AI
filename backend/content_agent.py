@@ -15,6 +15,7 @@ import asyncio
 import json
 import re
 import sys
+import random
 from typing import Any, Callable
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -194,6 +195,7 @@ async def generate_segment_variant(
     segment: CustomerSegment,
     cta_link: str = "",
     emit_progress: TwinProgressEmitter | None = None,
+    past_metrics: dict | None = None,
 ) -> EmailVariant:
     """Generate a high-performing email variant using the Multi-Agent War Room, Bandit, and Sim."""
     
@@ -224,10 +226,23 @@ async def generate_segment_variant(
     # 3. War Room generates and Digital Twin tests (Loop up to 3 times)
     variant = None
     max_attempts = 3
+    
+    # Randomly assign testing constraints for Length and Emojis
+    # This ensures true exploration across the campaign segments
+    length_constraint = random.choice(["short", "medium"])
+    emoji_constraint = random.choice(["none", "moderate", "some"])
+    
     for attempt_index in range(max_attempts):
         attempt = attempt_index + 1
-        _safe_print(f"      [War Room] Generating draft {attempt}...")
-        draft_variant = await war_room.generate_variants(brief, tier, angle)
+        _safe_print(f"      [War Room] Generating draft {attempt} (Length: {length_constraint}, Emojis: {emoji_constraint})...")
+        segment_profile = get_segment_profile(segment)
+        draft_variant = await war_room.generate_variants(
+            brief, tier, angle,
+            segment_profile=segment_profile,
+            past_metrics=past_metrics,
+            length_constraint=length_constraint,
+            emoji_constraint=emoji_constraint,
+        )
         draft_variant = _ensure_variant_has_cta_link(draft_variant, cta_link)
         
         # Test draft using Digital Twin Simulation on 5 synthentic personas
@@ -265,7 +280,7 @@ async def generate_segment_variant(
         
         if not twin_engine.bayesian_kill_rule(twin_results):
             # Survived the kill rule!
-            bandit_engine.update_reward(tier, angle, max(1, clicks))
+            bandit_engine.update_reward(tier, angle, opens, max(1, clicks), len(personas))
             variant = draft_variant
             _emit_twin_progress(
                 emit_progress,
@@ -281,7 +296,7 @@ async def generate_segment_variant(
             break
         else:
             _safe_print("      [Simulator] Kill Rule triggered. Variant failed test. Regenerating.")
-            bandit_engine.update_reward(tier, angle, 0)
+            bandit_engine.update_reward(tier, angle, 0, 0, len(personas))
             _emit_twin_progress(
                 emit_progress,
                 segment=segment,

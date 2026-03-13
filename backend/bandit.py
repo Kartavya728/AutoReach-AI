@@ -41,14 +41,21 @@ class ThompsonBandit:
         with open(self.state_file, 'w', encoding='utf-8') as f:
             json.dump(self.state, f, indent=2)
 
-    def select_action(self, context_tier: str) -> str:
+    def select_action(self, context_tier: str, current_round: int = 1) -> str:
         """
-        Thompson Sampling action selection.
-        Context: The propensity tier of the user (e.g. 'Diamond').
+        Thompson Sampling with Epsilon-Greedy exploration.
+        Epsilon starts at 0.3 and decays, but never goes below 0.1.
         """
         if context_tier not in self.state:
             context_tier = "Reactivate" # Fallback
             
+        epsilon = max(0.1, 0.3 * np.exp(-current_round + 1))
+        
+        # Explore
+        if np.random.rand() < epsilon:
+            return str(np.random.choice(self.actions))
+            
+        # Exploit (Thompson Sampling)
         max_sample = -1
         best_action = self.actions[0]
         
@@ -64,15 +71,23 @@ class ThompsonBandit:
                 
         return best_action
         
-    def update_reward(self, context_tier: str, action: str, reward: int):
+    def update_reward(self, context_tier: str, action: str, opens: int, clicks: int, sends: int):
         """
-        reward: 1 for click/open, 0 for failure.
+        Updates bandit state based on the hackathon score metric:
+        score = 0.7 * click_rate + 0.3 * open_rate
         """
-        if context_tier in self.state and action in self.state[context_tier]:
-            if reward > 0:
-                self.state[context_tier][action]["alpha"] += reward
-            else:
-                self.state[context_tier][action]["beta"] += 1
+        if context_tier in self.state and action in self.state[context_tier] and sends > 0:
+            open_rate = opens / sends
+            click_rate = clicks / sends
+            
+            # Use the evaluation metric as the reward signal (0 to 1 scale)
+            reward = 0.7 * click_rate + 0.3 * open_rate
+            
+            # Convert continuous reward [0,1] to alpha/beta updates
+            # A reward of 1.0 means full success, 0.0 means full failure
+            self.state[context_tier][action]["alpha"] += reward
+            self.state[context_tier][action]["beta"] += (1.0 - reward)
+            
             self._save_state()
 
     def get_posterior_mean(self, context_tier: str, action: str):

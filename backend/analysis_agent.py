@@ -47,47 +47,18 @@ def compute_analysis(
     if total_sent == 0:
         return _empty_report(campaign_id)
 
-    # Detect if this is a retargeting round (warm or cold re-sends)
-    is_retarget = isinstance(campaign_id, str) and campaign_id.startswith("retarget_r")
-    
-    # Deterministic base variance per campaign
-    hash_val = sum(ord(c) for c in campaign_id)
-    base_open = 0.28 + ((hash_val % 10) / 100)
-    base_click = 0.11 + ((hash_val % 5) / 100)
-    
-    # Apply multiplier for retarget audiences (they were pre-qualified)
-    if is_retarget:
-        base_open = min(0.92, base_open * 2.8)
-        base_click = min(0.65, base_click * 3.8)
-
-    # Assign deterministic states per customer so it's consistent
     eo_yes = []
     ec_yes = []
     
     for r in records:
-        cid = r.get("customer_id", "")
-        if not cid: continue
-        
-        c_hash = sum(ord(c) for c in cid) + hash_val
-        
-        # Determine Open
-        if (c_hash % 100) / 100 < base_open:
-            r["EO"] = "Y"
+        if not r.get("customer_id"):
+            continue
+            
+        if str(r.get("EO", "")).strip().upper() == "Y":
             eo_yes.append(r)
             
-            # Determine Click (only if opened)
-            c_hash_click = (c_hash * 17 + 43) % 100
-            # To ensure the final click rate (clicked/sent) approximates base_click,
-            # the probability of clicking given opening must be base_click / base_open
-            click_threshold = base_click / base_open if base_open > 0 else 0
-            if c_hash_click / 100 < click_threshold:
-                r["EC"] = "Y"
-                ec_yes.append(r)
-            else:
-                r["EC"] = "N"
-        else:
-            r["EO"] = "N"
-            r["EC"] = "N"
+        if str(r.get("EC", "")).strip().upper() == "Y":
+            ec_yes.append(r)
 
     total_opened = len(eo_yes)
     total_clicked = len(ec_yes)
@@ -100,7 +71,7 @@ def compute_analysis(
     click_rate = round(total_clicked / total_sent * 100, 1) if total_sent > 0 else 0
 
     print(
-        f"[Analysis] SIMULATED DATA — campaign={campaign_id[:20]}... "
+        f"[Analysis] campaign={campaign_id[:20]}... "
         f"sent={total_sent} opened={total_opened}({open_rate}%) "
         f"clicked={total_clicked}({click_rate}%)"
     )

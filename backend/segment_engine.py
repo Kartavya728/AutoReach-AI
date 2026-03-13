@@ -224,10 +224,13 @@ SAMPLE RECORDS (3 real customers):
 Available CRM fields for logic rules: {fields}
 
 CRITICAL RULES:
-- Use ONLY field names that exist in the CRM data above
-- Use value thresholds that are WITHIN the min/max ranges shown in the data profile
-- Do NOT use abstract concepts as field names. Map your targeting intent to real CRM columns.
-- Ensure segments cover the ENTIRE audience (last segment must be a catch-all with empty logic)
+1. SAFE SEGMENTATION FALLBACK: Look at the Data Profile. Do `age`, `income`, or `occupation` actually have data?
+   - IF YES: Build targeted Demographic segments (e.g. "Senior Citizens", "Young Professionals").
+   - IF NO: You MUST fallback to Behavioral or Email Domain segmentation. Group by `emails_opened`, `w1`, `w2`, `w3`, or check if their `email` contains specific domains if possible. DO NOT invent demographic fields if they are empty or missing in the profile.
+2. Use ONLY field names that exist in the CRM data above.
+3. Use value thresholds that are WITHIN the min/max ranges shown in the data profile.
+4. Do NOT use abstract concepts as field names. Map your targeting intent to real CRM columns.
+5. Ensure segments cover the ENTIRE audience (last segment must be a catch-all with empty logic).
 
 Output a raw JSON array (no markdown). Each object:
 {{
