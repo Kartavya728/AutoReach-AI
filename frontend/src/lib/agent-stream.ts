@@ -134,6 +134,11 @@ function normalizeMetricsProgression(raw: unknown): AgentRunResult["metricsProgr
     const safe = isRecord(entry) ? entry : {};
     return {
       round: Number(safe.round ?? 0) || 0,
+      phase: safe.phase ? String(safe.phase) : undefined,
+      phaseLabel: safe.phaseLabel ? String(safe.phaseLabel) : safe.phase_label ? String(safe.phase_label) : undefined,
+      displayRound: Number(safe.displayRound ?? safe.display_round ?? 0) || undefined,
+      optimizationRound: Number(safe.optimizationRound ?? safe.optimization_round ?? 0) || undefined,
+      virtualPredictionRound: Number(safe.virtualPredictionRound ?? safe.virtual_prediction_round ?? 0) || undefined,
       audience: Number(safe.audience ?? safe.sent ?? 0) || 0,
       openRate: Number(safe.openRate ?? safe.open_rate ?? 0) || 0,
       clickRate: Number(safe.clickRate ?? safe.click_rate ?? 0) || 0,
@@ -474,6 +479,11 @@ export async function streamCampaignAgent(
         const liveData = isRecord(data) ? data : {};
         options?.onLiveMetrics?.({
           round: Number(liveData.round ?? 0) || 0,
+          phase: liveData.phase ? String(liveData.phase) : undefined,
+          phaseLabel: liveData.phaseLabel ? String(liveData.phaseLabel) : liveData.phase_label ? String(liveData.phase_label) : undefined,
+          displayRound: Number(liveData.displayRound ?? liveData.display_round ?? 0) || undefined,
+          optimizationRound: Number(liveData.optimizationRound ?? liveData.optimization_round ?? 0) || undefined,
+          virtualPredictionRound: Number(liveData.virtualPredictionRound ?? liveData.virtual_prediction_round ?? 0) || undefined,
           sent: Number(liveData.sent ?? 0) || 0,
           opened: Number(liveData.opened ?? 0) || 0,
           clicked: Number(liveData.clicked ?? 0) || 0,
@@ -495,12 +505,22 @@ export async function streamCampaignAgent(
         const roundData = isRecord(data) ? data : {};
         options?.onRoundComplete?.({
           round: Number(roundData.round ?? 0) || 0,
+          phase: roundData.phase ? String(roundData.phase) : undefined,
+          phaseLabel: roundData.phaseLabel ? String(roundData.phaseLabel) : roundData.phase_label ? String(roundData.phase_label) : undefined,
+          displayRound: Number(roundData.displayRound ?? roundData.display_round ?? 0) || undefined,
+          optimizationRound: Number(roundData.optimizationRound ?? roundData.optimization_round ?? 0) || undefined,
+          virtualPredictionRound: Number(roundData.virtualPredictionRound ?? roundData.virtual_prediction_round ?? 0) || undefined,
           summary: isRecord(roundData.summary)
             ? {
                 audience: Number(roundData.summary.audience ?? 0) || 0,
                 openRate: Number(roundData.summary.openRate ?? 0) || 0,
                 clickRate: Number(roundData.summary.clickRate ?? 0) || 0,
                 segments: Number(roundData.summary.segments ?? 0) || 0,
+                phase: roundData.summary.phase ? String(roundData.summary.phase) : undefined,
+                phaseLabel: roundData.summary.phaseLabel ? String(roundData.summary.phaseLabel) : roundData.summary.phase_label ? String(roundData.summary.phase_label) : undefined,
+                displayRound: Number(roundData.summary.displayRound ?? roundData.summary.display_round ?? 0) || undefined,
+                optimizationRound: Number(roundData.summary.optimizationRound ?? roundData.summary.optimization_round ?? 0) || undefined,
+                virtualPredictionRound: Number(roundData.summary.virtualPredictionRound ?? roundData.summary.virtual_prediction_round ?? 0) || undefined,
                 totalOpened: Number(roundData.summary.totalOpened ?? roundData.summary.total_opened ?? 0) || 0,
                 totalClicked: Number(roundData.summary.totalClicked ?? roundData.summary.total_clicked ?? 0) || 0,
                 uniqueOpened: Number(roundData.summary.uniqueOpened ?? roundData.summary.unique_opened ?? 0) || 0,
@@ -513,6 +533,11 @@ export async function streamCampaignAgent(
                 openRate: 0,
                 clickRate: 0,
                 segments: 0,
+                phase: undefined,
+                phaseLabel: undefined,
+                displayRound: undefined,
+                optimizationRound: undefined,
+                virtualPredictionRound: undefined,
                 totalOpened: 0,
                 totalClicked: 0,
                 uniqueOpened: 0,

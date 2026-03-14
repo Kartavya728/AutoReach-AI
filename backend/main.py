@@ -3,11 +3,12 @@ CampaignX Agent System - ReAct Planner/Executor with Human-in-the-Loop
 =======================================================================
 Pipeline:
   1. Fetch and study customer data
-  2. Segment into four approved categories
+  2. Segment into dynamic approval-ready categories
   3. Generate category-specific emails (War Room + Twin + Bandit)
   4. Human approval gate for generated emails
-  5. Send campaigns and stream live open/click metrics
-  6. Run iterative optimization rounds with human yes/no control
+  5. Run 3 automatic virtual rate prediction rounds
+  6. Send campaigns and stream live open/click metrics
+  7. Run iterative optimization rounds with human yes/no control
 
 Usage:
     python -m backend.main "<brief>" --rounds 3
@@ -46,6 +47,7 @@ DEFAULT_BRIEF = (
     "https://superbfsi.com/xdeposit/explore/"
 )
 DEFAULT_OPTIMIZATION_ROUNDS = 3
+AUTO_VIRTUAL_PREDICTION_ROUNDS = 3
 OUTPUT_FILE = "agent_output.json"
 CONTROL_PREFIX = "__AGENT_EVENT__"
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -482,6 +484,52 @@ def summarize_customers(crm_data: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def determine_dynamic_category_target(
+    crm_data: list[dict[str, Any]],
+) -> int:
+    """Choose a category floor from the richness and size of the real customer data."""
+    total = len(crm_data)
+    if total == 0:
+        return 3
+
+    candidate_fields = [
+        "age",
+        "income",
+        "occupation",
+        "city",
+        "marital_status",
+        "gender",
+        "credit_score",
+        "kyc_status",
+        "app_installed",
+        "existing_customer",
+        "social_media_active",
+        "family_size",
+        "kids",
+    ]
+
+    informative_fields = 0
+    for field in candidate_fields:
+        values = [c.get(field) for c in crm_data if c.get(field) not in (None, "", "Unknown")]
+        if not values:
+            continue
+
+        unique_values = {str(v).strip() for v in values if str(v).strip()}
+        coverage = len(values) / total
+        if coverage >= 0.2 and len(unique_values) >= 2:
+            informative_fields += 1
+
+    target = 3 if total < 40 else 4
+    if total >= 250 and informative_fields >= 4:
+        target += 1
+    if total >= 750 and informative_fields >= 6:
+        target += 1
+    if total >= 1500 and informative_fields >= 8:
+        target += 1
+
+    return min(8, target)
+
+
 def ensure_minimum_categories(
     segments: list[dict[str, Any]],
     min_count: int = 3,
@@ -791,16 +839,21 @@ async def run_react_planner_executor(
     )
 
     # Action 3: segment_customers
+    desired_category_count = determine_dynamic_category_target(crm_data)
+
     emit_react("thought", "I now segment customers into approval-ready categories.")
     channel.log("Thought: I now segment customers into approval-ready categories.")
-    emit_react("action", "Generating and normalizing customer categories (minimum 3).")
+    emit_react(
+        "action",
+        f"Generating customer categories dynamically from the data profile (target floor: {desired_category_count}).",
+    )
     channel.log("Action: segment_customers")
-    channel.log("Action Input: {\"min_categories\": 3}")
+    channel.log(f"Action Input: {compact_json({'target_floor': desired_category_count, 'mode': 'dynamic'})}")
 
     current_brief = brief
     while True:
         segments = await segment_customers(crm_data, current_brief)
-        segments = ensure_minimum_categories(segments, min_count=3)
+        segments = ensure_minimum_categories(segments, min_count=desired_category_count)
 
         state["segments"] = segments
 
@@ -872,6 +925,7 @@ async def run_react_planner_executor(
     content_state = await generate_content(
         state,
         emit_progress=lambda payload: channel.emit_event("digital_twin", payload),
+        emit_agent_message=lambda agent, step, kind: channel.emit_thinking(step, agent=agent, kind=kind),
     )
     segment_variants = content_state.get("segment_variants", {}) or {}
     state["segment_variants"] = segment_variants
@@ -939,10 +993,10 @@ async def run_react_planner_executor(
     channel.log("Thought: I now know the final answer")
     emit_react(
         "final",
-        "Categories and emails are approved. Starting virtual testing rounds."
+        "Categories and emails are approved. Starting 3 automatic Virtual Rate Prediction Tool rounds."
     )
     channel.log(
-        "Final Answer: Categories and emails are approved. Starting virtual testing rounds."
+        "Final Answer: Categories and emails are approved. Starting 3 automatic Virtual Rate Prediction Tool rounds."
     )
 
     # ------------------------------------------------------------------
@@ -955,6 +1009,8 @@ async def run_react_planner_executor(
     cumulative_clicked: set[str] = set()
     total_audience = len(state.get("target_customer_ids", []))
     latest_prediction = dict(state.get("predicted_metrics", {}) or {})
+    max_interactive_optimization_rounds = max(0, int(rounds or 0))
+    total_round_budget = AUTO_VIRTUAL_PREDICTION_ROUNDS + max_interactive_optimization_rounds
 
     current_groups: list[dict[str, Any]] = []
     for seg in segments:
@@ -977,8 +1033,30 @@ async def run_react_planner_executor(
     if not current_groups:
         raise RuntimeError("No eligible segment groups to send.")
 
-    for round_num in range(1, rounds + 1):
-        print_header(f"VIRTUAL TESTING ROUND {round_num}")
+    for pipeline_round_num in range(1, total_round_budget + 1):
+        is_auto_prediction_round = pipeline_round_num <= AUTO_VIRTUAL_PREDICTION_ROUNDS
+        phase = "virtual_prediction" if is_auto_prediction_round else "optimization"
+        phase_label = "Virtual Rate Prediction Tool" if is_auto_prediction_round else "Optimization"
+        display_round = (
+            pipeline_round_num
+            if is_auto_prediction_round
+            else pipeline_round_num - AUTO_VIRTUAL_PREDICTION_ROUNDS
+        )
+
+        if is_auto_prediction_round:
+            print_header(f"VIRTUAL RATE PREDICTION TOOL ROUND {display_round}")
+            channel.emit_thinking(
+                f"Virtual Rate Prediction Tool is running automatic round {display_round} of {AUTO_VIRTUAL_PREDICTION_ROUNDS}.",
+                agent="Virtual Rate Prediction Tool",
+                kind="action",
+            )
+        else:
+            print_header(f"OPTIMIZATION ROUND {display_round}")
+            channel.emit_thinking(
+                f"Starting optimization round {display_round}.",
+                agent="Optimizer",
+                kind="action",
+            )
 
         segment_results: list[dict[str, Any]] = []
 
@@ -990,7 +1068,7 @@ async def run_react_planner_executor(
                 kind="dispatch",
             )
             channel.log(
-                f"[Round {round_num}] Sending {group['segment_name']} to {len(group['customer_ids'])} customers "
+                f"[Round {pipeline_round_num}] Sending {group['segment_name']} to {len(group['customer_ids'])} customers "
                 f"at {send_time_str}"
             )
 
@@ -1013,7 +1091,6 @@ async def run_react_planner_executor(
             segment_results.append(metrics)
 
             cumulative_sent.update(str(cid) for cid in metrics.get("customer_ids", []))
-            # Update cumulative union sets
             cumulative_opened.update(str(cid) for cid in metrics.get("opened_ids", []))
             cumulative_clicked.update(str(cid) for cid in metrics.get("clicked_ids", []))
 
@@ -1030,11 +1107,15 @@ async def run_react_planner_executor(
                 kind="metrics",
             )
 
-            live = aggregate_metrics(segment_results)
             channel.emit_event(
                 "live_metrics",
                 {
-                    "round": round_num,
+                    "round": pipeline_round_num,
+                    "phase": phase,
+                    "phaseLabel": phase_label,
+                    "displayRound": display_round,
+                    "optimizationRound": 0 if is_auto_prediction_round else display_round,
+                    "virtualPredictionRound": display_round if is_auto_prediction_round else 0,
                     "sent": len(cumulative_sent),
                     "opened": len(cumulative_opened),
                     "clicked": len(cumulative_clicked),
@@ -1058,7 +1139,6 @@ async def run_react_planner_executor(
                 },
             )
 
-        round_totals = aggregate_metrics(segment_results)
         all_segment_results.extend(segment_results)
 
         denom = len(cumulative_sent) if cumulative_sent else (total_audience if total_audience > 0 else 1)
@@ -1066,7 +1146,12 @@ async def run_react_planner_executor(
         cumul_click_rate = round((len(cumulative_clicked) / denom) * 100, 1)
 
         round_summary = {
-            "round": round_num,
+            "round": pipeline_round_num,
+            "phase": phase,
+            "phase_label": phase_label,
+            "display_round": display_round,
+            "optimization_round": 0 if is_auto_prediction_round else display_round,
+            "virtual_prediction_round": display_round if is_auto_prediction_round else 0,
             "audience": len(cumulative_sent),
             "open_rate": cumul_open_rate,
             "click_rate": cumul_click_rate,
@@ -1081,17 +1166,22 @@ async def run_react_planner_executor(
         all_round_metrics.append(round_summary)
         channel.emit_thinking(
             (
-                f"Virtual testing round {round_num} complete. "
+                f"{phase_label} round {display_round} complete. "
                 f"Cumulative open {cumul_open_rate}%, click {cumul_click_rate}%."
             ),
-            agent="Optimizer",
+            agent="Virtual Rate Prediction Tool" if is_auto_prediction_round else "Optimizer",
             kind="summary",
         )
 
         channel.emit_event(
             "round_complete",
             {
-                "round": round_num,
+                "round": pipeline_round_num,
+                "phase": phase,
+                "phaseLabel": phase_label,
+                "displayRound": display_round,
+                "optimizationRound": 0 if is_auto_prediction_round else display_round,
+                "virtualPredictionRound": display_round if is_auto_prediction_round else 0,
                 "summary": {
                     "audience": round_summary["audience"],
                     "openRate": cumul_open_rate,
@@ -1103,6 +1193,11 @@ async def run_react_planner_executor(
                     "uniqueClicked": round_summary["unique_clicked"],
                     "predictedOpenRate": round_summary["predicted_open_rate"],
                     "predictedClickRate": round_summary["predicted_click_rate"],
+                    "phase": phase,
+                    "phaseLabel": phase_label,
+                    "displayRound": display_round,
+                    "optimizationRound": 0 if is_auto_prediction_round else display_round,
+                    "virtualPredictionRound": display_round if is_auto_prediction_round else 0,
                 },
             },
         )
@@ -1120,44 +1215,94 @@ async def run_react_planner_executor(
             warm_ids.extend([cid for cid in opened if cid not in clicked])
             cold_ids.extend([cid for cid in customer_ids if cid not in opened])
 
-        # Round control: ask user after each round except the configured final round.
-        if round_num >= rounds:
-            break
-
-        next_round_input = await channel.wait_for_human(
-            "next_round",
-            {
-                    "title": f"Run virtual testing round {round_num + 1}?",
-                    "message": "Continue virtual testing with warm/cold retargeting.",
-                    "round": round_num,
-                    "maxRounds": rounds,
-                    "metrics": {
-                    "audience": round_summary["audience"],
-                    "openRate": cumul_open_rate,
-                    "clickRate": cumul_click_rate,
-                    "totalOpened": round_summary["total_opened"],
-                    "totalClicked": round_summary["total_clicked"],
-                    "uniqueOpened": round_summary["unique_opened"],
-                    "uniqueClicked": round_summary["unique_clicked"],
-                    "predictedOpenRate": round_summary["predicted_open_rate"],
-                    "predictedClickRate": round_summary["predicted_click_rate"],
-                },
-            },
-            auto_payload={"continueOptimization": False},
-        )
-
-        if not to_bool(next_round_input.get("continueOptimization"), default=False):
-            channel.emit_thinking(
-                f"Human chose to stop after virtual testing round {round_num}.",
-                agent="Human-Gate",
-                kind="decision",
-            )
-            channel.log(f"[Round {round_num}] Human chose to stop virtual testing.")
-            break
-
         if not hot_ids and not warm_ids and not cold_ids:
-            channel.log(f"[Round {round_num}] No audience left. Stopping virtual testing.")
+            channel.log(f"[Round {pipeline_round_num}] No audience left. Stopping virtual testing.")
             break
+
+        next_is_auto_prediction_round = pipeline_round_num < AUTO_VIRTUAL_PREDICTION_ROUNDS
+        next_optimization_round = max(1, pipeline_round_num + 1 - AUTO_VIRTUAL_PREDICTION_ROUNDS)
+
+        if is_auto_prediction_round:
+            if pipeline_round_num == AUTO_VIRTUAL_PREDICTION_ROUNDS:
+                if max_interactive_optimization_rounds <= 0:
+                    channel.emit_thinking(
+                        "The 3 automatic virtual rate prediction rounds are complete. No interactive optimization rounds were requested.",
+                        agent="Virtual Rate Prediction Tool",
+                        kind="decision",
+                    )
+                    break
+
+                next_round_input = await channel.wait_for_human(
+                    "next_round",
+                    {
+                        "title": f"Start optimization round {next_optimization_round}?",
+                        "message": (
+                            "The first 3 automatic Virtual Rate Prediction Tool rounds are complete. "
+                            "Continue with the next optimization round?"
+                        ),
+                        "round": next_optimization_round,
+                        "maxRounds": max_interactive_optimization_rounds,
+                        "metrics": {
+                            "audience": round_summary["audience"],
+                            "openRate": cumul_open_rate,
+                            "clickRate": cumul_click_rate,
+                            "totalOpened": round_summary["total_opened"],
+                            "totalClicked": round_summary["total_clicked"],
+                            "uniqueOpened": round_summary["unique_opened"],
+                            "uniqueClicked": round_summary["unique_clicked"],
+                            "predictedOpenRate": round_summary["predicted_open_rate"],
+                            "predictedClickRate": round_summary["predicted_click_rate"],
+                        },
+                    },
+                    auto_payload={"continueOptimization": False},
+                )
+                if not to_bool(next_round_input.get("continueOptimization"), default=False):
+                    channel.emit_thinking(
+                        "Human chose to stop after the automatic Virtual Rate Prediction Tool rounds.",
+                        agent="Human-Gate",
+                        kind="decision",
+                    )
+                    channel.log("[Virtual Rate Prediction Tool] Human chose to stop before optimization round 1.")
+                    break
+            else:
+                channel.emit_thinking(
+                    f"Auto-continuing to Virtual Rate Prediction Tool round {pipeline_round_num + 1} without human approval.",
+                    agent="Virtual Rate Prediction Tool",
+                    kind="decision",
+                )
+        else:
+            if display_round >= max_interactive_optimization_rounds:
+                break
+
+            next_round_input = await channel.wait_for_human(
+                "next_round",
+                {
+                    "title": f"Run optimization round {display_round + 1}?",
+                    "message": "Continue virtual testing with the next approved optimization round.",
+                    "round": display_round,
+                    "maxRounds": max_interactive_optimization_rounds,
+                    "metrics": {
+                        "audience": round_summary["audience"],
+                        "openRate": cumul_open_rate,
+                        "clickRate": cumul_click_rate,
+                        "totalOpened": round_summary["total_opened"],
+                        "totalClicked": round_summary["total_clicked"],
+                        "uniqueOpened": round_summary["unique_opened"],
+                        "uniqueClicked": round_summary["unique_clicked"],
+                        "predictedOpenRate": round_summary["predicted_open_rate"],
+                        "predictedClickRate": round_summary["predicted_click_rate"],
+                    },
+                },
+                auto_payload={"continueOptimization": False},
+            )
+            if not to_bool(next_round_input.get("continueOptimization"), default=False):
+                channel.emit_thinking(
+                    f"Human chose to stop after optimization round {display_round}.",
+                    agent="Human-Gate",
+                    kind="decision",
+                )
+                channel.log(f"[Optimization Round {display_round}] Human chose to stop.")
+                break
 
         # Build groups for next optimization round.
         next_groups: list[dict[str, Any]] = []
@@ -1178,12 +1323,33 @@ async def run_react_planner_executor(
                 "emoji_constraint": state.get("campaign_memory", {}).get("last_emoji", "some"),
                 "send_time": state.get("campaign_memory", {}).get("last_time", "12:00")
             }
-            channel.log(f"[Strategist] Analyzing Round {round_num} metrics: {avg_open:.1f}% Open, {avg_click:.1f}% Click (CTR: {ctr}%)")
+            channel.log(
+                f"[Strategist] Analyzing Round {pipeline_round_num} metrics: "
+                f"{avg_open:.1f}% Open, {avg_click:.1f}% Click (CTR: {ctr}%)"
+            )
             meta_strategy = await strategist_agent.analyze_results(past_metrics_base)
             channel.log(f"[Strategist] Diagnosis: {meta_strategy.get('diagnosis', '')}")
-            channel.log(f"[Strategist] Directives: Length={meta_strategy.get('body_length')}, Emojis={meta_strategy.get('emoji_usage')}, Time={meta_strategy.get('send_time')}")
-            
-            # Save directives into campaign memory for next round context
+            channel.log(
+                f"[Strategist] Directives: Length={meta_strategy.get('body_length')}, "
+                f"Emojis={meta_strategy.get('emoji_usage')}, Time={meta_strategy.get('send_time')}"
+            )
+            channel.emit_thinking(
+                str(meta_strategy.get("diagnosis", "Prepared the next-round diagnosis.")),
+                agent="Campaign Strategist",
+                kind="observation",
+            )
+            channel.emit_thinking(
+                (
+                    "Next directives: "
+                    f"length={meta_strategy.get('body_length', 'medium')}, "
+                    f"emojis={meta_strategy.get('emoji_usage', 'some')}, "
+                    f"send_time={meta_strategy.get('send_time', '12:00')}, "
+                    f"cta={meta_strategy.get('cta_strength', 'direct')}."
+                ),
+                agent="Campaign Strategist",
+                kind="decision",
+            )
+
             if "campaign_memory" not in state:
                 state["campaign_memory"] = {}
             state["campaign_memory"]["last_length"] = meta_strategy.get('body_length', 'medium')
@@ -1196,7 +1362,7 @@ async def run_react_planner_executor(
 
         if hot_ids:
             hot_segment = {
-                "segment_id": f"hot_r{round_num + 1}",
+                "segment_id": f"hot_r{pipeline_round_num + 1}",
                 "segment_name": "Hot Leads Retarget",
                 "customer_ids": hot_ids,
                 "size": len(hot_ids),
@@ -1212,6 +1378,7 @@ async def run_react_planner_executor(
                 hot_segment,
                 cta_link=str(state.get("cta_link", "")),
                 emit_progress=lambda payload: channel.emit_event("digital_twin", payload),
+                emit_agent_message=lambda agent, step, kind: channel.emit_thinking(step, agent=agent, kind=kind),
                 past_metrics=past_metrics_base,
                 meta_strategy=meta_strategy
             )
@@ -1231,7 +1398,7 @@ async def run_react_planner_executor(
 
         if warm_ids:
             warm_segment = {
-                "segment_id": f"warm_r{round_num + 1}",
+                "segment_id": f"warm_r{pipeline_round_num + 1}",
                 "segment_name": "Warm Leads Retarget",
                 "customer_ids": warm_ids,
                 "size": len(warm_ids),
@@ -1248,6 +1415,7 @@ async def run_react_planner_executor(
                 warm_segment,
                 cta_link=str(state.get("cta_link", "")),
                 emit_progress=lambda payload: channel.emit_event("digital_twin", payload),
+                emit_agent_message=lambda agent, step, kind: channel.emit_thinking(step, agent=agent, kind=kind),
                 past_metrics=warm_past_metrics,
                 meta_strategy=meta_strategy
             )
@@ -1267,7 +1435,7 @@ async def run_react_planner_executor(
 
         if cold_ids:
             cold_segment = {
-                "segment_id": f"cold_r{round_num + 1}",
+                "segment_id": f"cold_r{pipeline_round_num + 1}",
                 "segment_name": "Cold Leads Retarget",
                 "customer_ids": cold_ids,
                 "size": len(cold_ids),
@@ -1285,6 +1453,7 @@ async def run_react_planner_executor(
                 cold_segment,
                 cta_link=str(state.get("cta_link", "")),
                 emit_progress=lambda payload: channel.emit_event("digital_twin", payload),
+                emit_agent_message=lambda agent, step, kind: channel.emit_thinking(step, agent=agent, kind=kind),
                 past_metrics=cold_past_metrics,
                 meta_strategy=meta_strategy
             )
@@ -1303,7 +1472,7 @@ async def run_react_planner_executor(
             )
 
         if not next_groups:
-            channel.log(f"[Round {round_num}] No optimization groups generated.")
+            channel.log(f"[Round {pipeline_round_num}] No optimization groups generated.")
             break
 
         next_segments = [
@@ -1319,44 +1488,84 @@ async def run_react_planner_executor(
             }
             for group in next_groups
         ]
-        next_segment_input = await channel.wait_for_human(
-            "segment_approval",
-            {
-                "title": f"Approve optimization categories for round {round_num + 1}",
-                "message": "Approve or reject the optimization categories for the next round.",
-                "segments": category_cards(next_segments),
-                "ctaLink": state.get("cta_link", ""),
-            },
-            auto_payload={"approved": True},
-        )
+        next_segment_cards = category_cards(next_segments)
+        if next_is_auto_prediction_round:
+            channel.emit_thinking(
+                f"Auto-approving {len(next_segment_cards)} categories for Virtual Rate Prediction Tool round {pipeline_round_num + 1}.",
+                agent="Virtual Rate Prediction Tool",
+                kind="decision",
+            )
+            next_segment_input = {
+                "approved": True,
+                "segmentApprovals": [
+                    {"segmentId": str(card.get("segmentId", "")), "approved": True}
+                    for card in next_segment_cards
+                ],
+            }
+        else:
+            next_segment_input = await channel.wait_for_human(
+                "segment_approval",
+                {
+                    "title": f"Approve optimization categories for round {next_optimization_round}",
+                    "message": (
+                        "Approve or reject the optimization categories for the next round. "
+                        "Any rejected category will be excluded from future counts and delivery."
+                    ),
+                    "segments": next_segment_cards,
+                    "ctaLink": state.get("cta_link", ""),
+                },
+                auto_payload={"approved": True},
+            )
         next_segments = parse_segment_approvals(next_segments, next_segment_input)
         if not next_segments:
-            channel.log(f"[Round {round_num}] No optimization categories approved for next round.")
+            channel.log(f"[Round {pipeline_round_num}] No optimization categories approved for next round.")
             break
 
         next_variants = {
             str(group.get("segment_id", "")): dict(group.get("variant", {}) or {})
             for group in next_groups
         }
-        next_content_input = await channel.wait_for_human(
-            "content_approval",
-            {
-                "title": f"Approve optimization emails for round {round_num + 1}",
-                "message": "Approve or edit each optimization email before the next round starts.",
-                "variants": content_cards(next_segments, next_variants, str(state.get("cta_link", ""))),
-                "ctaLink": state.get("cta_link", ""),
-            },
-            auto_payload={"approved": True},
-        )
-        next_segments, next_variants, _ = apply_variant_approvals(
+        next_content_cards = content_cards(next_segments, next_variants, str(state.get("cta_link", "")))
+        if next_is_auto_prediction_round:
+            channel.emit_thinking(
+                f"Auto-approving {len(next_content_cards)} emails for Virtual Rate Prediction Tool round {pipeline_round_num + 1}.",
+                agent="Virtual Rate Prediction Tool",
+                kind="decision",
+            )
+            next_content_input = {
+                "approved": True,
+                "variantApprovals": [
+                    {"segmentId": str(card.get("segmentId", "")), "approved": True}
+                    for card in next_content_cards
+                ],
+            }
+        else:
+            next_content_input = await channel.wait_for_human(
+                "content_approval",
+                {
+                    "title": f"Approve optimization emails for round {next_optimization_round}",
+                    "message": "Approve or edit each optimization email before the next round starts.",
+                    "variants": next_content_cards,
+                    "ctaLink": state.get("cta_link", ""),
+                },
+                auto_payload={"approved": True},
+            )
+        next_segments, next_variants, approved_next_variants = apply_variant_approvals(
             next_segments,
             next_variants,
             next_content_input,
             str(state.get("cta_link", "")),
         )
         if not next_segments:
-            channel.log(f"[Round {round_num}] No optimization emails approved for next round.")
+            channel.log(f"[Round {pipeline_round_num}] No optimization emails approved for next round.")
             break
+
+        state["segments"] = next_segments
+        state["segment_variants"] = next_variants
+        state["content_variants"] = approved_next_variants
+        approved_next_ids = collect_target_ids(next_segments)
+        state["target_customer_ids"] = approved_next_ids
+        state["customer_count"] = len(approved_next_ids)
 
         latest_prediction = await predict_open_click(next_segments, next_variants, str(state.get("cta_link", "")))
         channel.emit_thinking(
@@ -1390,7 +1599,7 @@ async def run_react_planner_executor(
     )
     for item in all_round_metrics:
         channel.log(
-            f"Round {item['round']}: audience={item['audience']}, "
+            f"{item.get('phase_label', 'Round')} {item.get('display_round', item['round'])}: audience={item['audience']}, "
             f"open={item['open_rate']}%, click={item['click_rate']}%"
         )
 
@@ -1446,6 +1655,10 @@ async def run_react_planner_executor(
         "unique_total_clicked": len(clicked_unique),
         "predicted_final_open_rate": float(latest_prediction.get("open_rate", 0.0)),
         "predicted_final_click_rate": float(latest_prediction.get("click_rate", 0.0)),
+        "auto_virtual_prediction_rounds": AUTO_VIRTUAL_PREDICTION_ROUNDS,
+        "optimization_rounds_completed": len(
+            [item for item in all_round_metrics if str(item.get("phase", "")) == "optimization"]
+        ),
         "steps": state.get("steps", []),
         "round_summaries": all_round_metrics,
     }
@@ -1458,7 +1671,10 @@ async def run_full_pipeline(brief: str, rounds: int = DEFAULT_OPTIMIZATION_ROUND
 
     print_header("STEP 1: ReAct Planner + Human-in-the-Loop")
     channel.log(f"Brief: {brief}")
-    channel.log(f"Configured max optimization rounds: {rounds}")
+    channel.log(
+        f"Configured interactive optimization rounds: {rounds} "
+        f"(plus {AUTO_VIRTUAL_PREDICTION_ROUNDS} automatic Virtual Rate Prediction Tool rounds)"
+    )
 
     return await run_react_planner_executor(brief=brief, rounds=rounds, channel=channel)
 

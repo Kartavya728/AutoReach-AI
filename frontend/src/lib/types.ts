@@ -94,6 +94,7 @@ export interface GeneratedEmailVariant {
 }
 
 export type AgentPauseType = "segment_approval" | "content_approval" | "next_round" | string;
+export type AgentRoundPhase = "virtual_prediction" | "optimization" | string;
 
 export interface AgentThinkingStep {
   agent: string;
@@ -176,6 +177,11 @@ export interface AgentPausePayload {
 
 export interface AgentLiveMetrics {
   round: number;
+  phase?: AgentRoundPhase;
+  phaseLabel?: string;
+  displayRound?: number;
+  optimizationRound?: number;
+  virtualPredictionRound?: number;
   sent: number;
   opened: number;
   clicked: number;
@@ -197,11 +203,21 @@ export interface AgentLiveMetrics {
 
 export interface AgentRoundComplete {
   round: number;
+  phase?: AgentRoundPhase;
+  phaseLabel?: string;
+  displayRound?: number;
+  optimizationRound?: number;
+  virtualPredictionRound?: number;
   summary: {
     audience: number;
     openRate: number;
     clickRate: number;
     segments: number;
+    phase?: AgentRoundPhase;
+    phaseLabel?: string;
+    displayRound?: number;
+    optimizationRound?: number;
+    virtualPredictionRound?: number;
     totalOpened?: number;
     totalClicked?: number;
     uniqueOpened?: number;
@@ -227,6 +243,11 @@ export interface AgentRunResult {
   }>;
   metricsProgression: Array<{
     round: number;
+    phase?: AgentRoundPhase;
+    phaseLabel?: string;
+    displayRound?: number;
+    optimizationRound?: number;
+    virtualPredictionRound?: number;
     audience: number;
     openRate: number;
     clickRate: number;

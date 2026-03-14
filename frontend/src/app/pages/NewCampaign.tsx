@@ -72,18 +72,91 @@ function deriveCampaignName(prompt: string) {
 }
 
 function buildRoundImprovements(roundHistory: AgentRoundComplete[]) {
-  return roundHistory.map((round, index) => {
-    const previous = index > 0 ? roundHistory[index - 1] : null;
+  const optimizationRounds = roundHistory.filter((round) =>
+    (round.phase || round.summary.phase || "").toLowerCase() === "optimization" ||
+    Number(round.optimizationRound ?? round.summary.optimizationRound ?? 0) > 0
+  );
+
+  return optimizationRounds.map((round, index) => {
+    const previous = index > 0 ? optimizationRounds[index - 1] : null;
     const openDelta = previous ? round.summary.openRate - previous.summary.openRate : 0;
     const clickDelta = previous ? round.summary.clickRate - previous.summary.clickRate : 0;
     return {
-      round: round.round,
+      round: round.optimizationRound ?? round.summary.optimizationRound ?? round.displayRound ?? round.round,
       open_rate: Number(round.summary.openRate || 0),
       click_rate: Number(round.summary.clickRate || 0),
       open_rate_delta: Number(openDelta.toFixed(2)),
       click_rate_delta: Number(clickDelta.toFixed(2)),
     };
   });
+}
+
+function countOptimizationRounds(rounds: Array<AgentRoundComplete | AgentRunResult["metricsProgression"][number]>) {
+  return rounds.filter((round) =>
+    String(round.phase || "").toLowerCase() === "optimization" ||
+    Number(round.optimizationRound ?? 0) > 0
+  ).length;
+}
+
+function getRoundLabel(round: {
+  round: number;
+  phase?: string;
+  phaseLabel?: string;
+  displayRound?: number;
+  optimizationRound?: number;
+  virtualPredictionRound?: number;
+  summary?: {
+    phase?: string;
+    phaseLabel?: string;
+    displayRound?: number;
+    optimizationRound?: number;
+    virtualPredictionRound?: number;
+  };
+}) {
+  const phase = (round.phase || round.summary?.phase || "").toLowerCase();
+  const phaseLabel = round.phaseLabel || round.summary?.phaseLabel;
+  const displayRound =
+    round.displayRound ??
+    round.summary?.displayRound ??
+    (phase === "optimization"
+      ? round.optimizationRound ?? round.summary?.optimizationRound
+      : round.virtualPredictionRound ?? round.summary?.virtualPredictionRound) ??
+    round.round;
+
+  if (phase === "virtual_prediction") {
+    return `${phaseLabel || "Virtual Rate Prediction Tool"} ${displayRound}`;
+  }
+  if (phase === "optimization") {
+    return `${phaseLabel || "Optimization"} ${displayRound}`;
+  }
+  return `Round ${displayRound}`;
+}
+
+function getRoundChipLabel(round: {
+  round: number;
+  phase?: string;
+  displayRound?: number;
+  optimizationRound?: number;
+  virtualPredictionRound?: number;
+  summary?: {
+    phase?: string;
+    displayRound?: number;
+    optimizationRound?: number;
+    virtualPredictionRound?: number;
+  };
+}) {
+  const phase = (round.phase || round.summary?.phase || "").toLowerCase();
+  const displayRound =
+    round.displayRound ??
+    round.summary?.displayRound ??
+    (phase === "optimization"
+      ? round.optimizationRound ?? round.summary?.optimizationRound
+      : round.virtualPredictionRound ?? round.summary?.virtualPredictionRound) ??
+    round.round;
+
+  if (phase === "virtual_prediction") return `VR${displayRound}`;
+  if (phase === "optimization") return `O${displayRound}`;
+  return `R${displayRound}`;
 }
 
 function buildAgentCategories(messages: ChatMessage[]) {
@@ -119,6 +192,7 @@ function extractToolsUsed(terminalLogs: string[], messages: ChatMessage[]) {
     "fetch_campaign_report",
     "fetch_customer_cohort",
     "send_campaign",
+    "virtual_rate_prediction_tool",
     "match_documents",
     "search",
     "retriever",
@@ -137,6 +211,9 @@ function extractToolsUsed(terminalLogs: string[], messages: ChatMessage[]) {
 
   messages.forEach((message) => {
     if ((message.kind || "").toLowerCase() !== "action") return;
+    if ((message.agent || "").toLowerCase().includes("virtual rate prediction")) {
+      tools.add("virtual_rate_prediction_tool");
+    }
     const actionMatch = message.text.match(/action[:\s]+([a-zA-Z0-9_.-]+)/i);
     if (actionMatch?.[1]) {
       tools.add(actionMatch[1].toLowerCase());
@@ -249,9 +326,12 @@ function kindVisualConfig(kind?: string) {
 
 function normalizeAgentKey(agent?: string) {
   const value = (agent || "").toLowerCase();
+  if (value.includes("virtual rate prediction")) return "predictor";
   if (value.includes("war room") || value.includes("warroom") || value.includes("war_room")) return "war_room";
+  if (value.includes("copywriter") || value.includes("psychologist") || value.includes("controller") || value.includes("advisor")) return "war_room";
   if (value.includes("simulator") || value.includes("twin")) return "simulator";
   if (value.includes("bandit")) return "bandit";
+  if (value.includes("predictor")) return "predictor";
   if (value.includes("strateg")) return "strategist";
   if (value.includes("hitl") || value.includes("human")) return "hitl";
   if (value.includes("segment") || value.includes("cohort")) return "segment";
@@ -299,6 +379,19 @@ function getAgentProfile(agent?: string) {
       badgeColor: "#a7f3d0",
       bubbleBg: "rgba(6,78,59,0.3)",
       bubbleBorder: "1px solid rgba(16,185,129,0.24)",
+    };
+  }
+  if (key === "predictor") {
+    return {
+      key,
+      label: "Virtual Rate Prediction Tool",
+      description: "Runs automatic forecast rounds before human-approved optimization begins.",
+      icon: BarChart3,
+      badgeBg: "rgba(14,116,144,0.18)",
+      badgeBorder: "1px solid rgba(56,189,248,0.32)",
+      badgeColor: "#bae6fd",
+      bubbleBg: "rgba(8,47,73,0.26)",
+      bubbleBorder: "1px solid rgba(56,189,248,0.24)",
     };
   }
   if (key === "hitl") {
@@ -958,11 +1051,12 @@ export default function NewCampaign() {
               const totalClicked = b.clicked + metrics.uniqueClicked;
               const aggOpenRate = totalSent > 0 ? (totalOpened / totalSent) * 100 : 0;
               const aggClickRate = totalSent > 0 ? (totalClicked / totalSent) * 100 : 0;
+              const roundLabel = getRoundLabel(metrics);
 
               pushMessage({
                 role: "system",
                 kind: "metrics",
-                text: `Round ${metrics.round}: sent ${formatCount(totalSent)}, open ${formatPercent(aggOpenRate)}, click ${formatPercent(aggClickRate)}.`,
+                text: `${roundLabel}: sent ${formatCount(totalSent)}, open ${formatPercent(aggOpenRate)}, click ${formatPercent(aggClickRate)}.`,
               });
             }
             return metrics;
@@ -990,11 +1084,12 @@ export default function NewCampaign() {
             const totalClicked = b.clicked + clickNum;
             const aggOpenRate = totalSent > 0 ? (totalOpened / totalSent) * 100 : 0;
             const aggClickRate = totalSent > 0 ? (totalClicked / totalSent) * 100 : 0;
+            const roundLabel = getRoundLabel(round);
 
             pushMessage({
               role: "system",
               kind: "summary",
-              text: `Round ${round.round} complete. Cumulative open ${formatPercent(aggOpenRate)} and click ${formatPercent(aggClickRate)}.`,
+              text: `${roundLabel} complete. Cumulative open ${formatPercent(aggOpenRate)} and click ${formatPercent(aggClickRate)}.`,
             });
           }
         },
@@ -1240,7 +1335,11 @@ export default function NewCampaign() {
       prompt,
       cta_link: resolvedCta || undefined,
       phase: phaseOverride ?? phase,
-      total_rounds: Math.max(roundHistory.length, latestMetrics?.round ?? 0, result?.metricsProgression?.length ?? 0),
+      total_rounds: Math.max(
+        countOptimizationRounds(roundHistory),
+        latestMetrics?.optimizationRound ?? 0,
+        countOptimizationRounds(result?.metricsProgression ?? [])
+      ),
       total_sent: Math.max(0, totalSent),
       total_opened: Math.max(0, totalOpened),
       total_clicked: Math.max(0, totalClicked),
@@ -1591,12 +1690,13 @@ export default function NewCampaign() {
                     const KindIcon = kindIconConfig.icon;
                     const agentProfile = getAgentProfile(message.agent);
                     const AgentIcon = agentProfile.icon;
+                    const normalizedAgentKey = normalizeAgentKey(message.agent);
                     const isLastAgentMessage = !messages
                       .slice(index + 1)
                       .some(
                         (next) =>
                           next.role === message.role &&
-                          (next.agent || "Agent") === (message.agent || "Agent")
+                          normalizeAgentKey(next.agent) === normalizedAgentKey
                       );
                     const canShowTwinDropdown =
                       !isUser &&
@@ -1762,37 +1862,65 @@ export default function NewCampaign() {
                                     };
                                     const personaApprovals = twin.personas.filter((persona) => persona.decision === "open" || persona.decision === "click").length;
                                     return (
-                                      <div
+                                      <details
                                         key={`${message.id}-${segment.segmentId}`}
                                         className="rounded-lg p-2"
                                         style={{ background: "rgba(15,23,42,0.75)", border: "1px solid rgba(148,163,184,0.18)" }}
                                       >
-                                        <div className="flex items-center justify-between gap-2">
-                                          <div className="text-slate-100" style={{ fontSize: "0.72rem", fontWeight: 700 }}>
-                                            {segment.name}
+                                        <summary className="cursor-pointer list-none">
+                                          <div className="flex items-center justify-between gap-2">
+                                            <div>
+                                              <div className="text-slate-100" style={{ fontSize: "0.72rem", fontWeight: 700 }}>
+                                                {segment.name}
+                                              </div>
+                                              <div className="text-slate-400 mt-0.5" style={{ fontSize: "0.62rem" }}>
+                                                Attempt {Math.max(twin.attempt, 1)} / {twin.maxAttempts} • {formatCount(personaApprovals)} positive • {formatCount(twin.ignoreVotes)} declined
+                                              </div>
+                                            </div>
+                                            <div
+                                              className="px-1.5 py-0.5 rounded-full"
+                                              style={{ fontSize: "0.58rem", fontWeight: 700, background: badge.background, border: badge.border, color: badge.color }}
+                                            >
+                                              {badge.label}
+                                            </div>
                                           </div>
-                                          <div
-                                            className="px-1.5 py-0.5 rounded-full"
-                                            style={{ fontSize: "0.58rem", fontWeight: 700, background: badge.background, border: badge.border, color: badge.color }}
-                                          >
-                                            {badge.label}
-                                          </div>
-                                        </div>
+                                        </summary>
                                         <div className="text-slate-400 mt-1" style={{ fontSize: "0.64rem" }}>
                                           Subject: {activeDraft.subject || "Waiting for draft"}
                                         </div>
-                                        <div className="mt-1 flex flex-wrap gap-1.5">
-                                          {twin.personas.slice(0, 3).map((persona) => {
+                                        <div className="text-sky-200 mt-1" style={{ fontSize: "0.62rem" }}>
+                                          CTA: {activeDraft.ctaLink || twin.ctaLink || pendingPause?.ctaLink || latestCtaLink || ctaLink}
+                                        </div>
+                                        <div className="mt-2 grid gap-1.5">
+                                          {twin.personas.map((persona) => {
                                             const personaStyle = personaStyles(persona.decision);
                                             return (
-                                              <span
+                                              <details
                                                 key={`${segment.segmentId}-${persona.personaId}`}
-                                                className="px-1.5 py-0.5 rounded-full"
-                                                style={{ fontSize: "0.56rem", background: personaStyle.background, border: personaStyle.border, color: personaStyle.color }}
-                                                title={personaStyle.verdict}
+                                                className="rounded-md px-2 py-1.5"
+                                                style={{ background: "rgba(2,6,23,0.55)", border: "1px solid rgba(100,116,139,0.2)" }}
                                               >
-                                                {persona.name}: {personaStyle.detail}
-                                              </span>
+                                                <summary className="cursor-pointer list-none flex items-center justify-between gap-2">
+                                                  <span className="text-slate-200" style={{ fontSize: "0.62rem", fontWeight: 600 }}>
+                                                    {persona.name}
+                                                  </span>
+                                                  <span
+                                                    className="px-1.5 py-0.5 rounded-full"
+                                                    style={{ fontSize: "0.56rem", background: personaStyle.background, border: personaStyle.border, color: personaStyle.color }}
+                                                    title={personaStyle.verdict}
+                                                  >
+                                                    {personaStyle.detail}
+                                                  </span>
+                                                </summary>
+                                                <div className="text-slate-400 mt-1" style={{ fontSize: "0.58rem" }}>
+                                                  {persona.occupation ? `${persona.occupation}` : "Persona"}{persona.city ? ` • ${persona.city}` : ""}
+                                                </div>
+                                                {persona.monologue && (
+                                                  <div className="text-slate-300 mt-1 whitespace-pre-wrap" style={{ fontSize: "0.6rem", lineHeight: 1.5 }}>
+                                                    {persona.monologue}
+                                                  </div>
+                                                )}
+                                              </details>
                                             );
                                           })}
                                         </div>
@@ -1802,7 +1930,7 @@ export default function NewCampaign() {
                                         <div className="text-sky-200 mt-1" style={{ fontSize: "0.62rem" }}>
                                           CTA: {activeDraft.ctaLink || twin.ctaLink || pendingPause?.ctaLink || latestCtaLink || ctaLink}
                                         </div>
-                                      </div>
+                                      </details>
                                     );
                                   })}
                                 </div>
@@ -2199,10 +2327,10 @@ export default function NewCampaign() {
                               const maxRate = Math.max(...roundHistory.map((entry) => entry.summary.openRate), 1);
                               const barHeight = Math.max(14, (round.summary.openRate / maxRate) * 44);
                               return (
-                                <div key={round.round} className="flex flex-col items-center gap-1 flex-1">
+                                <div key={`${round.phase || round.summary.phase || "round"}-${round.round}`} className="flex flex-col items-center gap-1 flex-1">
                                   <div className="text-emerald-300" style={{ fontSize: "0.58rem" }}>{formatPercent(round.summary.openRate)}</div>
                                   <div className="w-full rounded-t-md" style={{ height: `${barHeight}px`, background: "linear-gradient(180deg, rgba(34,197,94,0.5) 0%, rgba(34,197,94,0.15) 100%)", minWidth: "16px" }} />
-                                  <div className="text-slate-500" style={{ fontSize: "0.56rem" }}>R{round.round}</div>
+                                  <div className="text-slate-500" style={{ fontSize: "0.56rem" }}>{getRoundChipLabel(round)}</div>
                                 </div>
                               );
                             })}

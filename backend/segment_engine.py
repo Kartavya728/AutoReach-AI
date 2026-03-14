@@ -170,7 +170,10 @@ async def generate_dynamic_segments(brief: str, crm_data: list[CustomerRecord]) 
 
 STEP 1: Read the Campaign Brief and identify what types of customers to prioritize.
 STEP 2: Study the REAL DATA PROFILE below to understand the actual distribution of customer attributes.
-STEP 3: Design a MINIMUM of 3 distinct segments, but dynamically create as many as needed based on the mathematical clustering in the provided real data profile to maximize reach.
+STEP 3: Design a dynamic number of distinct segments based on the actual data profile.
+   - Prefer 4-8 segments when the dataset has enough signal.
+   - Only fall back to 3 segments if the data is genuinely too sparse to justify more.
+   - Never force exactly 4 segments. The count must follow the data.
 
 {data_profile}
 

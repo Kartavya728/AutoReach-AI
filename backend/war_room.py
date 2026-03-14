@@ -3,10 +3,14 @@ Multi-Agent War Room - Copywriter, Behavioral Psychologist, Financial Advisor.
 Collaborates to generate highly persuasive campaign templates.
 """
 
+from typing import Callable
+
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from backend.config import GEMINI_API_KEY, GEMINI_MODEL
 import json
+
+WarRoomEmitter = Callable[[str, str, str], None]
 
 class WarRoom:
     def __init__(self):
@@ -25,7 +29,8 @@ class WarRoom:
         past_metrics: dict | None = None,
         length_constraint: str = "medium",
         emoji_constraint: str = "some",
-        meta_strategy: dict | None = None
+        meta_strategy: dict | None = None,
+        emit_agent_message: WarRoomEmitter | None = None,
     ) -> dict[str, str]:
         """
         Coordinates Copywriter -> Psychologist -> Controller to produce an email template.
@@ -100,6 +105,12 @@ class WarRoom:
                 cta_directive += f"VISUAL ANCHOR DIRECTIVE: You MUST place this exact visual anchor immediately before the CTA link: '{c_vis}' (e.g. {c_vis} https://...)\n"
 
         # Agent 1: Copywriter
+        if emit_agent_message:
+            emit_agent_message(
+                "War Room - Copywriter",
+                f"Drafting a {length_constraint} email for the {tier} tier using the {angle} angle.",
+                "action",
+            )
         prompt_cw = f"""You are the Lead Copywriter for a high-stakes BFSI email campaign.
 Campaign Brief: {brief}
 Target Audience Tier: {tier}
@@ -120,6 +131,12 @@ Write the absolute best, most click-worthy copy for THIS specific audience!
         draft_copy = str(resp_cw.content)
 
         # Agent 2: Behavioral Psychologist
+        if emit_agent_message:
+            emit_agent_message(
+                "War Room - Psychologist",
+                "Stress-testing the draft for click-through friction, urgency, and trust signals.",
+                "observation",
+            )
         prompt_psy = f"""You are a Behavioral Psychologist optimizing a marketing email for maximum click-through.
 Target Tier: {tier} (determines financial capacity and trust).
 Angle: {angle}
@@ -143,8 +160,21 @@ Return ONLY JSON with "subject" and "body".
         try:
             start = optimized_copy.find("{")
             end = optimized_copy.rfind("}")
-            return json.loads(optimized_copy[start:end+1])
-        except:
+            parsed = json.loads(optimized_copy[start:end+1])
+            if emit_agent_message:
+                emit_agent_message(
+                    "War Room - Controller",
+                    "Finalized the draft after copywriting and behavioral review.",
+                    "summary",
+                )
+            return parsed
+        except Exception:
+            if emit_agent_message:
+                emit_agent_message(
+                    "War Room - Controller",
+                    "Structured parsing failed, so the war room is falling back to a safe draft.",
+                    "decision",
+                )
             return {
                 "subject": f"[{angle.upper()}] Exclusive for {{name}} in {{city}}",
                 "body": f"Hi {{name}},\nWe know as a {{occupation}} you value great returns...\n\nClaim your offer today."

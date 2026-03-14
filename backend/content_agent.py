@@ -87,6 +87,7 @@ from backend.bandit import bandit_engine
 
 URL_RE = re.compile(r"https?://[^\s<>\"]+")
 TwinProgressEmitter = Callable[[dict[str, Any]], None]
+AgentMessageEmitter = Callable[[str, str, str], None]
 
 
 def _extract_cta_link(brief: str) -> str:
@@ -244,6 +245,7 @@ async def generate_segment_variant(
     segment: CustomerSegment,
     cta_link: str = "",
     emit_progress: TwinProgressEmitter | None = None,
+    emit_agent_message: AgentMessageEmitter | None = None,
     past_metrics: dict | None = None,
     meta_strategy: dict | None = None,
 ) -> EmailVariant:
@@ -270,8 +272,20 @@ async def generate_segment_variant(
     # 2. Contextual bandit chooses the angle for this tier.
     angle = bandit_engine.select_action(tier)
     _safe_print(f"      [Bandit] Selected Angle: {angle.upper()} for Tier: {tier}")
+    if emit_agent_message:
+        emit_agent_message(
+            "Bandit",
+            f"Selected the {angle.upper()} angle for {segment.get('segment_name', 'this segment')} in the {tier} tier.",
+            "decision",
+        )
     
     _safe_print(f"      [Simulator] Generating dynamic synthetic personas for '{segment.get('segment_name', '')}'...")
+    if emit_agent_message:
+        emit_agent_message(
+            "Twin Simulator",
+            f"Building synthetic personas for {segment.get('segment_name', 'this segment')} before testing the draft.",
+            "action",
+        )
     personas = await _build_twin_personas(segment)
 
     # 3. War Room generates and Digital Twin tests (Loop up to 3 times)
@@ -290,6 +304,12 @@ async def generate_segment_variant(
     for attempt_index in range(max_attempts):
         attempt = attempt_index + 1
         _safe_print(f"      [War Room] Generating draft {attempt} (Length: {length_constraint}, Emojis: {emoji_constraint})...")
+        if emit_agent_message:
+            emit_agent_message(
+                "War Room",
+                f"Generating attempt {attempt} for {segment.get('segment_name', 'this segment')} with {length_constraint} length and {emoji_constraint} emoji usage.",
+                "action",
+            )
         segment_profile = get_segment_profile(segment)
         draft_variant = await war_room.generate_variants(
             brief, tier, angle,
@@ -297,7 +317,8 @@ async def generate_segment_variant(
             past_metrics=past_metrics,
             length_constraint=length_constraint,
             emoji_constraint=emoji_constraint,
-            meta_strategy=meta_strategy
+            meta_strategy=meta_strategy,
+            emit_agent_message=emit_agent_message,
         )
         draft_variant = _ensure_variant_has_cta_link(draft_variant, cta_link)
         
@@ -333,11 +354,23 @@ async def generate_segment_variant(
         opens = sum(1 for r in twin_results if r["decision"] == "OPEN")
         
         _safe_print(f"      [Simulator] Twin Test: {clicks} Clicks, {opens} Opens out of 5")
+        if emit_agent_message:
+            emit_agent_message(
+                "Twin Simulator",
+                f"Attempt {attempt} for {segment.get('segment_name', 'this segment')} scored {clicks} clicks and {opens} opens across {len(personas)} personas.",
+                "observation",
+            )
         
         if not twin_engine.bayesian_kill_rule(twin_results):
             # Survived the kill rule!
             bandit_engine.update_reward(tier, angle, opens, max(1, clicks), len(personas))
             variant = draft_variant
+            if emit_agent_message:
+                emit_agent_message(
+                    "Bandit",
+                    f"Rewarded the {angle.upper()} angle after the twin simulator approved attempt {attempt}.",
+                    "summary",
+                )
             _emit_twin_progress(
                 emit_progress,
                 segment=segment,
@@ -353,6 +386,12 @@ async def generate_segment_variant(
         else:
             _safe_print("      [Simulator] Kill Rule triggered. Variant failed test. Regenerating.")
             bandit_engine.update_reward(tier, angle, 0, 0, len(personas))
+            if emit_agent_message:
+                emit_agent_message(
+                    "Twin Simulator",
+                    f"Kill rule triggered for {segment.get('segment_name', 'this segment')} on attempt {attempt}; requesting a fresh draft.",
+                    "decision",
+                )
             _emit_twin_progress(
                 emit_progress,
                 segment=segment,
@@ -366,10 +405,22 @@ async def generate_segment_variant(
             )
             angle = bandit_engine.select_action(tier)
             _safe_print(f"      [Bandit] Retrying with Angle: {angle.upper()}")
+            if emit_agent_message:
+                emit_agent_message(
+                    "Bandit",
+                    f"Retrying {segment.get('segment_name', 'this segment')} with the {angle.upper()} angle after the failed draft.",
+                    "decision",
+                )
             
     if not variant:
         # Fallback if all 3 attempts failed the simulator (unlikely)
         variant = draft_variant
+        if emit_agent_message:
+            emit_agent_message(
+                "War Room",
+                f"All twin attempts failed for {segment.get('segment_name', 'this segment')}; using the last draft as fallback.",
+                "decision",
+            )
         _emit_twin_progress(
             emit_progress,
             segment=segment,
@@ -394,6 +445,7 @@ async def generate_segment_variant(
 async def generate_content(
     state: WorkflowState,
     emit_progress: TwinProgressEmitter | None = None,
+    emit_agent_message: AgentMessageEmitter | None = None,
 ) -> dict:
     """
     LangGraph node: Generate one tailored email per segment using Autonomous Growth Engine.
@@ -413,6 +465,12 @@ async def generate_content(
 
     async def _process_segment(seg):
         _safe_print(f"  [Orchestrator] Processing Segment (Parallel): {seg['segment_name']} ({seg['size']} customers)")
+        if emit_agent_message:
+            emit_agent_message(
+                "Orchestrator",
+                f"Processing {seg['segment_name']} with {seg['size']} customers in parallel.",
+                "action",
+            )
         if emit_progress:
             emit_progress(
                 {
@@ -431,9 +489,22 @@ async def generate_content(
                     "personas": [],
                 }
             )
-        variant = await generate_segment_variant(brief, strategy, seg, cta_link=cta_link, emit_progress=emit_progress)
+        variant = await generate_segment_variant(
+            brief,
+            strategy,
+            seg,
+            cta_link=cta_link,
+            emit_progress=emit_progress,
+            emit_agent_message=emit_agent_message,
+        )
         variant = _ensure_variant_has_cta_link(variant, cta_link)
         _safe_print(f"    [OK] Final Subject ({seg['segment_name'][:20]}...): {variant['subject'][:60]}...")
+        if emit_agent_message:
+            emit_agent_message(
+                "Content Agent",
+                f"Locked the final approved draft for {seg['segment_name']}.",
+                "summary",
+            )
         return seg["segment_id"], variant
 
     valid_segments = [seg for seg in segments if seg["size"] > 0]

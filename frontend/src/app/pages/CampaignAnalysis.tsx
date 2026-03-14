@@ -150,7 +150,7 @@ export default function CampaignAnalysis() {
             <p className="text-slate-300 mt-2" style={{ fontSize: "0.88rem", lineHeight: 1.6 }}>{campaignRun.prompt}</p>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 mt-6">
-              <StatCard label="Total Rounds" value={formatCount(campaignRun.total_rounds)} icon={BarChart3} tone="#f59e0b" />
+              <StatCard label="Optimization Rounds" value={formatCount(campaignRun.total_rounds)} icon={BarChart3} tone="#f59e0b" />
               <StatCard label="Audience Reached" value={formatCount(campaignRun.total_sent)} icon={Users} tone="#38bdf8" />
               <StatCard label="Open Rate" value={formatPercent(campaignRun.open_rate)} icon={TrendingUp} tone="#22c55e" />
               <StatCard label="Click Rate" value={formatPercent(campaignRun.click_rate)} icon={MousePointer} tone="#3b82f6" />
