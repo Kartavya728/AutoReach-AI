@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import next from "next";
 import { WebSocketServer, WebSocket } from "ws";
 
-const DEFAULT_OPTIMIZATION_ROUNDS = 2;
+const DEFAULT_OPTIMIZATION_ROUNDS = 10;
 const OUTPUT_FILE = "agent_output.json";
 const CONTROL_PREFIX = "__AGENT_EVENT__";
 const CLIENT_DISCONNECT_KILL_DELAY_MS = 30_000;
@@ -330,6 +330,12 @@ function handleConnection(ws, internalOrigin) {
   let disconnectKillTimer = null;
   let heartbeatTimer = null;
   let stderrTranscript = "";
+  let errorSent = false;
+
+  const sendError = (payload) => {
+    errorSent = true;
+    sendEvent(ws, "error", payload);
+  };
 
   const stopHeartbeat = () => {
     if (heartbeatTimer) {
@@ -357,7 +363,7 @@ function handleConnection(ws, internalOrigin) {
       const parsed = JSON.parse(raw.toString("utf-8"));
       message = isRecord(parsed) ? parsed : {};
     } catch {
-      sendEvent(ws, "error", { error: "Invalid JSON payload" });
+      sendError({ error: "Invalid JSON payload" });
       return;
     }
 
@@ -370,7 +376,7 @@ function handleConnection(ws, internalOrigin) {
       try {
         pythonProcess.stdin.write(`${JSON.stringify(message)}\n`);
       } catch (error) {
-        sendEvent(ws, "error", {
+        sendError({
           error: "Failed to forward human input",
           message: error instanceof Error ? error.message : String(error),
         });
@@ -387,7 +393,7 @@ function handleConnection(ws, internalOrigin) {
     void (async () => {
       const brief = String(message.brief ?? "").trim();
       if (!brief) {
-        sendEvent(ws, "error", { error: "Missing required field: brief" });
+        sendError({ error: "Missing required field: brief" });
         return;
       }
 
@@ -426,7 +432,7 @@ function handleConnection(ws, internalOrigin) {
       });
 
       if (!pythonProcess.stdout || !pythonProcess.stderr || !pythonProcess.stdin) {
-        sendEvent(ws, "error", {
+        sendError({
           error: "Agents process streams unavailable",
           message: "Could not attach to stdin/stdout/stderr for interactive streaming.",
         });
@@ -454,6 +460,9 @@ function handleConnection(ws, internalOrigin) {
           const normalized = rawLine.replace(/\r$/, "");
           const control = parseControlEnvelope(normalized);
           if (control) {
+            if (control.event === "error") {
+              errorSent = true;
+            }
             sendEvent(ws, control.event, control.data);
           } else if (normalized.trim()) {
             stderrTranscript = `${stderrTranscript}${normalized}\n`.slice(-16_000);
@@ -466,7 +475,7 @@ function handleConnection(ws, internalOrigin) {
 
       pythonProcess.once("error", (error) => {
         stopHeartbeat();
-        sendEvent(ws, "error", {
+        sendError({
           error: "Failed to start agents process",
           message: error instanceof Error ? error.message : String(error),
         });
@@ -484,6 +493,9 @@ function handleConnection(ws, internalOrigin) {
           const normalizedBuffer = stderrBuffer.replace(/\r$/, "");
           const control = parseControlEnvelope(normalizedBuffer);
           if (control) {
+            if (control.event === "error") {
+              errorSent = true;
+            }
             sendEvent(ws, control.event, control.data);
           } else if (normalizedBuffer.trim()) {
             stderrTranscript = `${stderrTranscript}${normalizedBuffer}\n`.slice(-16_000);
@@ -493,12 +505,14 @@ function handleConnection(ws, internalOrigin) {
         }
 
         if (code !== 0) {
-          sendEvent(ws, "error", {
-            error: "Agents pipeline exited with failure",
-            message: stderrTranscript.trim()
-              ? `Process exited with code ${code ?? "unknown"}\n${stderrTranscript.trim()}`
-              : `Process exited with code ${code ?? "unknown"}`,
-          });
+          if (!errorSent) {
+            sendError({
+              error: "Agents pipeline exited with failure",
+              message: stderrTranscript.trim()
+                ? `Process exited with code ${code ?? "unknown"}\n${stderrTranscript.trim()}`
+                : `Process exited with code ${code ?? "unknown"}`,
+            });
+          }
           return;
         }
 
@@ -524,7 +538,7 @@ function handleConnection(ws, internalOrigin) {
             savedCampaignId: savedCampaign?.id ?? null,
           });
         } catch (error) {
-          sendEvent(ws, "error", {
+          sendError({
             error: "Failed to parse agents final output",
             message: error instanceof Error ? error.message : "Unknown parsing failure",
           });

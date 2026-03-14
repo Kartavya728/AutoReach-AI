@@ -46,7 +46,7 @@ DEFAULT_BRIEF = (
     "marked 'inactive'. Include the call to action: "
     "https://superbfsi.com/xdeposit/explore/"
 )
-DEFAULT_OPTIMIZATION_ROUNDS = 3
+DEFAULT_OPTIMIZATION_ROUNDS = 10
 AUTO_VIRTUAL_PREDICTION_ROUNDS = 3
 OUTPUT_FILE = "agent_output.json"
 CONTROL_PREFIX = "__AGENT_EVENT__"
@@ -79,6 +79,66 @@ def print_header(title: str):
     print("\n" + "=" * 78)
     print(f"  {title}")
     print("=" * 78, flush=True)
+
+
+def iter_exception_chain(exc: BaseException) -> list[BaseException]:
+    chain: list[BaseException] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        chain.append(current)
+        next_exc = current.__cause__ or current.__context__
+        current = next_exc if isinstance(next_exc, BaseException) else None
+    return chain
+
+
+def describe_runtime_failure(exc: BaseException) -> dict[str, Any]:
+    chain = iter_exception_chain(exc)
+    messages = " | ".join(str(item) for item in chain if str(item).strip())
+    type_names = {type(item).__name__ for item in chain}
+
+    if any("GEMINI_API_KEY" in str(item) for item in chain):
+        return {
+            "error": "Gemini API key missing",
+            "message": "Gemini is not configured for this backend. Set GEMINI_API_KEY in the server environment and try again.",
+            "kind": "llm_configuration",
+            "provider": "google-genai",
+            "model": GEMINI_MODEL,
+            "retryable": False,
+        }
+
+    if (
+        "ConnectError" in type_names
+        or "APIConnectionError" in type_names
+        or "All connection attempts failed" in messages
+    ):
+        return {
+            "error": "Gemini connection failed",
+            "message": (
+                f"Gemini is configured but unreachable from this environment, so the campaign run stopped before content generation. "
+                f"Check outbound internet access, DNS, firewall or proxy rules, and that model '{GEMINI_MODEL}' is allowed."
+            ),
+            "kind": "llm_connectivity",
+            "provider": "google-genai",
+            "model": GEMINI_MODEL,
+            "retryable": True,
+        }
+
+    return {
+        "error": type(exc).__name__ or "Pipeline failure",
+        "message": str(exc) or "The campaign pipeline failed unexpectedly.",
+        "kind": "pipeline_failure",
+        "retryable": False,
+    }
+
+
+def emit_runtime_failure(exc: BaseException):
+    payload = describe_runtime_failure(exc)
+    envelope = {"event": "error", "data": payload}
+    sys.stderr.write(f"{CONTROL_PREFIX}{json.dumps(envelope, ensure_ascii=False)}\n")
+    sys.stderr.write(f"{payload['error']}: {payload['message']}\n")
+    sys.stderr.flush()
 
 
 def format_time(dt: datetime) -> str:
@@ -324,8 +384,14 @@ class RuntimeChannel:
 
     def __init__(self, interactive: bool):
         self.interactive = interactive
+        self.background_mode = False
 
-    def log(self, message: str):
+    def set_background_mode(self, enabled: bool):
+        self.background_mode = enabled
+
+    def log(self, message: str, *, background_visible: bool | None = None):
+        if self.background_mode and background_visible is not True:
+            return
         encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
         safe_message = message.encode(encoding, errors="replace").decode(encoding, errors="replace")
         print(safe_message, flush=True)
@@ -335,7 +401,16 @@ class RuntimeChannel:
         sys.stderr.write(f"{CONTROL_PREFIX}{json.dumps(envelope, ensure_ascii=False)}\n")
         sys.stderr.flush()
 
-    def emit_thinking(self, step: str, agent: str = "ReAct-Agent", kind: str = "status"):
+    def emit_thinking(
+        self,
+        step: str,
+        agent: str = "ReAct-Agent",
+        kind: str = "status",
+        *,
+        background_visible: bool | None = None,
+    ):
+        if self.background_mode and background_visible is not True:
+            return
         self.emit_event(
             "thinking",
             {
@@ -353,13 +428,17 @@ class RuntimeChannel:
     ) -> dict[str, Any]:
         if not self.interactive:
             response = auto_payload or {"approved": True, "continueOptimization": False}
-            self.log(f"[HITL] Interactive mode off. Auto-response for '{pause_type}': {response}")
+            self.log(
+                f"[HITL] Interactive mode off. Auto-response for '{pause_type}': {response}",
+                background_visible=True,
+            )
             return response
 
         self.emit_thinking(
             f"Waiting for human input on {pause_type.replace('_', ' ')}.",
             agent="Human-Gate",
             kind="pause",
+            background_visible=True,
         )
         self.emit_event(
             "pause",
@@ -369,7 +448,7 @@ class RuntimeChannel:
             },
         )
 
-        self.log(f"[HITL] Waiting for human input: {pause_type}")
+        self.log(f"[HITL] Waiting for human input: {pause_type}", background_visible=True)
 
         while True:
             line = await asyncio.to_thread(sys.stdin.readline)
@@ -385,7 +464,7 @@ class RuntimeChannel:
             try:
                 message = json.loads(text)
             except json.JSONDecodeError:
-                self.log(f"[HITL] Ignoring non-JSON input: {text[:120]}")
+                self.log(f"[HITL] Ignoring non-JSON input: {text[:120]}", background_visible=True)
                 continue
 
             if str(message.get("type", "")) != "human_input":
@@ -394,15 +473,17 @@ class RuntimeChannel:
             if str(message.get("pauseType", "")) != pause_type:
                 self.log(
                     f"[HITL] Ignoring input for pause '{message.get('pauseType')}', "
-                    f"current pause is '{pause_type}'."
+                    f"current pause is '{pause_type}'.",
+                    background_visible=True,
                 )
                 continue
 
-            self.log(f"[HITL] Received input for '{pause_type}'.")
+            self.log(f"[HITL] Received input for '{pause_type}'.", background_visible=True)
             self.emit_thinking(
                 f"Received human response for {pause_type.replace('_', ' ')}.",
                 agent="Human-Gate",
                 kind="resume",
+                background_visible=True,
             )
             return message
 
@@ -1033,6 +1114,7 @@ async def run_react_planner_executor(
     if not current_groups:
         raise RuntimeError("No eligible segment groups to send.")
 
+    channel.set_background_mode(True)
     for pipeline_round_num in range(1, total_round_budget + 1):
         is_auto_prediction_round = pipeline_round_num <= AUTO_VIRTUAL_PREDICTION_ROUNDS
         phase = "virtual_prediction" if is_auto_prediction_round else "optimization"
@@ -1044,14 +1126,16 @@ async def run_react_planner_executor(
         )
 
         if is_auto_prediction_round:
-            print_header(f"VIRTUAL RATE PREDICTION TOOL ROUND {display_round}")
+            if not channel.background_mode:
+                print_header(f"VIRTUAL RATE PREDICTION TOOL ROUND {display_round}")
             channel.emit_thinking(
                 f"Virtual Rate Prediction Tool is running automatic round {display_round} of {AUTO_VIRTUAL_PREDICTION_ROUNDS}.",
                 agent="Virtual Rate Prediction Tool",
                 kind="action",
             )
         else:
-            print_header(f"OPTIMIZATION ROUND {display_round}")
+            if not channel.background_mode:
+                print_header(f"OPTIMIZATION ROUND {display_round}")
             channel.emit_thinking(
                 f"Starting optimization round {display_round}.",
                 agent="Optimizer",
@@ -1216,7 +1300,12 @@ async def run_react_planner_executor(
             cold_ids.extend([cid for cid in customer_ids if cid not in opened])
 
         if not hot_ids and not warm_ids and not cold_ids:
-            channel.log(f"[Round {pipeline_round_num}] No audience left. Stopping virtual testing.")
+            channel.emit_thinking(
+                "No additional audience qualified for another background round. Finishing with the current results.",
+                agent="Optimizer",
+                kind="summary",
+                background_visible=True,
+            )
             break
 
         next_is_auto_prediction_round = pipeline_round_num < AUTO_VIRTUAL_PREDICTION_ROUNDS
@@ -1279,7 +1368,7 @@ async def run_react_planner_executor(
                 {
                     "title": f"Run optimization round {display_round + 1}?",
                     "message": "Continue virtual testing with the next approved optimization round.",
-                    "round": display_round,
+                    "round": display_round + 1,
                     "maxRounds": max_interactive_optimization_rounds,
                     "metrics": {
                         "audience": round_summary["audience"],
@@ -1377,10 +1466,11 @@ async def run_react_planner_executor(
                 str(state.get("strategy", "")),
                 hot_segment,
                 cta_link=str(state.get("cta_link", "")),
-                emit_progress=lambda payload: channel.emit_event("digital_twin", payload),
-                emit_agent_message=lambda agent, step, kind: channel.emit_thinking(step, agent=agent, kind=kind),
+                emit_progress=None,
+                emit_agent_message=None,
                 past_metrics=past_metrics_base,
-                meta_strategy=meta_strategy
+                meta_strategy=meta_strategy,
+                verbose=False,
             )
             hot_variant = ensure_variant_has_link(hot_variant, str(state.get("cta_link", "")))
             next_groups.append(
@@ -1414,10 +1504,11 @@ async def run_react_planner_executor(
                 str(state.get("strategy", "")),
                 warm_segment,
                 cta_link=str(state.get("cta_link", "")),
-                emit_progress=lambda payload: channel.emit_event("digital_twin", payload),
-                emit_agent_message=lambda agent, step, kind: channel.emit_thinking(step, agent=agent, kind=kind),
+                emit_progress=None,
+                emit_agent_message=None,
                 past_metrics=warm_past_metrics,
-                meta_strategy=meta_strategy
+                meta_strategy=meta_strategy,
+                verbose=False,
             )
             warm_variant = ensure_variant_has_link(warm_variant, str(state.get("cta_link", "")))
             next_groups.append(
@@ -1452,10 +1543,11 @@ async def run_react_planner_executor(
                 str(state.get("strategy", "")),
                 cold_segment,
                 cta_link=str(state.get("cta_link", "")),
-                emit_progress=lambda payload: channel.emit_event("digital_twin", payload),
-                emit_agent_message=lambda agent, step, kind: channel.emit_thinking(step, agent=agent, kind=kind),
+                emit_progress=None,
+                emit_agent_message=None,
                 past_metrics=cold_past_metrics,
-                meta_strategy=meta_strategy
+                meta_strategy=meta_strategy,
+                verbose=False,
             )
             cold_variant = ensure_variant_has_link(cold_variant, str(state.get("cta_link", "")))
             next_groups.append(
@@ -1489,75 +1581,61 @@ async def run_react_planner_executor(
             for group in next_groups
         ]
         next_segment_cards = category_cards(next_segments)
-        if next_is_auto_prediction_round:
-            channel.emit_thinking(
-                f"Auto-approving {len(next_segment_cards)} categories for Virtual Rate Prediction Tool round {pipeline_round_num + 1}.",
-                agent="Virtual Rate Prediction Tool",
-                kind="decision",
-            )
-            next_segment_input = {
-                "approved": True,
-                "segmentApprovals": [
-                    {"segmentId": str(card.get("segmentId", "")), "approved": True}
-                    for card in next_segment_cards
-                ],
-            }
-        else:
-            next_segment_input = await channel.wait_for_human(
-                "segment_approval",
-                {
-                    "title": f"Approve optimization categories for round {next_optimization_round}",
-                    "message": (
-                        "Approve or reject the optimization categories for the next round. "
-                        "Any rejected category will be excluded from future counts and delivery."
-                    ),
-                    "segments": next_segment_cards,
-                    "ctaLink": state.get("cta_link", ""),
-                },
-                auto_payload={"approved": True},
-            )
-        next_segments = parse_segment_approvals(next_segments, next_segment_input)
-        if not next_segments:
-            channel.log(f"[Round {pipeline_round_num}] No optimization categories approved for next round.")
-            break
-
         next_variants = {
             str(group.get("segment_id", "")): dict(group.get("variant", {}) or {})
             for group in next_groups
         }
         next_content_cards = content_cards(next_segments, next_variants, str(state.get("cta_link", "")))
         if next_is_auto_prediction_round:
-            channel.emit_thinking(
-                f"Auto-approving {len(next_content_cards)} emails for Virtual Rate Prediction Tool round {pipeline_round_num + 1}.",
-                agent="Virtual Rate Prediction Tool",
-                kind="decision",
-            )
-            next_content_input = {
+            review_input = {
                 "approved": True,
+                "segmentApprovals": [
+                    {"segmentId": str(card.get("segmentId", "")), "approved": True}
+                    for card in next_segment_cards
+                ],
                 "variantApprovals": [
                     {"segmentId": str(card.get("segmentId", "")), "approved": True}
                     for card in next_content_cards
                 ],
             }
         else:
-            next_content_input = await channel.wait_for_human(
-                "content_approval",
+            review_input = await channel.wait_for_human(
+                "optimization_review",
                 {
-                    "title": f"Approve optimization emails for round {next_optimization_round}",
-                    "message": "Approve or edit each optimization email before the next round starts.",
+                    "title": f"Review optimization round {next_optimization_round}",
+                    "message": (
+                        "Review the proposed optimization categories and revised emails together. "
+                        "Approve once to continue the next round."
+                    ),
+                    "segments": next_segment_cards,
                     "variants": next_content_cards,
                     "ctaLink": state.get("cta_link", ""),
                 },
                 auto_payload={"approved": True},
             )
+        next_segments = parse_segment_approvals(next_segments, review_input)
+        if not next_segments:
+            channel.emit_thinking(
+                f"No optimization categories were approved for round {next_optimization_round}. Stopping here.",
+                agent="Human-Gate",
+                kind="decision",
+                background_visible=True,
+            )
+            break
+
         next_segments, next_variants, approved_next_variants = apply_variant_approvals(
             next_segments,
             next_variants,
-            next_content_input,
+            review_input,
             str(state.get("cta_link", "")),
         )
         if not next_segments:
-            channel.log(f"[Round {pipeline_round_num}] No optimization emails approved for next round.")
+            channel.emit_thinking(
+                f"No optimization emails remained approved for round {next_optimization_round}. Stopping here.",
+                agent="Human-Gate",
+                kind="decision",
+                background_visible=True,
+            )
             break
 
         state["segments"] = next_segments
@@ -1591,6 +1669,7 @@ async def run_react_planner_executor(
             for seg in next_segments
         ]
 
+    channel.set_background_mode(False)
     print_header("FINAL CAMPAIGN SUMMARY")
     channel.emit_thinking(
         "Compiling final campaign summary and cumulative performance.",
@@ -1687,20 +1766,25 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-async def main():
-    args = parse_args()
-    brief = " ".join(args.brief).strip() if args.brief else DEFAULT_BRIEF
-    rounds = max(1, int(args.rounds or DEFAULT_OPTIMIZATION_ROUNDS))
+async def main() -> int:
+    try:
+        args = parse_args()
+        brief = " ".join(args.brief).strip() if args.brief else DEFAULT_BRIEF
+        rounds = max(1, int(args.rounds or DEFAULT_OPTIMIZATION_ROUNDS))
 
-    result = await run_full_pipeline(brief=brief, rounds=rounds, interactive=bool(args.interactive))
+        result = await run_full_pipeline(brief=brief, rounds=rounds, interactive=bool(args.interactive))
 
-    with open(OUTPUT_FILE, "w", encoding="utf-8") as fh:
-        json.dump(result, fh, indent=2, ensure_ascii=False, default=str)
+        with open(OUTPUT_FILE, "w", encoding="utf-8") as fh:
+            json.dump(result, fh, indent=2, ensure_ascii=False, default=str)
 
-    print(f"\nSaved final output to {OUTPUT_FILE}", flush=True)
+        print(f"\nSaved final output to {OUTPUT_FILE}", flush=True)
+        return 0
+    except Exception as exc:
+        emit_runtime_failure(exc)
+        return 1
 
 
 if __name__ == "__main__":
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    asyncio.run(main())
+    raise SystemExit(asyncio.run(main()))

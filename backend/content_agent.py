@@ -34,7 +34,9 @@ def _get_model() -> ChatGoogleGenerativeAI:
     )
 
 
-def _safe_print(message: str):
+def _safe_print(message: str, enabled: bool = True):
+    if not enabled:
+        return
     encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
     safe_message = message.encode(encoding, errors="replace").decode(encoding, errors="replace")
     print(safe_message)
@@ -248,6 +250,7 @@ async def generate_segment_variant(
     emit_agent_message: AgentMessageEmitter | None = None,
     past_metrics: dict | None = None,
     meta_strategy: dict | None = None,
+    verbose: bool = True,
 ) -> EmailVariant:
     """Generate a high-performing email variant using the Multi-Agent War Room, Bandit, and Sim."""
     
@@ -271,7 +274,7 @@ async def generate_segment_variant(
         
     # 2. Contextual bandit chooses the angle for this tier.
     angle = bandit_engine.select_action(tier)
-    _safe_print(f"      [Bandit] Selected Angle: {angle.upper()} for Tier: {tier}")
+    _safe_print(f"      [Bandit] Selected Angle: {angle.upper()} for Tier: {tier}", enabled=verbose)
     if emit_agent_message:
         emit_agent_message(
             "Bandit",
@@ -279,7 +282,10 @@ async def generate_segment_variant(
             "decision",
         )
     
-    _safe_print(f"      [Simulator] Generating dynamic synthetic personas for '{segment.get('segment_name', '')}'...")
+    _safe_print(
+        f"      [Simulator] Generating dynamic synthetic personas for '{segment.get('segment_name', '')}'...",
+        enabled=verbose,
+    )
     if emit_agent_message:
         emit_agent_message(
             "Twin Simulator",
@@ -303,7 +309,10 @@ async def generate_segment_variant(
     
     for attempt_index in range(max_attempts):
         attempt = attempt_index + 1
-        _safe_print(f"      [War Room] Generating draft {attempt} (Length: {length_constraint}, Emojis: {emoji_constraint})...")
+        _safe_print(
+            f"      [War Room] Generating draft {attempt} (Length: {length_constraint}, Emojis: {emoji_constraint})...",
+            enabled=verbose,
+        )
         if emit_agent_message:
             emit_agent_message(
                 "War Room",
@@ -353,7 +362,7 @@ async def generate_segment_variant(
         clicks = sum(1 for r in twin_results if r["decision"] == "CLICK")
         opens = sum(1 for r in twin_results if r["decision"] == "OPEN")
         
-        _safe_print(f"      [Simulator] Twin Test: {clicks} Clicks, {opens} Opens out of 5")
+        _safe_print(f"      [Simulator] Twin Test: {clicks} Clicks, {opens} Opens out of 5", enabled=verbose)
         if emit_agent_message:
             emit_agent_message(
                 "Twin Simulator",
@@ -384,7 +393,7 @@ async def generate_segment_variant(
             )
             break
         else:
-            _safe_print("      [Simulator] Kill Rule triggered. Variant failed test. Regenerating.")
+            _safe_print("      [Simulator] Kill Rule triggered. Variant failed test. Regenerating.", enabled=verbose)
             bandit_engine.update_reward(tier, angle, 0, 0, len(personas))
             if emit_agent_message:
                 emit_agent_message(
@@ -404,7 +413,7 @@ async def generate_segment_variant(
                 cta_link=cta_link,
             )
             angle = bandit_engine.select_action(tier)
-            _safe_print(f"      [Bandit] Retrying with Angle: {angle.upper()}")
+            _safe_print(f"      [Bandit] Retrying with Angle: {angle.upper()}", enabled=verbose)
             if emit_agent_message:
                 emit_agent_message(
                     "Bandit",
@@ -446,6 +455,7 @@ async def generate_content(
     state: WorkflowState,
     emit_progress: TwinProgressEmitter | None = None,
     emit_agent_message: AgentMessageEmitter | None = None,
+    verbose: bool = True,
 ) -> dict:
     """
     LangGraph node: Generate one tailored email per segment using Autonomous Growth Engine.
@@ -455,7 +465,7 @@ async def generate_content(
     cta_link = state.get("cta_link", "") or _extract_cta_link(brief)
     strategy = state.get("strategy", "")
 
-    _safe_print(f"\n[Autonomous Growth Engine] Activating War Room for {len(segments)} segments")
+    _safe_print(f"\n[Autonomous Growth Engine] Activating War Room for {len(segments)} segments", enabled=verbose)
 
     if not segments:
         return state
@@ -464,7 +474,10 @@ async def generate_content(
     segment_variant_map: dict[str, EmailVariant] = {}
 
     async def _process_segment(seg):
-        _safe_print(f"  [Orchestrator] Processing Segment (Parallel): {seg['segment_name']} ({seg['size']} customers)")
+        _safe_print(
+            f"  [Orchestrator] Processing Segment (Parallel): {seg['segment_name']} ({seg['size']} customers)",
+            enabled=verbose,
+        )
         if emit_agent_message:
             emit_agent_message(
                 "Orchestrator",
@@ -496,9 +509,13 @@ async def generate_content(
             cta_link=cta_link,
             emit_progress=emit_progress,
             emit_agent_message=emit_agent_message,
+            verbose=verbose,
         )
         variant = _ensure_variant_has_cta_link(variant, cta_link)
-        _safe_print(f"    [OK] Final Subject ({seg['segment_name'][:20]}...): {variant['subject'][:60]}...")
+        _safe_print(
+            f"    [OK] Final Subject ({seg['segment_name'][:20]}...): {variant['subject'][:60]}...",
+            enabled=verbose,
+        )
         if emit_agent_message:
             emit_agent_message(
                 "Content Agent",
@@ -514,7 +531,10 @@ async def generate_content(
         all_variants.append(variant)
         segment_variant_map[seg_id] = variant
 
-    _safe_print(f"\n[Autonomous Growth Engine] Finished - {len(all_variants)} winning variants deployed.")
+    _safe_print(
+        f"\n[Autonomous Growth Engine] Finished - {len(all_variants)} winning variants deployed.",
+        enabled=verbose,
+    )
 
     return {
         **state,

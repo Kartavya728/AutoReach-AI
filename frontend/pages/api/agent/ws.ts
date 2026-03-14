@@ -14,7 +14,7 @@ export const config = {
   },
 };
 
-const DEFAULT_OPTIMIZATION_ROUNDS = 2;
+const DEFAULT_OPTIMIZATION_ROUNDS = 10;
 const OUTPUT_FILE = "agent_output.json";
 const CONTROL_PREFIX = "__AGENT_EVENT__";
 const CLIENT_DISCONNECT_KILL_DELAY_MS = 30_000;
@@ -300,6 +300,12 @@ function handleConnection(ws: WebSocket) {
   let disconnectKillTimer: NodeJS.Timeout | null = null;
   let heartbeatTimer: NodeJS.Timeout | null = null;
   let stderrTranscript = "";
+  let errorSent = false;
+
+  const sendError = (payload: UnknownRecord) => {
+    errorSent = true;
+    sendEvent(ws, "error", payload);
+  };
 
   const stopHeartbeat = () => {
     if (heartbeatTimer) {
@@ -327,7 +333,7 @@ function handleConnection(ws: WebSocket) {
       const parsed = JSON.parse(raw.toString("utf-8")) as unknown;
       message = isRecord(parsed) ? parsed : {};
     } catch {
-      sendEvent(ws, "error", { error: "Invalid JSON payload" });
+      sendError({ error: "Invalid JSON payload" });
       return;
     }
 
@@ -340,7 +346,7 @@ function handleConnection(ws: WebSocket) {
       try {
         pythonProcess.stdin.write(`${JSON.stringify(message)}\n`);
       } catch (err) {
-        sendEvent(ws, "error", {
+        sendError({
           error: "Failed to forward human input",
           message: err instanceof Error ? err.message : String(err),
         });
@@ -361,7 +367,7 @@ function handleConnection(ws: WebSocket) {
     void (async () => {
       const brief = String(message.brief ?? "").trim();
       if (!brief) {
-        sendEvent(ws, "error", { error: "Missing required field: brief" });
+        sendError({ error: "Missing required field: brief" });
         return;
       }
 
@@ -400,7 +406,7 @@ function handleConnection(ws: WebSocket) {
       });
 
       if (!pythonProcess.stdout || !pythonProcess.stderr || !pythonProcess.stdin) {
-        sendEvent(ws, "error", {
+        sendError({
           error: "Agents process streams unavailable",
           message: "Could not attach to stdin/stdout/stderr for interactive streaming.",
         });
@@ -428,6 +434,9 @@ function handleConnection(ws: WebSocket) {
           const normalized = rawLine.replace(/\r$/, "");
           const control = parseControlEnvelope(normalized);
           if (control) {
+            if (control.event === "error") {
+              errorSent = true;
+            }
             sendEvent(ws, control.event, control.data);
           } else if (normalized.trim()) {
             stderrTranscript = `${stderrTranscript}${normalized}\n`.slice(-16_000);
@@ -440,7 +449,7 @@ function handleConnection(ws: WebSocket) {
 
       pythonProcess.once("error", (error) => {
         stopHeartbeat();
-        sendEvent(ws, "error", {
+        sendError({
           error: "Failed to start agents process",
           message: error instanceof Error ? error.message : String(error),
         });
@@ -458,6 +467,9 @@ function handleConnection(ws: WebSocket) {
           const normalizedBuffer = stderrBuffer.replace(/\r$/, "");
           const control = parseControlEnvelope(normalizedBuffer);
           if (control) {
+            if (control.event === "error") {
+              errorSent = true;
+            }
             sendEvent(ws, control.event, control.data);
           } else if (normalizedBuffer.trim()) {
             stderrTranscript = `${stderrTranscript}${normalizedBuffer}\n`.slice(-16_000);
@@ -467,12 +479,14 @@ function handleConnection(ws: WebSocket) {
         }
 
         if (code !== 0) {
-          sendEvent(ws, "error", {
-            error: "Agents pipeline exited with failure",
-            message: stderrTranscript.trim()
-              ? `Process exited with code ${code ?? "unknown"}\n${stderrTranscript.trim()}`
-              : `Process exited with code ${code ?? "unknown"}`,
-          });
+          if (!errorSent) {
+            sendError({
+              error: "Agents pipeline exited with failure",
+              message: stderrTranscript.trim()
+                ? `Process exited with code ${code ?? "unknown"}\n${stderrTranscript.trim()}`
+                : `Process exited with code ${code ?? "unknown"}`,
+            });
+          }
           return;
         }
 
@@ -488,16 +502,16 @@ function handleConnection(ws: WebSocket) {
               brief,
               typeof message.campaignName === "string" ? message.campaignName : undefined
             );
-          } catch (err) {
-            console.warn("[Agent WS] Failed to save campaign to Supabase:", err);
-          }
+        } catch (err) {
+          console.warn("[Agent WS] Failed to save campaign to Supabase:", err);
+        }
 
-          sendEvent(ws, "done", {
+        sendEvent(ws, "done", {
             ...finalPayload,
             savedCampaignId: savedCampaign?.id ?? null,
           });
         } catch (error) {
-          sendEvent(ws, "error", {
+          sendError({
             error: "Failed to parse agents final output",
             message: error instanceof Error ? error.message : "Unknown parsing failure",
           });

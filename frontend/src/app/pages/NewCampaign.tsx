@@ -16,6 +16,8 @@ import {
   EyeOff,
   Gavel,
   LoaderCircle,
+  Maximize2,
+  Minimize2,
   Pencil,
   Play,
   Search,
@@ -157,6 +159,18 @@ function getRoundChipLabel(round: {
   if (phase === "virtual_prediction") return `VR${displayRound}`;
   if (phase === "optimization") return `O${displayRound}`;
   return `R${displayRound}`;
+}
+
+function isOptimizationReviewPause(pauseType?: string) {
+  return pauseType === "optimization_review";
+}
+
+function showsSegmentReview(pauseType?: string) {
+  return pauseType === "segment_approval" || pauseType === "optimization_review";
+}
+
+function showsDraftReview(pauseType?: string) {
+  return pauseType === "content_approval" || pauseType === "optimization_review";
 }
 
 function buildAgentCategories(messages: ChatMessage[]) {
@@ -749,6 +763,7 @@ export default function NewCampaign() {
   const [expandedBodies, setExpandedBodies] = useState<Set<string>>(new Set());
   const [collapsedSections, setCollapsedSections] = useState<Record<string,boolean>>({});
   const [terminalLogs, setTerminalLogs] = useState<string[]>([]);
+  const [isTerminalExpanded, setIsTerminalExpanded] = useState(false);
   const [isSavingCampaign, setIsSavingCampaign] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [campaignRunId, setCampaignRunId] = useState<string | null>(null);
@@ -838,6 +853,7 @@ export default function NewCampaign() {
     setExpandedBodies(new Set());
     setCollapsedSections({});
     setTerminalLogs([]);
+    setIsTerminalExpanded(false);
     
     setLatestMetrics((currentMetrics) => {
       if (isOptimization) {
@@ -898,7 +914,14 @@ export default function NewCampaign() {
       return;
     }
 
-    if (pendingPause.pauseType === "content_approval") {
+    if (pendingPause.pauseType === "content_approval" || isOptimizationReviewPause(pendingPause.pauseType)) {
+      const segmentApprovals = segmentCards.map((segment) => ({
+        segmentId: segment.segmentId,
+        approved: segmentApprovalStatus[segment.segmentId] !== "rejected",
+      }));
+      const approvedSegmentIds = new Set(
+        segmentApprovals.filter((item) => item.approved).map((item) => item.segmentId)
+      );
       const sourceDrafts = editingDrafts ? editedDrafts : draftCards;
       const variantApprovals = sourceDrafts.map((draft) => ({
         segmentId: draft.segmentId,
@@ -907,9 +930,20 @@ export default function NewCampaign() {
         body: ensureDraftContainsLink(draft.body, effectiveCtaLink),
       }));
 
-      const approvedDrafts = variantApprovals.filter((item) => item.approved);
+      if (isOptimizationReviewPause(pendingPause.pauseType) && approvedSegmentIds.size === 0) {
+        setApprovalError("Approve at least one optimization category to continue.");
+        return;
+      }
+
+      const approvedDrafts = variantApprovals.filter((item) =>
+        item.approved && (pendingPause.pauseType === "content_approval" || approvedSegmentIds.has(item.segmentId))
+      );
       if (approvedDrafts.length === 0) {
-        setApprovalError("Approve at least one email draft to continue.");
+        setApprovalError(
+          isOptimizationReviewPause(pendingPause.pauseType)
+            ? "Approve at least one email draft for an approved category."
+            : "Approve at least one email draft to continue."
+        );
         return;
       }
 
@@ -921,9 +955,15 @@ export default function NewCampaign() {
 
       submitPauseResponse({
         approved: true,
+        ...(isOptimizationReviewPause(pendingPause.pauseType) ? { segmentApprovals } : {}),
         variantApprovals,
       });
-      pushMessage({ role: "user", text: editingDrafts ? "Approved email drafts with edits." : "Approved selected email drafts." });
+      pushMessage({
+        role: "user",
+        text: isOptimizationReviewPause(pendingPause.pauseType)
+          ? (editingDrafts ? "Approved optimization round with edits." : "Approved optimization round.")
+          : (editingDrafts ? "Approved email drafts with edits." : "Approved selected email drafts."),
+      });
       return;
     }
 
@@ -941,7 +981,12 @@ export default function NewCampaign() {
     }
 
     submitPauseResponse({ approved: false });
-    pushMessage({ role: "user", text: "Rejected." });
+    pushMessage({
+      role: "user",
+      text: isOptimizationReviewPause(pendingPause.pauseType)
+        ? "Rejected this optimization round."
+        : "Rejected.",
+    });
   }, [pendingPause, pushMessage, submitPauseResponse]);
 
   const handleEditDrafts = useCallback(() => {
@@ -992,33 +1037,34 @@ export default function NewCampaign() {
           });
         },
         onPause: (pause, respond) => {
+          if (mode === "optimization" && pause.pauseType === "next_round" && Number(pause.round ?? 0) <= 1) {
+            respond({ continueOptimization: true });
+            return;
+          }
+
           pauseResponderRef.current = respond;
           setPendingPause(pause);
           setPhase("paused");
           setApprovalError(null);
 
-          if (pause.segments && pause.segments.length > 0) {
-            setSegmentCards(pause.segments);
-            setSegmentApprovalStatus(
-              Object.fromEntries(
-                pause.segments.map((segment) => [
-                  segment.segmentId,
-                  segment.approved === false ? "rejected" : "pending",
-                ])
-              )
-            );
-          }
-          if (pause.variants && pause.variants.length > 0) {
-            setDraftCards(pause.variants);
-            setDraftApprovalStatus(
-              Object.fromEntries(
-                pause.variants.map((draft) => [
-                  draft.segmentId,
-                  draft.approved === false ? "rejected" : "pending",
-                ])
-              )
-            );
-          }
+          setSegmentCards(pause.segments ?? []);
+          setSegmentApprovalStatus(
+            Object.fromEntries(
+              (pause.segments ?? []).map((segment) => [
+                segment.segmentId,
+                segment.approved === false ? "rejected" : "pending",
+              ])
+            )
+          );
+          setDraftCards(pause.variants ?? []);
+          setDraftApprovalStatus(
+            Object.fromEntries(
+              (pause.variants ?? []).map((draft) => [
+                draft.segmentId,
+                draft.approved === false ? "rejected" : "pending",
+              ])
+            )
+          );
 
           pushMessage({
             role: "system",
@@ -1044,21 +1090,6 @@ export default function NewCampaign() {
               return previous;
             }
 
-            if (mode === "optimization") {
-              const b = baselineMetricsRef.current;
-              const totalSent = Math.max(b.sent, metrics.sent);
-              const totalOpened = b.opened + metrics.uniqueOpened;
-              const totalClicked = b.clicked + metrics.uniqueClicked;
-              const aggOpenRate = totalSent > 0 ? (totalOpened / totalSent) * 100 : 0;
-              const aggClickRate = totalSent > 0 ? (totalClicked / totalSent) * 100 : 0;
-              const roundLabel = getRoundLabel(metrics);
-
-              pushMessage({
-                role: "system",
-                kind: "metrics",
-                text: `${roundLabel}: sent ${formatCount(totalSent)}, open ${formatPercent(aggOpenRate)}, click ${formatPercent(aggClickRate)}.`,
-              });
-            }
             return metrics;
           });
           setPhase("running");
@@ -1072,26 +1103,22 @@ export default function NewCampaign() {
             return [...current, round];
           });
 
-          if (mode === "optimization") {
-            const b = baselineMetricsRef.current;
-            const metrics = round.summary;
-            const openNum = metrics.uniqueOpened ?? Math.floor(metrics.audience * (metrics.openRate / 100));
-            const clickNum = metrics.uniqueClicked ?? Math.floor(metrics.audience * (metrics.clickRate / 100));
-            
-            // `metrics.audience` is the final sum for just that current round that finished
-            const totalSent = Math.max(b.sent, metrics.audience);
-            const totalOpened = b.opened + openNum;
-            const totalClicked = b.clicked + clickNum;
-            const aggOpenRate = totalSent > 0 ? (totalOpened / totalSent) * 100 : 0;
-            const aggClickRate = totalSent > 0 ? (totalClicked / totalSent) * 100 : 0;
-            const roundLabel = getRoundLabel(round);
+          const b = baselineMetricsRef.current;
+          const metrics = round.summary;
+          const openNum = metrics.uniqueOpened ?? Math.floor(metrics.audience * (metrics.openRate / 100));
+          const clickNum = metrics.uniqueClicked ?? Math.floor(metrics.audience * (metrics.clickRate / 100));
+          const totalSent = Math.max(b.sent, metrics.audience);
+          const totalOpened = b.opened + openNum;
+          const totalClicked = b.clicked + clickNum;
+          const aggOpenRate = totalSent > 0 ? (totalOpened / totalSent) * 100 : 0;
+          const aggClickRate = totalSent > 0 ? (totalClicked / totalSent) * 100 : 0;
+          const roundLabel = getRoundLabel(round);
 
-            pushMessage({
-              role: "system",
-              kind: "summary",
-              text: `${roundLabel} complete. Cumulative open ${formatPercent(aggOpenRate)} and click ${formatPercent(aggClickRate)}.`,
-            });
-          }
+          pushMessage({
+            role: "system",
+            kind: "summary",
+            text: `${roundLabel} complete. Cumulative open ${formatPercent(aggOpenRate)} and click ${formatPercent(aggClickRate)}.`,
+          });
         },
         onTerminal: (text) => {
           setTerminalLogs((current) => [...current, text]);
@@ -1220,18 +1247,21 @@ export default function NewCampaign() {
     resetRunState(true);
     pushMessage({
       role: "user",
-      text: "Perform an optimization round and ask me before every next round.",
+      text: "Start the next optimization cycle in the background.",
     });
     await runAgent(buildPromptWithLink(prompt, link), "optimization");
   }, [brief, ctaLink, latestCtaLink, latestPrompt, phase, pushMessage, resetRunState, runAgent]);
 
   const statusText = useMemo(() => {
+    const activePhase = (latestMetrics?.phase || "").toLowerCase();
+    if (phase === "running" && activePhase === "virtual_prediction") return "Virtual testing is running in background";
+    if (phase === "running" && activePhase === "optimization") return "Optimization is running in background";
     if (phase === "running") return "Agent is working";
     if (phase === "paused") return "Waiting for your approval";
     if (phase === "complete") return "Run complete";
     if (phase === "error") return "Run failed";
     return "Ready";
-  }, [phase]);
+  }, [latestMetrics?.phase, phase]);
 
   const approvalDrafts = editingDrafts ? editedDrafts : draftCards;
   const digitalTwinCards = useMemo(() => {
@@ -1270,24 +1300,6 @@ export default function NewCampaign() {
           },
       };
     });
-
-    const knownIds = new Set(cards.map((entry) => entry.segment.segmentId));
-    Object.values(twinCards).forEach((card) => {
-      if (knownIds.has(card.segmentId) || rejectedSegmentIds.has(card.segmentId)) {
-        return;
-      }
-      cards.push({
-        segment: {
-          segmentId: card.segmentId,
-          name: card.segmentName,
-          size: card.size,
-          approved: true,
-        },
-        draft: approvalDrafts.find((draft) => draft.segmentId === card.segmentId),
-        twin: card,
-      });
-    });
-
     return cards;
   }, [approvalDrafts, ctaLink, latestCtaLink, pendingPause?.ctaLink, segmentApprovalStatus, segmentCards, twinCards]);
   const visibleDigitalTwinCards = useMemo(
@@ -1316,6 +1328,41 @@ export default function NewCampaign() {
   const totalClicked = baselineMetrics.clicked + activeTotalClicked;
   const aggregateOpenRate = totalSent > 0 ? (totalOpened / totalSent) * 100 : 0;
   const aggregateClickRate = totalSent > 0 ? (totalClicked / totalSent) * 100 : 0;
+  const roundChartData = useMemo(() => {
+    const data = roundHistory.map((round) => ({
+      key: `${round.phase || round.summary.phase || "round"}-${round.round}`,
+      shortLabel: getRoundChipLabel(round),
+      fullLabel: getRoundLabel(round),
+      openRate: Number(round.summary.openRate || 0),
+      clickRate: Number(round.summary.clickRate || 0),
+      active: false,
+    }));
+
+    if (latestMetrics?.round) {
+      const livePoint = {
+        key: `${latestMetrics.phase || "round"}-${latestMetrics.round}`,
+        shortLabel: getRoundChipLabel(latestMetrics),
+        fullLabel: getRoundLabel(latestMetrics),
+        openRate: Number(latestMetrics.openRate || 0),
+        clickRate: Number(latestMetrics.clickRate || 0),
+        active: phase === "running",
+      };
+      const existingIndex = data.findIndex((item) => item.key === livePoint.key);
+      if (existingIndex >= 0) {
+        data[existingIndex] = livePoint;
+      } else {
+        data.push(livePoint);
+      }
+    }
+
+    return data;
+  }, [latestMetrics, phase, roundHistory]);
+  const maxRoundRate = useMemo(() => {
+    return Math.max(
+      1,
+      ...roundChartData.flatMap((item) => [item.openRate, item.clickRate])
+    );
+  }, [roundChartData]);
   const hasCampaignData = messages.length > 0 || roundHistory.length > 0 || !!result;
 
   const buildCampaignRunPayload = useCallback((
@@ -2000,7 +2047,7 @@ export default function NewCampaign() {
                       </p>
                     )}
 
-                    {segmentCards.length > 0 && (
+                    {showsSegmentReview(pendingPause.pauseType) && segmentCards.length > 0 && (
                       <div className="mt-3">
                         <button
                           onClick={() => setCollapsedSections(c => ({ ...c, segments: !c.segments }))}
@@ -2087,7 +2134,7 @@ export default function NewCampaign() {
                       </div>
                     )}
 
-                    {approvalDrafts.length > 0 && (
+                    {showsDraftReview(pendingPause.pauseType) && approvalDrafts.length > 0 && (
                       <div className="mt-3">
                         <button
                           onClick={() => setCollapsedSections(c => ({ ...c, drafts: !c.drafts }))}
@@ -2246,7 +2293,7 @@ export default function NewCampaign() {
                         </>
                       ) : (
                         <>
-                          {pendingPause.pauseType === "content_approval" && (
+                          {showsDraftReview(pendingPause.pauseType) && (
                             <button
                               onClick={editingDrafts ? handleCancelEdit : handleEditDrafts}
                               className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-slate-100"
@@ -2319,21 +2366,45 @@ export default function NewCampaign() {
                         </div>
                       </div>
 
-                      {roundHistory.length > 1 && (
+                      {roundChartData.length > 0 && (
                         <div className="mt-3 rounded-2xl p-3" style={{ background: "rgba(15,23,42,0.65)", border: "1px solid rgba(148,163,184,0.14)" }}>
-                          <div className="text-slate-400 mb-2" style={{ fontSize: "0.68rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>Round Progression</div>
-                          <div className="flex items-end gap-1.5">
-                            {roundHistory.map((round) => {
-                              const maxRate = Math.max(...roundHistory.map((entry) => entry.summary.openRate), 1);
-                              const barHeight = Math.max(14, (round.summary.openRate / maxRate) * 44);
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="text-slate-400" style={{ fontSize: "0.68rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>Round Progression</div>
+                            <div className="flex items-center gap-3 text-slate-400" style={{ fontSize: "0.62rem" }}>
+                              <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full" style={{ background: "#34d399" }} /> Open</span>
+                              <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full" style={{ background: "#60a5fa" }} /> Click</span>
+                            </div>
+                          </div>
+                          <div className="mt-3 flex items-end gap-2">
+                            {roundChartData.map((round) => {
+                              const openHeight = Math.max(16, (round.openRate / maxRoundRate) * 56);
+                              const clickHeight = Math.max(10, (round.clickRate / maxRoundRate) * 56);
                               return (
-                                <div key={`${round.phase || round.summary.phase || "round"}-${round.round}`} className="flex flex-col items-center gap-1 flex-1">
-                                  <div className="text-emerald-300" style={{ fontSize: "0.58rem" }}>{formatPercent(round.summary.openRate)}</div>
-                                  <div className="w-full rounded-t-md" style={{ height: `${barHeight}px`, background: "linear-gradient(180deg, rgba(34,197,94,0.5) 0%, rgba(34,197,94,0.15) 100%)", minWidth: "16px" }} />
-                                  <div className="text-slate-500" style={{ fontSize: "0.56rem" }}>{getRoundChipLabel(round)}</div>
+                                <div key={round.key} className="flex flex-col items-center gap-1 flex-1 min-w-0">
+                                  <div className="text-slate-300 text-center" style={{ fontSize: "0.56rem", lineHeight: 1.3 }}>
+                                    {formatPercent(round.openRate)} / {formatPercent(round.clickRate)}
+                                  </div>
+                                  <div
+                                    className="w-full rounded-xl px-2 py-2 flex items-end justify-center gap-1"
+                                    style={{
+                                      minHeight: "78px",
+                                      background: round.active ? "rgba(15,118,110,0.14)" : "rgba(2,6,23,0.58)",
+                                      border: round.active ? "1px solid rgba(45,212,191,0.24)" : "1px solid rgba(148,163,184,0.12)",
+                                    }}
+                                    title={round.fullLabel}
+                                  >
+                                    <div className="w-3 rounded-t-md" style={{ height: `${openHeight}px`, background: "linear-gradient(180deg, rgba(52,211,153,0.9) 0%, rgba(52,211,153,0.22) 100%)" }} />
+                                    <div className="w-3 rounded-t-md" style={{ height: `${clickHeight}px`, background: "linear-gradient(180deg, rgba(96,165,250,0.92) 0%, rgba(96,165,250,0.22) 100%)" }} />
+                                  </div>
+                                  <div className="text-slate-500 text-center truncate w-full" style={{ fontSize: "0.56rem" }}>
+                                    {round.shortLabel}
+                                  </div>
                                 </div>
                               );
                             })}
+                          </div>
+                          <div className="mt-2 text-slate-500" style={{ fontSize: "0.62rem" }}>
+                            {latestMetrics?.phase === "optimization" ? "Optimization rounds are running quietly in the background." : "Virtual prediction rounds are running quietly in the background."}
                           </div>
                         </div>
                       )}
@@ -2352,12 +2423,22 @@ export default function NewCampaign() {
                 className="rounded-[24px] p-4 md:p-5 flex-[0.9] min-h-0 flex flex-col"
                 style={{ background: "rgba(8,18,33,0.96)", border: "1px solid rgba(148,163,184,0.2)" }}
               >
-                <div className="flex items-center gap-2">
-                  <Bot className="w-5 h-5 text-emerald-400" />
-                  <span className="text-white text-lg font-bold">Live Terminal Commands</span>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <Bot className="w-5 h-5 text-emerald-400" />
+                    <span className="text-white text-lg font-bold">Live Terminal Commands</span>
+                  </div>
+                  <button
+                    onClick={() => setIsTerminalExpanded(true)}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-slate-100"
+                    style={{ fontSize: "0.7rem", background: "rgba(15,23,42,0.8)", border: "1px solid rgba(148,163,184,0.24)" }}
+                  >
+                    <Maximize2 className="w-3.5 h-3.5" />
+                    Expand
+                  </button>
                 </div>
                 <p className="text-slate-400 mt-1" style={{ fontSize: "0.76rem" }}>
-                  Real-time command and process output from running agents.
+                  Condensed backend output from the running agents. Expand it when you need the full terminal view.
                 </p>
 
                 <div
@@ -2390,6 +2471,70 @@ export default function NewCampaign() {
           </div>
         )}
       </div>
+
+      <AnimatePresence>
+        {isTerminalExpanded && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 p-3 md:p-6"
+            style={{ background: "rgba(2,6,23,0.72)", backdropFilter: "blur(10px)" }}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 14, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.98 }}
+              className="h-full rounded-[28px] p-4 md:p-5 flex flex-col"
+              style={{ background: "rgba(8,18,33,0.98)", border: "1px solid rgba(148,163,184,0.22)" }}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <Bot className="w-5 h-5 text-emerald-400" />
+                    <span className="text-white text-lg font-bold">Expanded Terminal</span>
+                  </div>
+                  <p className="text-slate-400 mt-1" style={{ fontSize: "0.76rem" }}>
+                    Full-screen terminal view for deeper debugging without crowding the campaign screen.
+                  </p>
+                </div>
+                <button
+                  onClick={() => setIsTerminalExpanded(false)}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-slate-100"
+                  style={{ fontSize: "0.76rem", background: "rgba(15,23,42,0.85)", border: "1px solid rgba(148,163,184,0.24)" }}
+                >
+                  <Minimize2 className="w-4 h-4" />
+                  Close
+                </button>
+              </div>
+
+              <div
+                className="mt-4 flex-1 min-h-0 overflow-y-auto rounded-2xl p-4"
+                style={{
+                  background: "rgba(2,6,23,0.78)",
+                  border: "1px solid rgba(148,163,184,0.2)",
+                  fontFamily: "monospace",
+                }}
+              >
+                {terminalLogs.length > 0 ? (
+                  <div className="space-y-1.5">
+                    {terminalLogs.map((log, i) => (
+                      <div key={`terminal-expanded-${i}`} className="text-slate-300 whitespace-pre-wrap leading-relaxed" style={{ fontSize: "0.72rem" }}>
+                        {log}
+                      </div>
+                    ))}
+                    <div ref={terminalEndRef} />
+                  </div>
+                ) : (
+                  <p className="text-slate-500" style={{ fontSize: "0.76rem", lineHeight: 1.6 }}>
+                    Terminal output will appear here when agents execute commands.
+                  </p>
+                )}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

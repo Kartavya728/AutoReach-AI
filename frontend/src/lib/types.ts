@@ -93,7 +93,12 @@ export interface GeneratedEmailVariant {
   ctaLink?: string;
 }
 
-export type AgentPauseType = "segment_approval" | "content_approval" | "next_round" | string;
+export type AgentPauseType =
+  | "segment_approval"
+  | "content_approval"
+  | "optimization_review"
+  | "next_round"
+  | string;
 export type AgentRoundPhase = "virtual_prediction" | "optimization" | string;
 
 export interface AgentThinkingStep {
