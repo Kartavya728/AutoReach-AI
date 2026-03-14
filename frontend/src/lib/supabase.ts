@@ -8,21 +8,52 @@ import type {
   DashboardStats,
 } from "@/src/lib/types";
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+type RuntimePublicEnv = {
+  supabaseUrl?: string;
+  supabaseAnonKey?: string;
+};
 
-export const supabase: SupabaseClient | null =
-  supabaseUrl && supabaseAnonKey
-    ? createClient(supabaseUrl, supabaseAnonKey)
-    : null;
+declare global {
+  interface Window {
+    __CAMPAIGNX_PUBLIC_ENV__?: RuntimePublicEnv;
+  }
+}
+
+let cachedClient: SupabaseClient | null | undefined;
+
+function resolveRuntimePublicEnv(): RuntimePublicEnv {
+  if (typeof window !== "undefined" && window.__CAMPAIGNX_PUBLIC_ENV__) {
+    return window.__CAMPAIGNX_PUBLIC_ENV__;
+  }
+
+  return {
+    supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL,
+    supabaseAnonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+  };
+}
+
+export function getSupabaseClient(): SupabaseClient | null {
+  if (cachedClient !== undefined) {
+    return cachedClient;
+  }
+
+  const runtimeEnv = resolveRuntimePublicEnv();
+  cachedClient =
+    runtimeEnv.supabaseUrl && runtimeEnv.supabaseAnonKey
+      ? createClient(runtimeEnv.supabaseUrl, runtimeEnv.supabaseAnonKey)
+      : null;
+
+  return cachedClient;
+}
 
 function requireClient(): SupabaseClient {
-  if (!supabase) {
+  const client = getSupabaseClient();
+  if (!client) {
     throw new Error(
       "Supabase is not configured. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY."
     );
   }
-  return supabase;
+  return client;
 }
 
 // ── Campaigns ──
@@ -230,9 +261,10 @@ export async function getDashboardStats(): Promise<DashboardStats> {
 // ── Status check ──
 
 export function getSupabaseStatus() {
+  const client = getSupabaseClient();
   return {
-    connected: Boolean(supabase),
-    message: supabase
+    connected: Boolean(client),
+    message: client
       ? "Supabase connected"
       : "Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY to connect",
   };

@@ -28,13 +28,38 @@ export interface StreamCampaignAgentOptions {
 const CLOSE_RECOVERY_ATTEMPTS = 45;
 const CLOSE_RECOVERY_DELAY_MS = 1_000;
 
+type AgentWsBootstrapResponse = {
+  wsPort?: number;
+  wsUrl?: string;
+  wsPath?: string;
+};
+
 function isRecord(value: unknown): value is UnknownRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function buildWebSocketUrl(port: number): string {
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${protocol}//${window.location.hostname}:${port}`;
+function buildWebSocketUrl(target: AgentWsBootstrapResponse): string {
+  const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+
+  if (target.wsUrl) {
+    const url = new URL(target.wsUrl, window.location.origin);
+    url.protocol = wsProtocol;
+    return url.toString();
+  }
+
+  if (target.wsPath) {
+    const url = new URL(target.wsPath, window.location.origin);
+    url.protocol = wsProtocol;
+    return url.toString();
+  }
+
+  const url = new URL(window.location.origin);
+  url.protocol = wsProtocol;
+  url.port = String(target.wsPort ?? 3001);
+  url.pathname = "/";
+  url.search = "";
+  url.hash = "";
+  return url.toString();
 }
 
 function toVariant(input: unknown, fallbackLabel: string): GeneratedEmailVariant {
@@ -191,7 +216,7 @@ function normalizeRunResult(raw: unknown): AgentRunResult {
   };
 }
 
-async function bootstrapWebSocketServer(): Promise<number> {
+async function bootstrapWebSocketServer(): Promise<string> {
   const setupUrl = `/api/agent/ws?ts=${Date.now()}`;
   const res = await fetch(setupUrl, {
     method: "GET",
@@ -201,8 +226,8 @@ async function bootstrapWebSocketServer(): Promise<number> {
       Pragma: "no-cache",
     },
   });
-  const json = await res.json() as Record<string, unknown>;
-  return Number(json.wsPort) || 3001;
+  const json = await res.json() as AgentWsBootstrapResponse;
+  return buildWebSocketUrl(json);
 }
 
 function delay(ms: number) {
@@ -244,7 +269,7 @@ async function recoverLatestAgentResult(expectedBrief: string): Promise<AgentRun
 }
 
 let preconnectedWs: WebSocket | null = null;
-let preconnectPort: number | null = null;
+let preconnectUrl: string | null = null;
 
 export async function preloadAgentStream(): Promise<void> {
   if (typeof window === "undefined") return;
@@ -254,8 +279,8 @@ export async function preloadAgentStream(): Promise<void> {
     }
   }
   try {
-    preconnectPort = await bootstrapWebSocketServer();
-    preconnectedWs = new WebSocket(buildWebSocketUrl(preconnectPort));
+    preconnectUrl = await bootstrapWebSocketServer();
+    preconnectedWs = new WebSocket(preconnectUrl);
   } catch (err) {
     console.warn("Failed to preload agent stream", err);
   }
@@ -269,15 +294,16 @@ export async function streamCampaignAgent(
     throw new Error("Agent streaming is only available in the browser runtime.");
   }
 
-  const wsPort = preconnectPort ?? (await bootstrapWebSocketServer());
+  const wsUrl = preconnectUrl ?? (await bootstrapWebSocketServer());
 
   return new Promise<AgentRunResult>((resolve, reject) => {
     let ws: WebSocket;
     if (preconnectedWs && (preconnectedWs.readyState === WebSocket.OPEN || preconnectedWs.readyState === WebSocket.CONNECTING)) {
       ws = preconnectedWs;
       preconnectedWs = null; // Consume the preloaded socket
+      preconnectUrl = null;
     } else {
-      ws = new WebSocket(buildWebSocketUrl(wsPort));
+      ws = new WebSocket(wsUrl);
     }
 
     let finished = false;

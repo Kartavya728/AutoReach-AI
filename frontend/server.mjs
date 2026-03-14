@@ -1,0 +1,611 @@
+import { spawn } from "node:child_process";
+import { createServer } from "node:http";
+import fs from "node:fs";
+import fsp from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import next from "next";
+import { WebSocketServer, WebSocket } from "ws";
+
+const DEFAULT_OPTIMIZATION_ROUNDS = 2;
+const OUTPUT_FILE = "agent_output.json";
+const CONTROL_PREFIX = "__AGENT_EVENT__";
+const CLIENT_DISCONNECT_KILL_DELAY_MS = 30_000;
+const HEARTBEAT_INTERVAL_MS = 5_000;
+const AGENT_WS_PATH = "/agent-ws";
+
+const AGENT_ENV_PASSTHROUGH_KEYS = [
+  "PATH",
+  "PATHEXT",
+  "ComSpec",
+  "SystemRoot",
+  "WINDIR",
+  "TEMP",
+  "TMP",
+  "USERPROFILE",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "PROGRAMDATA",
+  "NUMBER_OF_PROCESSORS",
+  "PROCESSOR_ARCHITECTURE",
+  "PROCESSOR_IDENTIFIER",
+  "OS",
+  "HOME",
+  "AGENTS_TEST_MODE",
+  "PYTHON_BIN",
+];
+
+const __filename = fileURLToPath(import.meta.url);
+const frontendDir = path.dirname(__filename);
+const workspaceRoot = path.resolve(frontendDir, "..");
+const dev = process.env.NODE_ENV !== "production";
+const hostname = process.env.HOSTNAME || "0.0.0.0";
+const port = Number(process.env.PORT) || 3000;
+
+if (!dev && process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0") {
+  console.warn(
+    "[Server] Ignoring NODE_TLS_REJECT_UNAUTHORIZED=0 in production to keep TLS verification enabled."
+  );
+  delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+}
+
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function sendJson(res, statusCode, payload) {
+  res.writeHead(statusCode, {
+    "Content-Type": "application/json",
+    "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+    Pragma: "no-cache",
+    Expires: "0",
+  });
+  res.end(JSON.stringify(payload));
+}
+
+function sendEvent(ws, event, data) {
+  if (ws.readyState !== WebSocket.OPEN) {
+    return;
+  }
+  ws.send(JSON.stringify({ event, data }));
+}
+
+function parseControlEnvelope(line) {
+  if (!line.startsWith(CONTROL_PREFIX)) {
+    return null;
+  }
+
+  const payload = line.slice(CONTROL_PREFIX.length).trim();
+  if (!payload) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(payload);
+    if (!isRecord(parsed)) {
+      return null;
+    }
+    const event = String(parsed.event ?? "");
+    if (!event) {
+      return null;
+    }
+    return {
+      event,
+      data: parsed.data,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function resolveWorkspaceRoot() {
+  const directBackendPath = path.join(workspaceRoot, "backend", "main.py");
+  if (fs.existsSync(directBackendPath)) {
+    return workspaceRoot;
+  }
+
+  const cwd = process.cwd();
+  if (fs.existsSync(path.join(cwd, "backend", "main.py"))) {
+    return cwd;
+  }
+
+  const parent = path.resolve(cwd, "..");
+  if (fs.existsSync(path.join(parent, "backend", "main.py"))) {
+    return parent;
+  }
+
+  throw new Error("Could not locate backend/main.py from current runtime path.");
+}
+
+function parseDotEnvValue(rawValue) {
+  const trimmed = rawValue.trim();
+  if (
+    (trimmed.startsWith("\"") && trimmed.endsWith("\"")) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+function loadAgentsEnv(resolvedWorkspaceRoot) {
+  const envPath = path.join(resolvedWorkspaceRoot, ".env");
+  if (!fs.existsSync(envPath)) {
+    return {};
+  }
+
+  const content = fs.readFileSync(envPath, "utf-8");
+  const envMap = {};
+
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) {
+      continue;
+    }
+
+    const clean = line.startsWith("export ") ? line.slice(7).trim() : line;
+    const eqIndex = clean.indexOf("=");
+    if (eqIndex <= 0) {
+      continue;
+    }
+
+    const key = clean.slice(0, eqIndex).trim();
+    const value = parseDotEnvValue(clean.slice(eqIndex + 1));
+    if (!key) {
+      continue;
+    }
+    envMap[key] = value;
+  }
+
+  return envMap;
+}
+
+function buildAgentProcessEnv(resolvedWorkspaceRoot) {
+  const passthrough = {};
+  for (const key of Object.keys(process.env)) {
+    const value = process.env[key];
+    if (value !== undefined) {
+      passthrough[key] = value;
+    }
+  }
+
+  const agentsEnv = loadAgentsEnv(resolvedWorkspaceRoot);
+
+  return {
+    ...passthrough,
+    ...agentsEnv,
+    NODE_ENV: process.env.NODE_ENV ?? "development",
+    PYTHONUNBUFFERED: "1",
+    PYTHONIOENCODING: "utf-8",
+    PYTHONUTF8: "1",
+    LANGCHAIN_TRACING_V2: process.env.LANGCHAIN_TRACING_V2 ?? "false",
+    LANGSMITH_TRACING: process.env.LANGSMITH_TRACING ?? "false",
+  };
+}
+
+function toVariant(input, fallbackLabel) {
+  const safe = isRecord(input) ? input : {};
+  return {
+    subject: String(safe.subject ?? fallbackLabel),
+    body: String(safe.body ?? ""),
+    variant: String(safe.variant ?? fallbackLabel),
+    tone: String(safe.tone ?? "professional"),
+    tags: Array.isArray(safe.tags) ? safe.tags.map((tag) => String(tag)) : [],
+    ctaLink: safe.ctaLink ? String(safe.ctaLink) : safe.cta_link ? String(safe.cta_link) : undefined,
+  };
+}
+
+function normalizeVariants(raw) {
+  if (!isRecord(raw)) {
+    return [];
+  }
+
+  if (Array.isArray(raw.contentVariants)) {
+    return raw.contentVariants.map((item, index) =>
+      toVariant(item, `Variant ${String.fromCharCode(65 + index)}`)
+    );
+  }
+
+  if (Array.isArray(raw.content_variants)) {
+    return raw.content_variants.map((item, index) =>
+      toVariant(item, `Variant ${String.fromCharCode(65 + index)}`)
+    );
+  }
+
+  if (isRecord(raw.segment_variants)) {
+    return Object.entries(raw.segment_variants).map(([segmentId, variant], index) =>
+      toVariant(variant, segmentId || `Variant ${String.fromCharCode(65 + index)}`)
+    );
+  }
+
+  return [];
+}
+
+function toFinalPayload(raw, fallbackBrief) {
+  const safe = isRecord(raw) ? raw : {};
+
+  const targetCustomerIds = Array.isArray(safe.targetCustomerIds)
+    ? safe.targetCustomerIds.map((id) => String(id))
+    : Array.isArray(safe.target_customer_ids)
+      ? safe.target_customer_ids.map((id) => String(id))
+      : [];
+
+  const customerCount =
+    Number(safe.customerCount ?? safe.customer_count ?? 0) || targetCustomerIds.length;
+
+  return {
+    brief: String(safe.brief ?? fallbackBrief),
+    ctaLink: String(safe.cta_link ?? safe.ctaLink ?? ""),
+    strategy: String(safe.strategy ?? ""),
+    strategyReasoning: String(safe.strategyReasoning ?? safe.strategy_reasoning ?? ""),
+    targetCustomerIds,
+    contentVariants: normalizeVariants(safe),
+    customerCount,
+    campaignReady: true,
+    steps: Array.isArray(safe.steps) ? safe.steps : [],
+    segments: Array.isArray(safe.segments) ? safe.segments : [],
+    metricsProgression: Array.isArray(safe.metrics_progression)
+      ? safe.metrics_progression
+      : Array.isArray(safe.metricsProgression)
+        ? safe.metricsProgression
+        : [],
+    finalOpenRate: Number(safe.final_open_rate ?? safe.finalOpenRate ?? 0) || 0,
+    finalClickRate: Number(safe.final_click_rate ?? safe.finalClickRate ?? 0) || 0,
+    finalTotalOpened: Number(safe.final_total_opened ?? safe.finalTotalOpened ?? 0) || 0,
+    finalTotalClicked: Number(safe.final_total_clicked ?? safe.finalTotalClicked ?? 0) || 0,
+    uniqueTotalOpened: Number(safe.unique_total_opened ?? safe.uniqueTotalOpened ?? 0) || 0,
+    uniqueTotalClicked: Number(safe.unique_total_clicked ?? safe.uniqueTotalClicked ?? 0) || 0,
+    predictedFinalOpenRate: Number(safe.predicted_final_open_rate ?? safe.predictedFinalOpenRate ?? 0) || 0,
+    predictedFinalClickRate: Number(safe.predicted_final_click_rate ?? safe.predictedFinalClickRate ?? 0) || 0,
+    rawResult: safe,
+  };
+}
+
+function buildCampaignPayload(finalPayload, brief, campaignName) {
+  const variants = finalPayload.contentVariants.map((variant, index) => ({
+    variant_label: variant.variant || String.fromCharCode(65 + index),
+    subject: variant.subject || `Variant ${String.fromCharCode(65 + index)}`,
+    body: variant.body || "",
+    tone: variant.tone || "professional",
+    tags: variant.tags || [],
+    is_selected: index === 0,
+  }));
+
+  return {
+    name: campaignName || `Campaign - ${new Date().toLocaleDateString()}`,
+    brief,
+    subject: variants[0]?.subject || "",
+    body: variants[0]?.body || "",
+    target_segment: "all",
+    target_customer_ids: finalPayload.targetCustomerIds,
+    strategy_reasoning: finalPayload.strategyReasoning,
+    json_output: {
+      ctaLink: finalPayload.ctaLink,
+      strategy: finalPayload.strategy,
+      strategyReasoning: finalPayload.strategyReasoning,
+      segments: finalPayload.segments,
+      metricsProgression: finalPayload.metricsProgression,
+      finalOpenRate: finalPayload.finalOpenRate,
+      finalClickRate: finalPayload.finalClickRate,
+      finalTotalOpened: finalPayload.finalTotalOpened,
+      finalTotalClicked: finalPayload.finalTotalClicked,
+      uniqueTotalOpened: finalPayload.uniqueTotalOpened,
+      uniqueTotalClicked: finalPayload.uniqueTotalClicked,
+      predictedFinalOpenRate: finalPayload.predictedFinalOpenRate,
+      predictedFinalClickRate: finalPayload.predictedFinalClickRate,
+      rawResult: finalPayload.rawResult,
+    },
+    total_customers: finalPayload.customerCount,
+    temperature: 0.7,
+    use_emojis: true,
+    tone: "friendly",
+    variants,
+  };
+}
+
+async function persistCampaignResult(internalOrigin, finalPayload, brief, campaignName) {
+  const response = await fetch(`${internalOrigin}/api/campaigns`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(buildCampaignPayload(finalPayload, brief, campaignName)),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(errorText || `Campaign save failed with status ${response.status}`);
+  }
+
+  return response.json();
+}
+
+function handleConnection(ws, internalOrigin) {
+  let pythonProcess = null;
+  let started = false;
+  let stderrBuffer = "";
+  let processCompleted = false;
+  let disconnectKillTimer = null;
+  let heartbeatTimer = null;
+  let stderrTranscript = "";
+
+  const stopHeartbeat = () => {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+  };
+
+  ws.on("close", () => {
+    stopHeartbeat();
+    if (processCompleted || !pythonProcess || pythonProcess.killed || disconnectKillTimer) {
+      return;
+    }
+    disconnectKillTimer = setTimeout(() => {
+      if (pythonProcess && !pythonProcess.killed && !processCompleted) {
+        pythonProcess.kill();
+      }
+      disconnectKillTimer = null;
+    }, CLIENT_DISCONNECT_KILL_DELAY_MS);
+  });
+
+  ws.on("message", (raw) => {
+    let message = {};
+    try {
+      const parsed = JSON.parse(raw.toString("utf-8"));
+      message = isRecord(parsed) ? parsed : {};
+    } catch {
+      sendEvent(ws, "error", { error: "Invalid JSON payload" });
+      return;
+    }
+
+    const messageType = String(message.type ?? "");
+
+    if (messageType === "human_input") {
+      if (!started || !pythonProcess || pythonProcess.killed || !pythonProcess.stdin) {
+        return;
+      }
+      try {
+        pythonProcess.stdin.write(`${JSON.stringify(message)}\n`);
+      } catch (error) {
+        sendEvent(ws, "error", {
+          error: "Failed to forward human input",
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return;
+    }
+
+    if (messageType !== "start" || started) {
+      return;
+    }
+
+    started = true;
+
+    void (async () => {
+      const brief = String(message.brief ?? "").trim();
+      if (!brief) {
+        sendEvent(ws, "error", { error: "Missing required field: brief" });
+        return;
+      }
+
+      const resolvedWorkspaceRoot = resolveWorkspaceRoot();
+      const outputPath = path.join(resolvedWorkspaceRoot, OUTPUT_FILE);
+      const env = buildAgentProcessEnv(resolvedWorkspaceRoot);
+
+      await fsp.rm(outputPath, { force: true });
+
+      const requestedRounds = Number(message.rounds);
+      const rounds =
+        Number.isFinite(requestedRounds) && requestedRounds > 0
+          ? Math.floor(requestedRounds)
+          : DEFAULT_OPTIMIZATION_ROUNDS;
+      const interactive = Boolean(message.interactive);
+      const defaultPythonBin = process.platform === "win32" ? "python" : "python3";
+      const pythonBin = env.PYTHON_BIN || defaultPythonBin;
+      const args = ["-u", "-m", "backend.main", brief, "--rounds", String(rounds)];
+      if (interactive) {
+        args.push("--interactive");
+      }
+
+      sendEvent(ws, "thinking", {
+        agent: "Orchestrator",
+        step: interactive
+          ? `Starting agents pipeline with up to ${rounds} optimization rounds.`
+          : "Starting agents pipeline.",
+        kind: "status",
+      });
+
+      pythonProcess = spawn(pythonBin, args, {
+        cwd: resolvedWorkspaceRoot,
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+        env,
+      });
+
+      if (!pythonProcess.stdout || !pythonProcess.stderr || !pythonProcess.stdin) {
+        sendEvent(ws, "error", {
+          error: "Agents process streams unavailable",
+          message: "Could not attach to stdin/stdout/stderr for interactive streaming.",
+        });
+        return;
+      }
+
+      heartbeatTimer = setInterval(() => {
+        sendEvent(ws, "heartbeat", { ts: Date.now() });
+      }, HEARTBEAT_INTERVAL_MS);
+
+      pythonProcess.stdout.on("data", (chunk) => {
+        const text = Buffer.isBuffer(chunk) ? chunk.toString("utf-8") : String(chunk);
+        sendEvent(ws, "terminal", { text });
+      });
+
+      pythonProcess.stderr.on("data", (chunk) => {
+        const text = Buffer.isBuffer(chunk) ? chunk.toString("utf-8") : String(chunk);
+        stderrBuffer += text;
+
+        let newlineIndex = stderrBuffer.indexOf("\n");
+        while (newlineIndex !== -1) {
+          const rawLine = stderrBuffer.slice(0, newlineIndex);
+          stderrBuffer = stderrBuffer.slice(newlineIndex + 1);
+
+          const normalized = rawLine.replace(/\r$/, "");
+          const control = parseControlEnvelope(normalized);
+          if (control) {
+            sendEvent(ws, control.event, control.data);
+          } else if (normalized.trim()) {
+            stderrTranscript = `${stderrTranscript}${normalized}\n`.slice(-16_000);
+            console.error("[Agent WS stderr]", normalized);
+          }
+
+          newlineIndex = stderrBuffer.indexOf("\n");
+        }
+      });
+
+      pythonProcess.once("error", (error) => {
+        stopHeartbeat();
+        sendEvent(ws, "error", {
+          error: "Failed to start agents process",
+          message: error instanceof Error ? error.message : String(error),
+        });
+      });
+
+      pythonProcess.once("close", async (code) => {
+        processCompleted = true;
+        stopHeartbeat();
+        if (disconnectKillTimer) {
+          clearTimeout(disconnectKillTimer);
+          disconnectKillTimer = null;
+        }
+
+        if (stderrBuffer) {
+          const normalizedBuffer = stderrBuffer.replace(/\r$/, "");
+          const control = parseControlEnvelope(normalizedBuffer);
+          if (control) {
+            sendEvent(ws, control.event, control.data);
+          } else if (normalizedBuffer.trim()) {
+            stderrTranscript = `${stderrTranscript}${normalizedBuffer}\n`.slice(-16_000);
+            console.error("[Agent WS stderr]", normalizedBuffer);
+          }
+          stderrBuffer = "";
+        }
+
+        if (code !== 0) {
+          sendEvent(ws, "error", {
+            error: "Agents pipeline exited with failure",
+            message: stderrTranscript.trim()
+              ? `Process exited with code ${code ?? "unknown"}\n${stderrTranscript.trim()}`
+              : `Process exited with code ${code ?? "unknown"}`,
+          });
+          return;
+        }
+
+        try {
+          const rawText = await fsp.readFile(outputPath, "utf-8");
+          const parsed = JSON.parse(rawText);
+          const finalPayload = toFinalPayload(parsed, brief);
+
+          let savedCampaign = null;
+          try {
+            savedCampaign = await persistCampaignResult(
+              internalOrigin,
+              finalPayload,
+              brief,
+              typeof message.campaignName === "string" ? message.campaignName : undefined
+            );
+          } catch (error) {
+            console.warn("[Agent WS] Failed to save campaign through Next API:", error);
+          }
+
+          sendEvent(ws, "done", {
+            ...finalPayload,
+            savedCampaignId: savedCampaign?.id ?? null,
+          });
+        } catch (error) {
+          sendEvent(ws, "error", {
+            error: "Failed to parse agents final output",
+            message: error instanceof Error ? error.message : "Unknown parsing failure",
+          });
+        }
+      });
+    })().catch((error) => {
+      sendEvent(ws, "error", {
+        error: "Failed to execute agents pipeline",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    });
+  });
+}
+
+async function start() {
+  const app = next({ dev, dir: frontendDir, hostname, port });
+  const handle = app.getRequestHandler();
+  await app.prepare();
+
+  const wss = new WebSocketServer({ noServer: true });
+  const internalOrigin = `http://127.0.0.1:${port}`;
+
+  wss.on("connection", (ws) => {
+    handleConnection(ws, internalOrigin);
+  });
+
+  const server = createServer(async (req, res) => {
+    try {
+      const requestUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+
+      if (requestUrl.pathname === "/api/health") {
+        sendJson(res, 200, {
+          ok: true,
+          status: "healthy",
+          mode: dev ? "development" : "production",
+        });
+        return;
+      }
+
+      if (requestUrl.pathname === "/api/agent/ws") {
+        sendJson(res, 200, { ok: true, wsPath: AGENT_WS_PATH });
+        return;
+      }
+
+      await handle(req, res);
+    } catch (error) {
+      console.error("[Server] Request handling failed", error);
+      if (!res.headersSent) {
+        sendJson(res, 500, {
+          error: "Internal server error",
+          message: error instanceof Error ? error.message : String(error),
+        });
+      } else {
+        res.end();
+      }
+    }
+  });
+
+  server.on("upgrade", (req, socket, head) => {
+    try {
+      const requestUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+      if (requestUrl.pathname !== AGENT_WS_PATH) {
+        socket.destroy();
+        return;
+      }
+
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        wss.emit("connection", ws, req);
+      });
+    } catch (error) {
+      console.error("[Server] WebSocket upgrade failed", error);
+      socket.destroy();
+    }
+  });
+
+  server.listen(port, hostname, () => {
+    console.log(`CampaignX server listening on http://${hostname}:${port}`);
+  });
+}
+
+start().catch((error) => {
+  console.error("[Server] Failed to start", error);
+  process.exit(1);
+});

@@ -13,9 +13,19 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const runtimePublicEnv = {
+    supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL ?? "",
+    supabaseAnonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "",
+  };
+
   return (
     <html lang="en">
       <body>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `window.__CAMPAIGNX_PUBLIC_ENV__ = ${JSON.stringify(runtimePublicEnv)};`,
+          }}
+        />
         <AgentPreloader />
         <div
           className="min-h-screen relative"

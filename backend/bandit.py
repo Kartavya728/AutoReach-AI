@@ -4,9 +4,10 @@ Implements Thompson Sampling for dynamic action (email angle) selection.
 Learns which psychological angles perform best for which user tiers.
 """
 
-import numpy as np
 import json
+import math
 import os
+import random
 from backend.memory import memory_db
 
 BANDIT_STATE_FILE = "bandit_state.json"
@@ -49,11 +50,11 @@ class ThompsonBandit:
         if context_tier not in self.state:
             context_tier = "Reactivate" # Fallback
             
-        epsilon = max(0.1, 0.3 * np.exp(-current_round + 1))
-        
+        epsilon = max(0.1, 0.3 * math.exp(-current_round + 1))
+
         # Explore
-        if np.random.rand() < epsilon:
-            return str(np.random.choice(self.actions))
+        if random.random() < epsilon:
+            return str(random.choice(self.actions))
             
         # Exploit (Thompson Sampling)
         max_sample = -1
@@ -64,7 +65,7 @@ class ThompsonBandit:
             beta = self.state[context_tier][action]["beta"]
             
             # Sample from Beta distribution
-            theta = np.random.beta(alpha, beta)
+            theta = random.betavariate(alpha, beta)
             if theta > max_sample:
                 max_sample = theta
                 best_action = action
