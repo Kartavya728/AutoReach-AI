@@ -161,6 +161,35 @@ function getRoundChipLabel(round: {
   return `R${displayRound}`;
 }
 
+function isOptimizationPhase(phase?: string) {
+  return (phase || "").toLowerCase() === "optimization";
+}
+
+function isVirtualPredictionPhase(phase?: string) {
+  return (phase || "").toLowerCase() === "virtual_prediction";
+}
+
+function toCommittedMetrics(round: AgentRoundComplete): AgentLiveMetrics {
+  return {
+    round: round.round,
+    phase: round.phase || round.summary.phase,
+    phaseLabel: round.phaseLabel || round.summary.phaseLabel,
+    displayRound: round.displayRound ?? round.summary.displayRound,
+    optimizationRound: round.optimizationRound ?? round.summary.optimizationRound,
+    virtualPredictionRound: round.virtualPredictionRound ?? round.summary.virtualPredictionRound,
+    sent: Number(round.summary.audience || 0),
+    opened: Number(round.summary.totalOpened || 0),
+    clicked: Number(round.summary.totalClicked || 0),
+    openRate: Number(round.summary.openRate || 0),
+    clickRate: Number(round.summary.clickRate || 0),
+    uniqueOpened: Number(round.summary.uniqueOpened ?? round.summary.totalOpened ?? 0),
+    uniqueClicked: Number(round.summary.uniqueClicked ?? round.summary.totalClicked ?? 0),
+    predictedOpenRate: Number(round.summary.predictedOpenRate || 0),
+    predictedClickRate: Number(round.summary.predictedClickRate || 0),
+    bySegment: [],
+  };
+}
+
 function isOptimizationReviewPause(pauseType?: string) {
   return pauseType === "optimization_review";
 }
@@ -516,7 +545,9 @@ function shouldHideTerminalLine(line: string) {
     /^Configured interactive optimization rounds:/i.test(normalized) ||
     /^\[Dispatch\]/i.test(normalized) ||
     /^\[Round \d+\] Sending /i.test(normalized) ||
-    /Starting 3 automatic Virtual Rate Prediction Tool rounds\./i.test(normalized) ||
+    /\[Analysis\]\s*campaign=/i.test(normalized) ||
+    /campaign[_\s-]?id/i.test(normalized) ||
+    /Starting 2 automatic Virtual Rate Prediction Tool rounds\./i.test(normalized) ||
     /Compiling final campaign summary(?: and cumulative performance)?\./i.test(normalized)
   );
 }
@@ -766,6 +797,7 @@ export default function NewCampaign() {
   const [editingDrafts, setEditingDrafts] = useState(false);
   const [editedDrafts, setEditedDrafts] = useState<AgentDraftCard[]>([]);
   const [latestMetrics, setLatestMetrics] = useState<AgentLiveMetrics | null>(null);
+  const [activeStreamPhase, setActiveStreamPhase] = useState<string>("");
   const [roundHistory, setRoundHistory] = useState<AgentRoundComplete[]>([]);
   const [result, setResult] = useState<AgentRunResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -883,6 +915,7 @@ export default function NewCampaign() {
     setCollapsedSections({});
     setTerminalLogs([]);
     setIsTerminalExpanded(false);
+    setActiveStreamPhase("");
     
     setLatestMetrics((currentMetrics) => {
       if (isOptimization) {
@@ -1114,19 +1147,7 @@ export default function NewCampaign() {
           }));
         },
         onLiveMetrics: (metrics) => {
-          setLatestMetrics((previous) => {
-            if (
-              previous &&
-              previous.round === metrics.round &&
-              previous.sent === metrics.sent &&
-              previous.opened === metrics.opened &&
-              previous.clicked === metrics.clicked
-            ) {
-              return previous;
-            }
-
-            return metrics;
-          });
+          setActiveStreamPhase((metrics.phase || "").toLowerCase());
           setPhase("running");
         },
         onRoundComplete: (round) => {
@@ -1138,12 +1159,32 @@ export default function NewCampaign() {
             return [...current, round];
           });
 
+          const roundPhase = (round.phase || round.summary.phase || "").toLowerCase();
           const roundLabel = getRoundLabel(round);
+          setActiveStreamPhase(roundPhase);
+
+          if (isOptimizationPhase(roundPhase)) {
+            setLatestMetrics(toCommittedMetrics(round));
+          }
+
+          if (isVirtualPredictionPhase(roundPhase)) {
+            const notOpened = Math.max(
+              0,
+              Number(round.summary.audience || 0) -
+                Number(round.summary.uniqueOpened ?? round.summary.totalOpened ?? 0)
+            );
+            pushMessage({
+              role: "system",
+              kind: "summary",
+              text: `${roundLabel} complete. Not opened: ${formatCount(notOpened)}.`,
+            });
+            return;
+          }
 
           pushMessage({
             role: "system",
             kind: "summary",
-            text: `${roundLabel} complete.`,
+            text: `${roundLabel} complete. Ready for the next optimization decision.`,
           });
         },
         onTerminal: (text) => {
@@ -1291,7 +1332,7 @@ export default function NewCampaign() {
   }, [brief, ctaLink, latestCtaLink, latestPrompt, phase, pushMessage, resetRunState, runAgent]);
 
   const statusText = useMemo(() => {
-    const activePhase = (latestMetrics?.phase || "").toLowerCase();
+    const activePhase = activeStreamPhase;
     if (phase === "running" && activePhase === "virtual_prediction") return "Virtual testing is running in background";
     if (phase === "running" && activePhase === "optimization") return "Optimization is running in background";
     if (phase === "running") return "Agent is working";
@@ -1299,7 +1340,7 @@ export default function NewCampaign() {
     if (phase === "complete") return "Run complete";
     if (phase === "error") return "Run failed";
     return "Ready";
-  }, [latestMetrics?.phase, phase]);
+  }, [activeStreamPhase, phase]);
 
   const approvalDrafts = editingDrafts ? editedDrafts : draftCards;
   const digitalTwinCards = useMemo(() => {
@@ -1345,20 +1386,24 @@ export default function NewCampaign() {
     [digitalTwinCards, visibleTwinCards]
   );
   
+  const optimizationHistory = useMemo(
+    () => roundHistory.filter((round) => isOptimizationPhase(round.phase || round.summary.phase)),
+    [roundHistory]
+  );
   let activeSent = latestMetrics?.sent || 0;
   let activeTotalOpened = latestMetrics?.opened || 0;
   let activeTotalClicked = latestMetrics?.clicked || 0;
   let activeUniqueOpened = latestMetrics?.uniqueOpened || latestMetrics?.opened || 0;
   let activeUniqueClicked = latestMetrics?.uniqueClicked || latestMetrics?.clicked || 0;
 
-  // Between rounds, or at the end of the very first round, if latestMetrics isn't updating anymore
-  // and we have a final result payload, fallback to calculating it off there so the UI doesn't zero out.
-  if (!latestMetrics && result) {
-    activeSent = result.customerCount;
-    activeTotalOpened = result.finalTotalOpened ?? result.uniqueTotalOpened ?? Math.floor(result.customerCount * (result.finalOpenRate / 100));
-    activeTotalClicked = result.finalTotalClicked ?? result.uniqueTotalClicked ?? Math.floor(result.customerCount * (result.finalClickRate / 100));
-    activeUniqueOpened = result.uniqueTotalOpened ?? result.finalTotalOpened ?? Math.floor(result.customerCount * (result.finalOpenRate / 100));
-    activeUniqueClicked = result.uniqueTotalClicked ?? result.finalTotalClicked ?? Math.floor(result.customerCount * (result.finalClickRate / 100));
+  if (!latestMetrics && optimizationHistory.length > 0) {
+    const latestCompletedOptimization = optimizationHistory[optimizationHistory.length - 1];
+    const summary = latestCompletedOptimization.summary;
+    activeSent = Number(summary.audience || 0);
+    activeTotalOpened = Number(summary.totalOpened || 0);
+    activeTotalClicked = Number(summary.totalClicked || 0);
+    activeUniqueOpened = Number(summary.uniqueOpened ?? summary.totalOpened ?? 0);
+    activeUniqueClicked = Number(summary.uniqueClicked ?? summary.totalClicked ?? 0);
   }
   
   const totalSent = Math.max(baselineMetrics.sent, activeSent);
@@ -1367,40 +1412,27 @@ export default function NewCampaign() {
   const aggregateOpenRate = totalSent > 0 ? (totalOpened / totalSent) * 100 : 0;
   const aggregateClickRate = totalSent > 0 ? (totalClicked / totalSent) * 100 : 0;
   const roundChartData = useMemo(() => {
-    const data = roundHistory.map((round) => ({
+    return optimizationHistory.map((round) => ({
       key: `${round.phase || round.summary.phase || "round"}-${round.round}`,
       shortLabel: getRoundChipLabel(round),
       fullLabel: getRoundLabel(round),
       openRate: Number(round.summary.openRate || 0),
       clickRate: Number(round.summary.clickRate || 0),
-      active: false,
+      active: latestMetrics?.round === round.round,
     }));
-
-    if (latestMetrics?.round) {
-      const livePoint = {
-        key: `${latestMetrics.phase || "round"}-${latestMetrics.round}`,
-        shortLabel: getRoundChipLabel(latestMetrics),
-        fullLabel: getRoundLabel(latestMetrics),
-        openRate: Number(latestMetrics.openRate || 0),
-        clickRate: Number(latestMetrics.clickRate || 0),
-        active: phase === "running",
-      };
-      const existingIndex = data.findIndex((item) => item.key === livePoint.key);
-      if (existingIndex >= 0) {
-        data[existingIndex] = livePoint;
-      } else {
-        data.push(livePoint);
-      }
-    }
-
-    return data;
-  }, [latestMetrics, phase, roundHistory]);
+  }, [latestMetrics?.round, optimizationHistory]);
   const maxRoundRate = useMemo(() => {
     return Math.max(
       1,
       ...roundChartData.flatMap((item) => [item.openRate, item.clickRate])
     );
   }, [roundChartData]);
+  const hasAnalysisMetrics =
+    latestMetrics !== null ||
+    optimizationHistory.length > 0 ||
+    baselineMetrics.sent > 0 ||
+    baselineMetrics.opened > 0 ||
+    baselineMetrics.clicked > 0;
   const hasCampaignData = messages.length > 0 || roundHistory.length > 0 || !!result;
 
   const buildCampaignRunPayload = useCallback((
@@ -2380,7 +2412,7 @@ export default function NewCampaign() {
                 </p>
 
                 <div className="mt-4 flex-1 min-h-0 overflow-y-auto pr-1">
-                  {(latestMetrics || roundHistory.length > 0 || (phase === "complete" && result)) ? (
+                  {hasAnalysisMetrics ? (
                     <div className="rounded-[20px] p-4 w-full" style={{ background: "rgba(15,23,42,0.4)", border: "1px solid rgba(148,163,184,0.15)" }}>
                       <div className="grid grid-cols-1 gap-2">
                         <div className="rounded-2xl p-3" style={{ background: "linear-gradient(135deg, rgba(14,116,144,0.15) 0%, rgba(15,23,42,0.75) 100%)", border: "1px solid rgba(34,211,238,0.18)" }}>
@@ -2442,7 +2474,9 @@ export default function NewCampaign() {
                             })}
                           </div>
                           <div className="mt-2 text-slate-500" style={{ fontSize: "0.62rem" }}>
-                            {latestMetrics?.phase === "optimization" ? "Optimization rounds are running quietly in the background." : "Virtual prediction rounds are running quietly in the background."}
+                            {activeStreamPhase === "optimization"
+                              ? "These stats refresh only after a completed optimization round."
+                              : "Virtual prediction rounds do not change these stats."}
                           </div>
                         </div>
                       )}
@@ -2450,7 +2484,7 @@ export default function NewCampaign() {
                   ) : (
                     <div className="rounded-[20px] p-4" style={{ background: "rgba(15,23,42,0.4)", border: "1px solid rgba(148,163,184,0.16)" }}>
                       <p className="text-slate-400" style={{ fontSize: "0.8rem", lineHeight: 1.6 }}>
-                        Analysis stats will populate when campaign metrics are produced.
+                        Analysis stats will appear after the first optimization round completes.
                       </p>
                     </div>
                   )}

@@ -71,8 +71,7 @@ def compute_analysis(
     click_rate = round(total_clicked / total_sent * 100, 1) if total_sent > 0 else 0
 
     print(
-        f"[Analysis] campaign={campaign_id[:20]}... "
-        f"sent={total_sent} opened={total_opened}({open_rate}%) "
+        f"[Analysis] sent={total_sent} opened={total_opened}({open_rate}%) "
         f"clicked={total_clicked}({click_rate}%)"
     )
 

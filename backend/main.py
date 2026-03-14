@@ -6,7 +6,7 @@ Pipeline:
   2. Segment into dynamic approval-ready categories
   3. Generate category-specific emails (War Room + Twin + Bandit)
   4. Human approval gate for generated emails
-  5. Run 3 automatic virtual rate prediction rounds
+  5. Run 2 automatic virtual rate prediction rounds
   6. Send campaigns and stream live open/click metrics
   7. Run iterative optimization rounds with human yes/no control
 
@@ -47,7 +47,7 @@ DEFAULT_BRIEF = (
     "https://superbfsi.com/xdeposit/explore/"
 )
 DEFAULT_OPTIMIZATION_ROUNDS = 10
-AUTO_VIRTUAL_PREDICTION_ROUNDS = 3
+AUTO_VIRTUAL_PREDICTION_ROUNDS = 2
 OUTPUT_FILE = "agent_output.json"
 CONTROL_PREFIX = "__AGENT_EVENT__"
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -1074,10 +1074,10 @@ async def run_react_planner_executor(
     channel.log("Thought: I now know the final answer")
     emit_react(
         "final",
-        "Categories and emails are approved. Starting 3 automatic Virtual Rate Prediction Tool rounds."
+        f"Categories and emails are approved. Starting {AUTO_VIRTUAL_PREDICTION_ROUNDS} automatic Virtual Rate Prediction Tool rounds."
     )
     channel.log(
-        "Final Answer: Categories and emails are approved. Starting 3 automatic Virtual Rate Prediction Tool rounds."
+        f"Final Answer: Categories and emails are approved. Starting {AUTO_VIRTUAL_PREDICTION_ROUNDS} automatic Virtual Rate Prediction Tool rounds."
     )
 
     # ------------------------------------------------------------------
@@ -1248,14 +1248,22 @@ async def run_react_planner_executor(
             "predicted_click_rate": float(latest_prediction.get("click_rate", 0.0)),
         }
         all_round_metrics.append(round_summary)
-        channel.emit_thinking(
-            (
-                f"{phase_label} round {display_round} complete. "
-                f"Cumulative open {cumul_open_rate}%, click {cumul_click_rate}%."
-            ),
-            agent="Virtual Rate Prediction Tool" if is_auto_prediction_round else "Optimizer",
-            kind="summary",
-        )
+        not_opened_count = max(0, round_summary["audience"] - round_summary["unique_opened"])
+        if is_auto_prediction_round:
+            channel.emit_thinking(
+                f"{phase_label} round {display_round} complete. Not opened customers: {not_opened_count}.",
+                agent="Virtual Rate Prediction Tool",
+                kind="summary",
+            )
+        else:
+            channel.emit_thinking(
+                (
+                    f"{phase_label} round {display_round} complete. "
+                    f"Cumulative open {cumul_open_rate}%, click {cumul_click_rate}%."
+                ),
+                agent="Optimizer",
+                kind="summary",
+            )
 
         channel.emit_event(
             "round_complete",
@@ -1315,7 +1323,7 @@ async def run_react_planner_executor(
             if pipeline_round_num == AUTO_VIRTUAL_PREDICTION_ROUNDS:
                 if max_interactive_optimization_rounds <= 0:
                     channel.emit_thinking(
-                        "The 3 automatic virtual rate prediction rounds are complete. No interactive optimization rounds were requested.",
+                        f"The {AUTO_VIRTUAL_PREDICTION_ROUNDS} automatic virtual rate prediction rounds are complete. No interactive optimization rounds were requested.",
                         agent="Virtual Rate Prediction Tool",
                         kind="decision",
                     )
@@ -1326,8 +1334,8 @@ async def run_react_planner_executor(
                     {
                         "title": f"Start optimization round {next_optimization_round}?",
                         "message": (
-                            "The first 3 automatic Virtual Rate Prediction Tool rounds are complete. "
-                            "Continue with the next optimization round?"
+                            f"The first {AUTO_VIRTUAL_PREDICTION_ROUNDS} automatic Virtual Rate Prediction Tool rounds are complete. "
+                            f"Customers not opened yet: {not_opened_count}. Continue with the next optimization round?"
                         ),
                         "round": next_optimization_round,
                         "maxRounds": max_interactive_optimization_rounds,
