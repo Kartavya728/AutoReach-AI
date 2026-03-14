@@ -49,6 +49,7 @@ const DEFAULT_BRIEF =
   "Run email campaign for launching XDeposit, a flagship term deposit product from SuperBFSI, that gives 1 percentage point higher returns than its competitors. Announce an additional 0.25 percentage point higher returns for female senior citizens. Optimise for open rate and click rate. Do not skip emails to customers marked inactive.";
 const DEFAULT_CTA_LINK = "https://superbfsi.com/xdeposit/explore/";
 const MAX_INTERACTIVE_OPTIMIZATION_ROUNDS = 10;
+const AUTO_VIRTUAL_PREDICTION_ROUNDS = 2;
 const INITIAL_VISIBLE_TWIN_CARDS = 3;
 const INITIAL_VISIBLE_SEGMENTS = 3;
 const INITIAL_VISIBLE_DRAFTS = 2;
@@ -824,6 +825,7 @@ export default function NewCampaign() {
   const expandedTerminalContainerRef = useRef<HTMLDivElement>(null);
   const campaignRunIdRef = useRef<string | null>(null);
   const activeRunAbortRef = useRef<AbortController | null>(null);
+  const latestCompletedRoundRef = useRef<AgentRoundComplete | null>(null);
 
   const scrollTerminalToBottom = useCallback(() => {
     const targets = [terminalContainerRef.current, expandedTerminalContainerRef.current];
@@ -916,6 +918,7 @@ export default function NewCampaign() {
     setTerminalLogs([]);
     setIsTerminalExpanded(false);
     setActiveStreamPhase("");
+    latestCompletedRoundRef.current = null;
     
     setLatestMetrics((currentMetrics) => {
       if (isOptimization) {
@@ -1100,9 +1103,20 @@ export default function NewCampaign() {
         },
         onPause: (pause, respond) => {
           if (pause.pauseType === "next_round") {
-            if (mode === "initial") {
-              respond({ continueOptimization: false });
-              return;
+            const latestCompletedRound = latestCompletedRoundRef.current;
+            if (latestCompletedRound) {
+              const roundPhase = (latestCompletedRound.phase || latestCompletedRound.summary.phase || "").toLowerCase();
+              const vrRound = Number(
+                latestCompletedRound.virtualPredictionRound ??
+                  latestCompletedRound.summary.virtualPredictionRound ??
+                  0
+              );
+              if (
+                isOptimizationPhase(roundPhase) ||
+                (isVirtualPredictionPhase(roundPhase) && vrRound >= AUTO_VIRTUAL_PREDICTION_ROUNDS)
+              ) {
+                setLatestMetrics(toCommittedMetrics(latestCompletedRound));
+              }
             }
             if (mode === "optimization" && Number(pause.round ?? 0) <= 1) {
               respond({ continueOptimization: true });
@@ -1151,6 +1165,7 @@ export default function NewCampaign() {
           setPhase("running");
         },
         onRoundComplete: (round) => {
+          latestCompletedRoundRef.current = round;
           setRoundHistory((current) => {
             const previous = current[current.length - 1];
             if (previous && previous.round === round.round) {
@@ -1162,10 +1177,6 @@ export default function NewCampaign() {
           const roundPhase = (round.phase || round.summary.phase || "").toLowerCase();
           const roundLabel = getRoundLabel(round);
           setActiveStreamPhase(roundPhase);
-
-          if (isOptimizationPhase(roundPhase)) {
-            setLatestMetrics(toCommittedMetrics(round));
-          }
 
           if (isVirtualPredictionPhase(roundPhase)) {
             const notOpened = Math.max(
