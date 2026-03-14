@@ -106,7 +106,56 @@ def _ensure_variant_has_cta_link(variant: EmailVariant, cta_link: str) -> EmailV
     return variant
 
 
-def _build_twin_personas(tier: str) -> list[dict[str, Any]]:
+async def _build_twin_personas(segment: CustomerSegment) -> list[dict[str, Any]]:
+    segment_name = segment.get("segment_name", "Unknown Segment")
+    tier = segment.get("tier", "Unknown Tier")
+    criteria = segment.get("criteria", "")
+
+    prompt = f"""You are the Persona Architect for a BFSI Campaign Simulator.
+The current campaign target segment is:
+- Segment Name: {segment_name}
+- Wealth/Value Tier: {tier}
+- Qualifying Criteria: {criteria}
+
+Your goal is to generate 5 highly realistic, distinct synthetic personas that belong EXACTLY to this segment profile.
+Each persona must have the following keys:
+- persona_id: ID like "persona-1"
+- name: Realistic Indian Name
+- age: Integer
+- occupation: Realistic job title fitting the tier and criteria
+- city: Indian metro or tier-2 city
+- family_size: Integer
+- credit_score: Integer (300 to 900)
+
+Return ONLY a valid JSON array of 5 objects. Do not use markdown wrappers like ```json.
+"""
+    try:
+        llm = _get_model()
+        response = await llm.ainvoke([HumanMessage(content=prompt)])
+        text = str(response.content).strip()
+        start = text.find("[")
+        end = text.rfind("]")
+        if start != -1 and end != -1:
+            json_str = text[start : end + 1]
+            parsed = json.loads(json_str)
+            if isinstance(parsed, list) and len(parsed) > 0:
+                result_personas: list[dict[str, Any]] = []
+                for i, p in enumerate(parsed):
+                    if len(result_personas) >= 5:
+                        break
+                    if isinstance(p, dict):
+                        p_dict = dict(p)
+                        p_dict['persona_id'] = f"persona-{i+1}"
+                        p_dict['name'] = p_dict.get('name', f"Persona {i+1}")
+                        p_dict['occupation'] = p_dict.get('occupation', 'Professional')
+                        p_dict['city'] = p_dict.get('city', 'Metro')
+                        result_personas.append(p_dict)
+                return result_personas
+
+    except Exception as e:
+        _safe_print(f"      [Simulator] Failed to dynamically generate personas: {e}. Using fallback.")
+
+    # Fallback if the LLM fails to generate valid JSON
     base_personas = [
         {"persona_id": "persona-1", "name": "Aarav", "age": 29, "occupation": "Product Manager", "city": "Bengaluru", "family_size": 2, "credit_score": 742},
         {"persona_id": "persona-2", "name": "Meera", "age": 41, "occupation": "School Principal", "city": "Pune", "family_size": 4, "credit_score": 781},
@@ -196,6 +245,7 @@ async def generate_segment_variant(
     cta_link: str = "",
     emit_progress: TwinProgressEmitter | None = None,
     past_metrics: dict | None = None,
+    meta_strategy: dict | None = None,
 ) -> EmailVariant:
     """Generate a high-performing email variant using the Multi-Agent War Room, Bandit, and Sim."""
     
@@ -221,16 +271,21 @@ async def generate_segment_variant(
     angle = bandit_engine.select_action(tier)
     _safe_print(f"      [Bandit] Selected Angle: {angle.upper()} for Tier: {tier}")
     
-    personas = _build_twin_personas(tier)
+    _safe_print(f"      [Simulator] Generating dynamic synthetic personas for '{segment.get('segment_name', '')}'...")
+    personas = await _build_twin_personas(segment)
 
     # 3. War Room generates and Digital Twin tests (Loop up to 3 times)
     variant = None
     max_attempts = 3
     
-    # Randomly assign testing constraints for Length and Emojis
-    # This ensures true exploration across the campaign segments
-    length_constraint = random.choice(["short", "medium"])
-    emoji_constraint = random.choice(["none", "moderate", "some"])
+    # Meta-Strategy explicit assignment (with random fallback for Round 1 exploration)
+    if meta_strategy:
+        length_constraint = meta_strategy.get("body_length", "medium")
+        emoji_constraint = meta_strategy.get("emoji_usage", "moderate")
+    else:
+        # Fallback for round 1 where we have no past metrics
+        length_constraint = random.choice(["short", "medium"])
+        emoji_constraint = random.choice(["none", "moderate", "some"])
     
     for attempt_index in range(max_attempts):
         attempt = attempt_index + 1
@@ -242,6 +297,7 @@ async def generate_segment_variant(
             past_metrics=past_metrics,
             length_constraint=length_constraint,
             emoji_constraint=emoji_constraint,
+            meta_strategy=meta_strategy
         )
         draft_variant = _ensure_variant_has_cta_link(draft_variant, cta_link)
         

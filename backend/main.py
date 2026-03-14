@@ -34,6 +34,7 @@ from backend.strategy_agent import plan_strategy
 from backend.config import GEMINI_API_KEY, GEMINI_MODEL
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage
+from backend.strategist_agent import strategist_agent
 
 
 DEFAULT_BRIEF = (
@@ -796,36 +797,46 @@ async def run_react_planner_executor(
     channel.log("Action: segment_customers")
     channel.log("Action Input: {\"min_categories\": 3}")
 
-    segments = await segment_customers(crm_data, brief)
-    segments = ensure_minimum_categories(segments, min_count=3)
+    current_brief = brief
+    while True:
+        segments = await segment_customers(crm_data, current_brief)
+        segments = ensure_minimum_categories(segments, min_count=3)
 
-    state["segments"] = segments
+        state["segments"] = segments
 
-    emit_react(
-        "observation",
-        f"Built {len(segments)} categories and prepared them for human approval."
-    )
-    channel.log(
-        "Observation: "
-        f"Built {len(segments)} categories with sizes {[int(s.get('size', 0)) for s in segments]}."
-    )
+        emit_react(
+            "observation",
+            f"Built {len(segments)} categories and prepared them for human approval."
+        )
+        channel.log(
+            "Observation: "
+            f"Built {len(segments)} categories with sizes {[int(s.get('size', 0)) for s in segments]}."
+        )
 
-    # Human gate: category approval
-    cards = category_cards(segments)
-    category_input = await channel.wait_for_human(
-        "segment_approval",
-        {
-            "title": "Approve customer categories",
-            "message": f"Review the {len(segments)} categories. Rejected categories will be excluded from the audience and later rate calculations.",
-            "segments": cards,
-            "ctaLink": state.get("cta_link", ""),
-        },
-        auto_payload={"approved": True},
-    )
-    approved_segments = parse_segment_approvals(segments, category_input)
-    if not approved_segments:
-        raise RuntimeError("No customer categories were approved. Pipeline stopped.")
-    segments = approved_segments
+        # Human gate: category approval
+        cards = category_cards(segments)
+        category_input = await channel.wait_for_human(
+            "segment_approval",
+            {
+                "title": "Approve customer categories",
+                "message": f"Review the {len(segments)} categories. Rejected categories will be excluded from the audience and later rate calculations.",
+                "segments": cards,
+                "ctaLink": state.get("cta_link", ""),
+            },
+            auto_payload={"approved": True},
+        )
+        approved_segments = parse_segment_approvals(segments, category_input)
+        if approved_segments:
+            segments = approved_segments
+            break
+
+        channel.log("[HITL] Human rejected the categories. Retrying category generation.")
+        emit_react("observation", "Human rejected the proposed categories. I must rethink and generate a new set of categories.")
+        channel.emit_thinking("Categories rejected. Re-analyzing customer data to propose alternative categories.", agent="Orchestrator", kind="decision")
+        
+        # Append feedback to the brief to encourage different generation
+        current_brief += "\n\nFeedback: The previous categories were rejected. Please generate entirely DIFFERENT categories this time."
+
     state["segments"] = segments
     approved_ids = collect_target_ids(segments)
     state["target_customer_ids"] = approved_ids
@@ -1155,14 +1166,33 @@ async def run_react_planner_executor(
         if segment_results:
             avg_open = sum(float(r.get("open_rate", 0)) for r in segment_results) / len(segment_results)
             avg_click = sum(float(r.get("click_rate", 0)) for r in segment_results) / len(segment_results)
+            ctr = round((avg_click / avg_open * 100), 1) if avg_open > 0 else 0
             prev_variant = segment_results[0].get("variant_used", {})
             past_metrics_base = {
                 "open_rate": round(avg_open, 1),
                 "click_rate": round(avg_click, 1),
+                "ctr": ctr,
                 "previous_subject": str(prev_variant.get("subject", "")),
+                # Pull constraints from the state memory if available
+                "length_constraint": state.get("campaign_memory", {}).get("last_length", "medium"),
+                "emoji_constraint": state.get("campaign_memory", {}).get("last_emoji", "some"),
+                "send_time": state.get("campaign_memory", {}).get("last_time", "12:00")
             }
+            channel.log(f"[Strategist] Analyzing Round {round_num} metrics: {avg_open:.1f}% Open, {avg_click:.1f}% Click (CTR: {ctr}%)")
+            meta_strategy = await strategist_agent.analyze_results(past_metrics_base)
+            channel.log(f"[Strategist] Diagnosis: {meta_strategy.get('diagnosis', '')}")
+            channel.log(f"[Strategist] Directives: Length={meta_strategy.get('body_length')}, Emojis={meta_strategy.get('emoji_usage')}, Time={meta_strategy.get('send_time')}")
+            
+            # Save directives into campaign memory for next round context
+            if "campaign_memory" not in state:
+                state["campaign_memory"] = {}
+            state["campaign_memory"]["last_length"] = meta_strategy.get('body_length', 'medium')
+            state["campaign_memory"]["last_emoji"] = meta_strategy.get('emoji_usage', 'some')
+            state["campaign_memory"]["last_time"] = meta_strategy.get('send_time', '12:00')
+            
         else:
             past_metrics_base = None
+            meta_strategy = None
 
         if hot_ids:
             hot_segment = {
@@ -1183,6 +1213,7 @@ async def run_react_planner_executor(
                 cta_link=str(state.get("cta_link", "")),
                 emit_progress=lambda payload: channel.emit_event("digital_twin", payload),
                 past_metrics=past_metrics_base,
+                meta_strategy=meta_strategy
             )
             hot_variant = ensure_variant_has_link(hot_variant, str(state.get("cta_link", "")))
             next_groups.append(
@@ -1218,6 +1249,7 @@ async def run_react_planner_executor(
                 cta_link=str(state.get("cta_link", "")),
                 emit_progress=lambda payload: channel.emit_event("digital_twin", payload),
                 past_metrics=warm_past_metrics,
+                meta_strategy=meta_strategy
             )
             warm_variant = ensure_variant_has_link(warm_variant, str(state.get("cta_link", "")))
             next_groups.append(
@@ -1246,11 +1278,6 @@ async def run_react_planner_executor(
                 "tier": "Reactivate",
             }
             # Build past metrics feedback for cold leads
-            cold_past_metrics = None
-            if segment_results:
-                avg_open = sum(float(r.get("open_rate", 0)) for r in segment_results) / len(segment_results)
-                avg_click = sum(float(r.get("click_rate", 0)) for r in segment_results) / len(segment_results)
-                prev_variant = segment_results[-1].get("variant_used", {})
             cold_past_metrics = past_metrics_base
             cold_variant = await generate_segment_variant(
                 brief,
@@ -1259,6 +1286,7 @@ async def run_react_planner_executor(
                 cta_link=str(state.get("cta_link", "")),
                 emit_progress=lambda payload: channel.emit_event("digital_twin", payload),
                 past_metrics=cold_past_metrics,
+                meta_strategy=meta_strategy
             )
             cold_variant = ensure_variant_has_link(cold_variant, str(state.get("cta_link", "")))
             next_groups.append(

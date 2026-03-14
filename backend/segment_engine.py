@@ -13,7 +13,7 @@ from collections import Counter
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from backend.state import CustomerRecord, CustomerSegment
-from backend.config import AGENTS_TEST_MODE, GEMINI_API_KEY, GEMINI_MODEL
+from backend.config import GEMINI_API_KEY, GEMINI_MODEL
 
 
 def _get_model() -> ChatGoogleGenerativeAI:
@@ -154,50 +154,6 @@ async def generate_dynamic_segments(brief: str, crm_data: list[CustomerRecord]) 
     Single-call approach: Gemini sees the brief + real data profile + sample records,
     then identifies key factors AND generates segments in one shot.
     """
-    if AGENTS_TEST_MODE:
-        return [
-            {
-                "segment_id": "female_senior",
-                "segment_name": "Senior Women Extra Returns",
-                "criteria": "Female customers aged 60 or older",
-                "tone": "empathetic",
-                "focus": "0.25% additional return for female senior citizens",
-                "emoji_level": "none",
-                "tier": "Diamond",
-                "logic": [{"AND": [{"field": "gender", "op": "==", "value": "Female"}, {"field": "age", "op": ">=", "value": 60}]}],
-            },
-            {
-                "segment_id": "high_income",
-                "segment_name": "High Income Earners",
-                "criteria": "Customers with monthly income above 150000",
-                "tone": "confident",
-                "focus": "1 percentage point higher returns than competitors",
-                "emoji_level": "none",
-                "tier": "Gold",
-                "logic": [{"AND": [{"field": "income", "op": ">", "value": 150000}]}],
-            },
-            {
-                "segment_id": "new_customers",
-                "segment_name": "New Customers",
-                "criteria": "Customers not yet marked as existing customers",
-                "tone": "welcoming",
-                "focus": "Introduce XDeposit and build trust",
-                "emoji_level": "none",
-                "tier": "Silver",
-                "logic": [{"AND": [{"field": "existing_customer", "op": "!=", "value": "yes"}]}],
-            },
-            {
-                "segment_id": "catch_all",
-                "segment_name": "All Other Customers",
-                "criteria": "All remaining customers",
-                "tone": "informative",
-                "focus": "Broad product benefits and CTA",
-                "emoji_level": "none",
-                "tier": "Reactivate",
-                "logic": [],
-            },
-        ]
-
     llm = _get_model()
 
     # Build the data profile from ALL records

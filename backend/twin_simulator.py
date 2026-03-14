@@ -6,7 +6,7 @@ to gauge predicted engagement before real-world sending.
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage
-from backend.config import AGENTS_TEST_MODE, GEMINI_API_KEY, GEMINI_MODEL
+from backend.config import GEMINI_API_KEY, GEMINI_MODEL
 import hashlib
 import json
 
@@ -25,15 +25,6 @@ class TwinSimulator:
         """
         Returns <CLICK>, <OPEN_ONLY>, or <IGNORE> along with reasoning.
         """
-        if AGENTS_TEST_MODE:
-            digest = hashlib.sha256(f"{user.get('name')}|{subject}|{body}".encode("utf-8")).hexdigest()
-            score = int(digest[:2], 16)
-            if score % 100 < 35:
-                return {"decision": "CLICK", "monologue": "Strong value and CTA. I would click."}
-            if score % 100 < 78:
-                return {"decision": "OPEN", "monologue": "Subject is good enough to open, but I am undecided."}
-            return {"decision": "IGNORE", "monologue": "This does not feel relevant enough right now."}
-
         name = user.get("name") or "User"
         age = user.get("age") or 35
         occupation = user.get("occupation") or "Professional"

@@ -94,4 +94,5 @@ class WorkflowState(TypedDict):
     content_variants: list[EmailVariant]
     segments: list[CustomerSegment]
     segment_variants: dict   # segment_id -> EmailVariant
+    campaign_memory: dict | None
     steps: Annotated[list[AgentStep], _merge_steps]
