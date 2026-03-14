@@ -437,6 +437,15 @@ export default function NewCampaign() {
   const [visibleDrafts, setVisibleDrafts] = useState(INITIAL_VISIBLE_DRAFTS);
   const [expandedBodies, setExpandedBodies] = useState<Set<string>>(new Set());
   const [collapsedSections, setCollapsedSections] = useState<Record<string,boolean>>({});
+  const [terminalLogs, setTerminalLogs] = useState<string[]>([]);
+  const [showTerminal, setShowTerminal] = useState(false);
+  const terminalEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (showTerminal && terminalEndRef.current) {
+      terminalEndRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [terminalLogs, showTerminal]);
 
   const thinkingMessages = useMemo(() => [
     "Agent thinking",
@@ -509,6 +518,8 @@ export default function NewCampaign() {
     setVisibleDrafts(INITIAL_VISIBLE_DRAFTS);
     setExpandedBodies(new Set());
     setCollapsedSections({});
+    setTerminalLogs([]);
+    setShowTerminal(false);
     
     setLatestMetrics((currentMetrics) => {
       if (isOptimization) {
@@ -759,8 +770,8 @@ export default function NewCampaign() {
             });
           }
         },
-        onTerminal: () => {
-          // Intentionally ignored for chat-style UI.
+        onTerminal: (text) => {
+          setTerminalLogs((current) => [...current, text]);
         },
       });
 
@@ -1173,15 +1184,43 @@ export default function NewCampaign() {
                   <motion.div
                     initial={{ opacity: 0, y: 8 }}
                     animate={{ opacity: 1, y: 0 }}
-                    className="flex justify-start"
+                    className="flex flex-col gap-2 justify-start w-full"
                   >
-                    <div className="rounded-2xl px-4 py-3" style={{ background: "rgba(15,23,42,0.82)", border: "1px solid rgba(148,163,184,0.2)" }}>
-                      <div className="flex items-center gap-2 text-slate-200" style={{ fontSize: "0.78rem" }}>
-                        <Bot className="w-3.5 h-3.5" />
-                        {thinkingMessages[thinkingMsgIndex]}
-                        <TypingDots />
+                    <div className="rounded-2xl px-4 py-3 self-start" style={{ background: "rgba(15,23,42,0.82)", border: "1px solid rgba(148,163,184,0.2)" }}>
+                      <div className="flex items-center justify-between gap-4">
+                        <div className="flex items-center gap-2 text-slate-200" style={{ fontSize: "0.78rem" }}>
+                          <Bot className="w-3.5 h-3.5" />
+                          {thinkingMessages[thinkingMsgIndex]}
+                          <TypingDots />
+                        </div>
+                        <button 
+                          onClick={() => setShowTerminal(s => !s)}
+                          className="flex items-center gap-1 text-slate-400 hover:text-slate-200 focus:outline-none"
+                        >
+                          <span style={{ fontSize: "0.65rem", textTransform: "uppercase" }}>Logs</span>
+                          {showTerminal ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                        </button>
                       </div>
                     </div>
+                    
+                    <AnimatePresence>
+                      {showTerminal && terminalLogs.length > 0 && (
+                        <motion.div 
+                          initial={{ opacity: 0, height: 0 }}
+                          animate={{ opacity: 1, height: "auto" }}
+                          exit={{ opacity: 0, height: 0 }}
+                          className="rounded-xl p-3 w-full bg-slate-900/80 border border-slate-700/50 overflow-y-auto"
+                          style={{ maxHeight: "250px", fontFamily: "monospace", fontSize: "0.75rem", color: "#94a3b8" }}
+                        >
+                          {terminalLogs.map((log, i) => (
+                            <div key={i} className="mb-1 leading-relaxed whitespace-pre-wrap flex gap-2">
+                              {log}
+                            </div>
+                          ))}
+                          <div ref={terminalEndRef} />
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
                   </motion.div>
                 )}
 
@@ -1484,80 +1523,93 @@ export default function NewCampaign() {
               </div>
             </div>
 
-            {(latestMetrics || roundHistory.length > 0 || (phase === "complete" && result)) && (
-              <div className="mt-5">
-                {/* Section Header */}
-                <div className="flex items-center gap-2 mb-3">
-                  <TrendingUp className="w-4 h-4 text-emerald-400" />
-                  <span className="text-white" style={{ fontSize: "0.9rem", fontWeight: 700 }}>Campaign Performance</span>
+            {(latestMetrics || roundHistory.length > 0 || (phase === "complete" && result) || digitalTwinCards.length > 0) && (
+              <div className="mt-8 border-t border-slate-800/60 pt-6 w-full">
+                <div className="flex items-center gap-2 mb-4">
+                  <TrendingUp className="w-5 h-5 text-indigo-400" />
+                  <span className="text-white text-lg font-bold">Insights & Analysis Dashboard</span>
                 </div>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                  <div className="rounded-2xl p-4" style={{ background: "linear-gradient(135deg, rgba(14,116,144,0.15) 0%, rgba(15,23,42,0.75) 100%)", border: "1px solid rgba(34,211,238,0.18)" }}>
-                    <div className="text-cyan-300" style={{ fontSize: "0.7rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>Audience Reached</div>
-                    <div className="text-white mt-1" style={{ fontSize: "1.4rem", fontWeight: 800 }}>{formatCount(totalSent || 0)}</div>
-                  </div>
-                  <div className="rounded-2xl p-4" style={{ background: "linear-gradient(135deg, rgba(22,163,74,0.12) 0%, rgba(15,23,42,0.75) 100%)", border: "1px solid rgba(34,197,94,0.18)" }}>
-                    <div className="text-emerald-300" style={{ fontSize: "0.7rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>Open Rate</div>
-                    <div className="text-white mt-1" style={{ fontSize: "1.4rem", fontWeight: 800 }}>{formatPercent(aggregateOpenRate)}</div>
-                    <div className="text-emerald-400/60 mt-0.5" style={{ fontSize: "0.68rem" }}>{formatCount(totalOpened)} opens</div>
-                  </div>
-                  <div className="rounded-2xl p-4" style={{ background: "linear-gradient(135deg, rgba(37,99,235,0.12) 0%, rgba(15,23,42,0.75) 100%)", border: "1px solid rgba(59,130,246,0.18)" }}>
-                    <div className="text-blue-300" style={{ fontSize: "0.7rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>Click Rate</div>
-                    <div className="text-white mt-1" style={{ fontSize: "1.4rem", fontWeight: 800 }}>{formatPercent(aggregateClickRate)}</div>
-                    <div className="text-blue-400/60 mt-0.5" style={{ fontSize: "0.68rem" }}>{formatCount(totalClicked)} clicks</div>
-                  </div>
-                  <div className="rounded-2xl p-4" style={{ background: "linear-gradient(135deg, rgba(168,85,247,0.1) 0%, rgba(15,23,42,0.75) 100%)", border: "1px solid rgba(168,85,247,0.18)" }}>
-                    <div className="text-purple-300" style={{ fontSize: "0.7rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>Unique Engagement</div>
-                    <div className="text-white mt-1" style={{ fontSize: "1.4rem", fontWeight: 800 }}>{formatCount(activeUniqueOpened)}</div>
-                    <div className="text-purple-400/60 mt-0.5" style={{ fontSize: "0.68rem" }}>{formatCount(activeUniqueClicked)} unique clicks</div>
-                  </div>
-                </div>
-
-                {/* Round History Timeline */}
-                {roundHistory.length > 1 && (
-                  <div className="mt-3 rounded-2xl p-4" style={{ background: "rgba(15,23,42,0.65)", border: "1px solid rgba(148,163,184,0.14)" }}>
-                    <div className="text-slate-400 mb-2" style={{ fontSize: "0.72rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>Round Progression</div>
-                    <div className="flex items-end gap-2">
-                      {roundHistory.map((round) => {
-                        const maxRate = Math.max(...roundHistory.map(r => r.summary.openRate), 1);
-                        const barHeight = Math.max(16, (round.summary.openRate / maxRate) * 56);
-                        return (
-                          <div key={round.round} className="flex flex-col items-center gap-1 flex-1">
-                            <div className="text-emerald-300" style={{ fontSize: "0.62rem" }}>{formatPercent(round.summary.openRate)}</div>
-                            <div className="w-full rounded-t-md" style={{ height: `${barHeight}px`, background: "linear-gradient(180deg, rgba(34,197,94,0.5) 0%, rgba(34,197,94,0.15) 100%)", minWidth: "20px" }} />
-                            <div className="text-slate-500" style={{ fontSize: "0.6rem" }}>R{round.round}</div>
+                
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
+                  
+                  {/* Left Column: Metrics */}
+                  <div className="flex flex-col gap-4">
+                    {(latestMetrics || roundHistory.length > 0 || (phase === "complete" && result)) && (
+                      <div className="rounded-[20px] p-5 w-full" style={{ background: "rgba(15,23,42,0.4)", border: "1px solid rgba(148,163,184,0.15)" }}>
+                        <div className="flex items-center gap-2 mb-4">
+                          <TrendingUp className="w-4 h-4 text-emerald-400" />
+                          <span className="text-white" style={{ fontSize: "0.95rem", fontWeight: 700 }}>Campaign Performance</span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="rounded-2xl p-4" style={{ background: "linear-gradient(135deg, rgba(14,116,144,0.15) 0%, rgba(15,23,42,0.75) 100%)", border: "1px solid rgba(34,211,238,0.18)" }}>
+                            <div className="text-cyan-300" style={{ fontSize: "0.7rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>Audience Reached</div>
+                            <div className="text-white mt-1" style={{ fontSize: "1.4rem", fontWeight: 800 }}>{formatCount(totalSent || 0)}</div>
                           </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
+                          <div className="rounded-2xl p-4" style={{ background: "linear-gradient(135deg, rgba(22,163,74,0.12) 0%, rgba(15,23,42,0.75) 100%)", border: "1px solid rgba(34,197,94,0.18)" }}>
+                            <div className="text-emerald-300" style={{ fontSize: "0.7rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>Open Rate</div>
+                            <div className="text-white mt-1" style={{ fontSize: "1.4rem", fontWeight: 800 }}>{formatPercent(aggregateOpenRate)}</div>
+                            <div className="text-emerald-400/60 mt-0.5" style={{ fontSize: "0.68rem" }}>{formatCount(totalOpened)} opens</div>
+                          </div>
+                          <div className="rounded-2xl p-4" style={{ background: "linear-gradient(135deg, rgba(37,99,235,0.12) 0%, rgba(15,23,42,0.75) 100%)", border: "1px solid rgba(59,130,246,0.18)" }}>
+                            <div className="text-blue-300" style={{ fontSize: "0.7rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>Click Rate</div>
+                            <div className="text-white mt-1" style={{ fontSize: "1.4rem", fontWeight: 800 }}>{formatPercent(aggregateClickRate)}</div>
+                            <div className="text-blue-400/60 mt-0.5" style={{ fontSize: "0.68rem" }}>{formatCount(totalClicked)} clicks</div>
+                          </div>
+                          <div className="rounded-2xl p-4" style={{ background: "linear-gradient(135deg, rgba(168,85,247,0.1) 0%, rgba(15,23,42,0.75) 100%)", border: "1px solid rgba(168,85,247,0.18)" }}>
+                            <div className="text-purple-300" style={{ fontSize: "0.7rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>Unique Engagement</div>
+                            <div className="text-white mt-1" style={{ fontSize: "1.4rem", fontWeight: 800 }}>{formatCount(activeUniqueOpened)}</div>
+                            <div className="text-purple-400/60 mt-0.5" style={{ fontSize: "0.68rem" }}>{formatCount(activeUniqueClicked)} clicks</div>
+                          </div>
+                        </div>
 
-            {digitalTwinCards.length > 0 && (
-              <div className="mt-5 rounded-[24px] p-4" style={{ background: "rgba(8,18,33,0.96)", border: "1px solid rgba(148,163,184,0.2)" }}>
-                <button
-                  onClick={() => setCollapsedSections(c => ({ ...c, twin: !c.twin }))}
-                  className="flex items-center justify-between gap-3 w-full text-left"
-                >
-                  <div>
-                    <div className="flex items-center gap-2">
-                      {collapsedSections.twin ? <ChevronDown className="w-4 h-4 text-slate-400" /> : <ChevronUp className="w-4 h-4 text-slate-400" />}
-                      <span className="text-white" style={{ fontSize: "0.95rem", fontWeight: 700 }}>Digital Twin Review</span>
-                    </div>
-                    <div className="text-slate-400 mt-1 ml-6" style={{ fontSize: "0.76rem" }}>
-                      Each category card shows the current email draft plus live persona approvals.
-                    </div>
+                        {/* Round History Timeline */}
+                        {roundHistory.length > 1 && (
+                          <div className="mt-4 rounded-2xl p-4" style={{ background: "rgba(15,23,42,0.65)", border: "1px solid rgba(148,163,184,0.14)" }}>
+                            <div className="text-slate-400 mb-2" style={{ fontSize: "0.72rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>Round Progression</div>
+                            <div className="flex items-end gap-2">
+                              {roundHistory.map((round) => {
+                                const maxRate = Math.max(...roundHistory.map(r => r.summary.openRate), 1);
+                                const barHeight = Math.max(16, (round.summary.openRate / maxRate) * 56);
+                                return (
+                                  <div key={round.round} className="flex flex-col items-center gap-1 flex-1">
+                                    <div className="text-emerald-300" style={{ fontSize: "0.62rem" }}>{formatPercent(round.summary.openRate)}</div>
+                                    <div className="w-full rounded-t-md" style={{ height: `${barHeight}px`, background: "linear-gradient(180deg, rgba(34,197,94,0.5) 0%, rgba(34,197,94,0.15) 100%)", minWidth: "20px" }} />
+                                    <div className="text-slate-500" style={{ fontSize: "0.6rem" }}>R{round.round}</div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
-                  <div className="text-slate-400" style={{ fontSize: "0.76rem" }}>
-                    {formatCount(digitalTwinCards.length)} categories
-                  </div>
-                </button>
 
-                {!collapsedSections.twin && (
-                  <>
-                  <div className="grid md:grid-cols-2 gap-3 mt-4">
+                  {/* Right Column: Digital Twin */}
+                  <div className="flex flex-col gap-4">
+                    {digitalTwinCards.length > 0 && (
+                      <div className="rounded-[20px] p-5 w-full" style={{ background: "rgba(8,18,33,0.96)", border: "1px solid rgba(148,163,184,0.2)" }}>
+                        <button
+                          onClick={() => setCollapsedSections(c => ({ ...c, twin: !c.twin }))}
+                          className="flex items-center justify-between gap-3 w-full text-left"
+                        >
+                          <div>
+                            <div className="flex items-center gap-2">
+                              {collapsedSections.twin ? <ChevronDown className="w-4 h-4 text-slate-400" /> : <ChevronUp className="w-4 h-4 text-slate-400" />}
+                              <span className="text-white" style={{ fontSize: "0.95rem", fontWeight: 700 }}>Digital Twin Review</span>
+                            </div>
+                            <div className="text-slate-400 mt-1 ml-6" style={{ fontSize: "0.76rem" }}>
+                              Each category card shows the current email draft plus live persona approvals.
+                            </div>
+                          </div>
+                          <div className="text-slate-400" style={{ fontSize: "0.76rem" }}>
+                            {formatCount(digitalTwinCards.length)} categories
+                          </div>
+                        </button>
+
+                        {!collapsedSections.twin && (
+                          <>
+                          <div className="grid grid-cols-1 gap-3 mt-4">
                   {visibleDigitalTwinCards.map(({ segment, draft, twin }) => {
                     const badge = twinStageStyles(twin.stage);
                     const activeDraft = draft ?? {
@@ -1682,7 +1734,7 @@ export default function NewCampaign() {
                           )}
                         </div>
                       </div>
-                    );
+                    )
                   })}
                 </div>
 
@@ -1708,10 +1760,14 @@ export default function NewCampaign() {
                     )}
                   </div>
                 )}
-                  </>
-                )}
-              </div>
+              </>
             )}
+          </div>
+        )}
+      </div>
+    </div>
+  </div>
+)}
 
             {phase === "complete" && latestPrompt && (
               <div className="mt-4 flex justify-center">

@@ -4,6 +4,7 @@ import {
   serverUpdateCampaign,
   serverGetOptimizations,
   serverGetOptimizationHistory,
+  serverSaveOptimizations,
 } from "@/src/lib/server/supabase";
 import { fetchCampaignReportFromCampaignX } from "@/src/lib/server/campaignx";
 import { computeAnalysisFromReport } from "@/src/lib/server/analysis";
@@ -76,6 +77,28 @@ export async function GET(
       }
     } catch (err) {
       console.warn("[API] Could not compute analysis:", err);
+    }
+
+    // If optimizations are still empty after attempting to fetch, generate them NOW
+    if (optimizations.length === 0 && analysisReport && campaign.brief) {
+      try {
+        const generated = await generateOptimizationSuggestions(params.id, analysisReport, campaign.brief);
+        if (generated && generated.length > 0) {
+          // Add required table fields
+          const optRows = generated.map(s => ({
+            ...s,
+            campaign_id: params.id,
+            id: crypto.randomUUID(), // Assume frontend env has crypto if needed, though supabase can ignore id if it generates it
+            created_at: new Date().toISOString()
+          }));
+          
+          await serverSaveOptimizations(params.id, optRows);
+          // Return the generated ones immediately to the client
+          optimizations = optRows as OptimizationSuggestionRow[];
+        }
+      } catch (genErr) {
+        console.warn("[API] Failed to generate initial optimizations:", genErr);
+      }
     }
 
     return NextResponse.json({
