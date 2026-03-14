@@ -15,6 +15,7 @@ export type AgentPauseResponder = (response: Record<string, unknown>) => void;
 export interface StreamCampaignAgentOptions {
   rounds?: number;
   interactive?: boolean;
+  signal?: AbortSignal;
   onHeartbeat?: () => void;
   onThinking?: (step: AgentThinkingStep) => void;
   onPause?: (pause: AgentPausePayload, respond: AgentPauseResponder) => void;
@@ -282,12 +283,27 @@ export async function streamCampaignAgent(
     let finished = false;
     let recoveringFromClose = false;
     let opened = ws.readyState === WebSocket.OPEN;
+    let abortListener: (() => void) | null = null;
+
+    const cleanupAbortListener = () => {
+      if (options?.signal && abortListener) {
+        options.signal.removeEventListener("abort", abortListener);
+      }
+      abortListener = null;
+    };
+
+    const buildAbortError = () => {
+      const err = new Error("Campaign run aborted.");
+      err.name = "AbortError";
+      return err;
+    };
 
     const fail = (error: Error) => {
       if (finished) {
         return;
       }
       finished = true;
+      cleanupAbortListener();
       try {
         ws.close();
       } catch {
@@ -295,6 +311,18 @@ export async function streamCampaignAgent(
       }
       reject(error);
     };
+
+    if (options?.signal?.aborted) {
+      fail(buildAbortError());
+      return;
+    }
+
+    if (options?.signal) {
+      abortListener = () => {
+        fail(buildAbortError());
+      };
+      options.signal.addEventListener("abort", abortListener, { once: true });
+    }
 
     const respondToPause = (pause: AgentPausePayload): AgentPauseResponder => {
       return (response) => {
@@ -475,6 +503,7 @@ export async function streamCampaignAgent(
           return;
         }
         finished = true;
+        cleanupAbortListener();
         resolve(normalizeRunResult(data));
         ws.close();
         return;
@@ -502,6 +531,7 @@ export async function streamCampaignAgent(
         const recovered = await recoverLatestAgentResult(brief);
         if (recovered) {
           finished = true;
+          cleanupAbortListener();
           resolve(recovered);
           return;
         }

@@ -298,6 +298,93 @@ export interface CampaignVariantRow {
   created_at: string;
 }
 
+export interface CampaignRunImprovement {
+  round: number;
+  open_rate: number;
+  click_rate: number;
+  open_rate_delta: number;
+  click_rate_delta: number;
+}
+
+export interface CampaignRunAgentCategory {
+  agent: string;
+  message_count: number;
+  thought_count: number;
+  action_count: number;
+  observation_count: number;
+}
+
+export interface CampaignRunFinalMail {
+  segment_id: string;
+  segment_name: string;
+  subject: string;
+  body: string;
+  tone?: string | null;
+  tags?: string[] | null;
+  cta_link?: string | null;
+  approved?: boolean;
+}
+
+export interface CampaignRunMessage {
+  id?: string;
+  role: string;
+  text: string;
+  kind?: string;
+  agent?: string;
+  timestamp?: number;
+}
+
+export interface CampaignRunRow {
+  id: string;
+  campaign_name: string;
+  prompt: string;
+  cta_link?: string | null;
+  phase: string;
+  total_rounds: number;
+  total_sent: number;
+  total_opened: number;
+  total_clicked: number;
+  open_rate: number;
+  click_rate: number;
+  metrics: AgentLiveMetrics | null;
+  round_history: AgentRoundComplete[];
+  improvements: CampaignRunImprovement[];
+  agent_categories: CampaignRunAgentCategory[];
+  final_mails: CampaignRunFinalMail[];
+  tools_used: string[];
+  terminal_logs: string[];
+  messages: CampaignRunMessage[];
+  segments: AgentSegmentCard[];
+  twin_cards: AgentTwinCard[];
+  raw_payload: Record<string, unknown> | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateCampaignRunPayload {
+  campaign_name: string;
+  prompt: string;
+  cta_link?: string;
+  phase: string;
+  total_rounds: number;
+  total_sent: number;
+  total_opened: number;
+  total_clicked: number;
+  open_rate: number;
+  click_rate: number;
+  metrics?: AgentLiveMetrics | null;
+  round_history?: AgentRoundComplete[];
+  improvements?: CampaignRunImprovement[];
+  agent_categories?: CampaignRunAgentCategory[];
+  final_mails?: CampaignRunFinalMail[];
+  tools_used?: string[];
+  terminal_logs?: string[];
+  messages?: CampaignRunMessage[];
+  segments?: AgentSegmentCard[];
+  twin_cards?: AgentTwinCard[];
+  raw_payload?: Record<string, unknown> | null;
+}
+
 export interface OptimizationSuggestionRow {
   id: string;
   campaign_id: string;

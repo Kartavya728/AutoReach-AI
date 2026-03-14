@@ -1,38 +1,40 @@
-"use client";
+﻿"use client";
 
 import Link from "next/link";
 import { motion } from "framer-motion";
-import { useState, useEffect } from "react";
-import type { CampaignRow } from "../../lib/types";
+import { useEffect, useState } from "react";
+import type { CampaignRunRow } from "../../lib/types";
 import { Plus, Users, Mail, Activity, ArrowRight, Eye, MousePointer } from "lucide-react";
 import { Navbar } from "../components/Navbar";
 import { Loader } from "../components/Loader";
 
 const STATUS_CONFIG: Record<string, { bg: string; text: string; dot: string; label: string }> = {
-  completed: { bg: "rgba(16,185,129,0.1)", text: "#10b981", dot: "#10b981", label: "Completed" },
-  active: { bg: "rgba(139,92,246,0.1)", text: "#7c3aed", dot: "#7c3aed", label: "Active" },
-  draft: { bg: "rgba(107,114,128,0.1)", text: "#9ca3af", dot: "#9ca3af", label: "Draft" },
-  pending_approval: { bg: "rgba(234,179,8,0.1)", text: "#eab308", dot: "#eab308", label: "Pending Approval" },
+  complete: { bg: "rgba(16,185,129,0.1)", text: "#10b981", dot: "#10b981", label: "Complete" },
+  running: { bg: "rgba(99,102,241,0.1)", text: "#818cf8", dot: "#818cf8", label: "Running" },
+  paused: { bg: "rgba(234,179,8,0.1)", text: "#fbbf24", dot: "#fbbf24", label: "Paused" },
+  error: { bg: "rgba(239,68,68,0.1)", text: "#f87171", dot: "#f87171", label: "Error" },
+  idle: { bg: "rgba(107,114,128,0.1)", text: "#9ca3af", dot: "#9ca3af", label: "Idle" },
 };
 
-function CampaignCard({ campaign, index }: { campaign: CampaignRow; index: number }) {
-  const status = STATUS_CONFIG[campaign.status] || STATUS_CONFIG.draft;
+function CampaignCard({ campaign, index }: { campaign: CampaignRunRow; index: number }) {
+  const phaseKey = (campaign.phase || "complete").toLowerCase();
+  const status = STATUS_CONFIG[phaseKey] || STATUS_CONFIG.complete;
 
   return (
     <Link href={`/campaign/${campaign.id}/analysis`}>
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: index * 0.1 }}
+        transition={{ delay: index * 0.08 }}
         whileHover={{ y: -8, scale: 1.02 }}
         className="relative p-6 rounded-2xl overflow-hidden group cursor-pointer h-full flex flex-col justify-between"
         style={{
           background: "linear-gradient(145deg, rgba(30,30,35,0.8) 0%, rgba(20,20,25,0.9) 100%)",
           border: "1px solid rgba(255,255,255,0.05)",
-          boxShadow: "0 10px 30px rgba(0,0,0,0.2)"
+          boxShadow: "0 10px 30px rgba(0,0,0,0.2)",
         }}
       >
-        <div className="absolute inset-0 bg-gradient-to-br from-indigo-500/10 to-purple-500/10 opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
+        <div className="absolute inset-0 bg-gradient-to-br from-indigo-500/10 to-cyan-500/10 opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
 
         <div className="relative z-10 flex flex-col h-full">
           <div className="flex justify-between items-start mb-4">
@@ -49,10 +51,10 @@ function CampaignCard({ campaign, index }: { campaign: CampaignRow; index: numbe
           </div>
 
           <h3 className="text-xl font-bold text-white mb-2 leading-tight group-hover:text-indigo-400 transition-colors">
-            {campaign.name}
+            {campaign.campaign_name}
           </h3>
           <p className="text-gray-400 text-sm line-clamp-2 mb-6 flex-1">
-            {campaign.brief || "No brief provided."}
+            {campaign.prompt || "No prompt provided."}
           </p>
 
           <div className="grid grid-cols-2 gap-4 mt-auto border-t border-white/5 pt-4">
@@ -61,37 +63,28 @@ function CampaignCard({ campaign, index }: { campaign: CampaignRow; index: numbe
                 <Users size={14} /> Audience
               </div>
               <div className="text-white font-medium text-lg">
-                {(campaign.total_customers || 0).toLocaleString()} <span className="text-gray-500 text-xs">users</span>
+                {(campaign.total_sent || 0).toLocaleString()} <span className="text-gray-500 text-xs">users</span>
               </div>
             </div>
 
-            {campaign.status !== 'draft' ? (
-              <div className="flex gap-4">
-                <div>
-                  <div className="flex items-center gap-1 text-gray-500 text-xs mb-1 uppercase tracking-wider">
-                    <Eye size={14} /> Open
-                  </div>
-                  <div className="text-emerald-400 font-medium text-lg">
-                    {campaign.open_rate ?? 0}%
-                  </div>
-                </div>
-                <div>
-                  <div className="flex items-center gap-1 text-gray-500 text-xs mb-1 uppercase tracking-wider">
-                    <MousePointer size={14} /> Click
-                  </div>
-                  <div className="text-indigo-400 font-medium text-lg">
-                    {campaign.click_rate ?? 0}%
-                  </div>
-                </div>
-              </div>
-            ) : (
+            <div className="flex gap-4">
               <div>
-                <div className="flex items-center gap-1.5 text-gray-500 text-xs mb-1 uppercase tracking-wider">
-                  <Activity size={14} /> Optimization
+                <div className="flex items-center gap-1 text-gray-500 text-xs mb-1 uppercase tracking-wider">
+                  <Eye size={14} /> Open
                 </div>
-                <div className="text-gray-400 text-sm font-medium">Pending Launch</div>
+                <div className="text-emerald-400 font-medium text-lg">
+                  {(campaign.open_rate ?? 0).toFixed(1)}%
+                </div>
               </div>
-            )}
+              <div>
+                <div className="flex items-center gap-1 text-gray-500 text-xs mb-1 uppercase tracking-wider">
+                  <MousePointer size={14} /> Click
+                </div>
+                <div className="text-indigo-400 font-medium text-lg">
+                  {(campaign.click_rate ?? 0).toFixed(1)}%
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </motion.div>
@@ -100,7 +93,7 @@ function CampaignCard({ campaign, index }: { campaign: CampaignRow; index: numbe
 }
 
 export default function Dashboard() {
-  const [campaigns, setCampaigns] = useState<CampaignRow[]>([]);
+  const [campaigns, setCampaigns] = useState<CampaignRunRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [visibleCount, setVisibleCount] = useState(6);
@@ -109,18 +102,18 @@ export default function Dashboard() {
   useEffect(() => {
     async function fetchCampaigns() {
       try {
-        const res = await fetch("/api/campaigns");
+        const res = await fetch("/api/campaign-runs");
         if (res.ok) {
-          const data = await res.json();
+          const data = (await res.json()) as CampaignRunRow[];
           setCampaigns(data);
         }
       } catch (err) {
-        console.warn("Failed to load campaigns", err);
+        console.warn("Failed to load campaign runs", err);
       } finally {
         setLoading(false);
       }
     }
-    fetchCampaigns();
+    void fetchCampaigns();
   }, []);
 
   useEffect(() => {
@@ -129,15 +122,13 @@ export default function Dashboard() {
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
 
-  const scrollToTop = () => {
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  };
-
-  const filteredCampaigns = campaigns.filter(
-    (c) =>
-      c.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.brief?.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const filteredCampaigns = campaigns.filter((campaign) => {
+    const search = searchQuery.toLowerCase();
+    return (
+      campaign.campaign_name?.toLowerCase().includes(search) ||
+      campaign.prompt?.toLowerCase().includes(search)
+    );
+  });
 
   const displayedCampaigns = filteredCampaigns.slice(0, visibleCount);
   const hasMore = visibleCount < filteredCampaigns.length;
@@ -150,7 +141,7 @@ export default function Dashboard() {
     return (
       <div className="min-h-screen pt-20 flex items-center justify-center">
         <Navbar />
-        <Loader text="Loading Campaigns..." subtext="Fetching from Autoreach API" />
+        <Loader text="Loading Campaigns..." subtext="Fetching saved campaign analysis runs" />
       </div>
     );
   }
@@ -175,7 +166,7 @@ export default function Dashboard() {
               transition={{ delay: 0.1 }}
               className="text-gray-400 text-lg"
             >
-              Manage, analyze, and optimize your BFSI marketing deployments.
+              All cards below are loaded from the saved campaign analysis runs table.
             </motion.p>
           </div>
 
@@ -191,7 +182,6 @@ export default function Dashboard() {
           </Link>
         </div>
 
-        {/* ── Search Bar ── */}
         <div
           className="mb-8 flex items-center gap-3 px-4 py-3 rounded-xl"
           style={{
@@ -200,13 +190,13 @@ export default function Dashboard() {
           }}
         >
           <svg className="w-5 h-5 text-gray-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
           </svg>
           <input
             type="text"
-            placeholder="Search campaigns by name or brief..."
+            placeholder="Search campaigns by name or prompt..."
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onChange={(event) => setSearchQuery(event.target.value)}
             className="flex-1 bg-transparent text-white placeholder-gray-600 outline-none"
             style={{ fontSize: "0.95rem" }}
           />
@@ -223,8 +213,10 @@ export default function Dashboard() {
         {campaigns.length === 0 ? (
           <div className="text-center py-32 rounded-3xl border border-white/5 bg-white/[0.02]">
             <Mail className="w-16 h-16 text-gray-700 mx-auto mb-6" />
-            <h3 className="text-2xl font-bold text-white mb-2">No campaigns yet</h3>
-            <p className="text-gray-500 mb-8 max-w-sm mx-auto">Create your first AI-driven financial campaign to start reaching your audience.</p>
+            <h3 className="text-2xl font-bold text-white mb-2">No saved analysis runs yet</h3>
+            <p className="text-gray-500 mb-8 max-w-sm mx-auto">
+              Create a campaign, then click End Campaign and View Analysis to save it here.
+            </p>
             <Link href="/dashboard/new-campaign">
               <button className="text-indigo-400 font-semibold hover:text-indigo-300 flex items-center gap-2 mx-auto">
                 Get Started <ArrowRight size={16} />
@@ -238,17 +230,16 @@ export default function Dashboard() {
         ) : (
           <>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {displayedCampaigns.map((campaign, i) => (
-                <CampaignCard key={campaign.id} campaign={campaign} index={i} />
+              {displayedCampaigns.map((campaign, index) => (
+                <CampaignCard key={campaign.id} campaign={campaign} index={index} />
               ))}
             </div>
 
-            {/* View More / View Less */}
             {filteredCampaigns.length > 6 && (
               <div className="flex items-center justify-center gap-4 mt-10">
                 {hasMore && (
                   <button
-                    onClick={() => setVisibleCount((prev) => prev + 6)}
+                    onClick={() => setVisibleCount((count) => count + 6)}
                     className="flex items-center gap-2 px-6 py-3 rounded-xl text-indigo-400 font-medium transition-all hover:bg-indigo-500/10"
                     style={{
                       background: "rgba(99,102,241,0.08)",
@@ -279,7 +270,7 @@ export default function Dashboard() {
 
       {showScrollTop && (
         <button
-          onClick={scrollToTop}
+          onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
           className="fixed bottom-8 right-8 z-40 w-12 h-12 rounded-full flex items-center justify-center shadow-lg transition-all hover:scale-110"
           style={{
             background: "linear-gradient(135deg, #7c3aed, #ec4899)",
@@ -288,7 +279,7 @@ export default function Dashboard() {
           aria-label="Return to top"
         >
           <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 10l7-7m0 0l7 7m-7-7v18"></path>
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 10l7-7m0 0l7 7m-7-7v18" />
           </svg>
         </button>
       )}

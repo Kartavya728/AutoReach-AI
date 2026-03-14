@@ -2,6 +2,8 @@ import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { getServerConfig } from "@/src/lib/server/env";
 import type {
   CampaignRow,
+  CampaignRunRow,
+  CreateCampaignRunPayload,
   CampaignVariantRow,
   OptimizationSuggestionRow,
   OptimizationHistoryRow,
@@ -96,6 +98,75 @@ export async function serverCreateCampaign(payload: CreateCampaignPayload): Prom
   // Re-fetch with variants joined
   const full = await serverGetCampaignById(campaign.id);
   return full ?? (campaign as CampaignRow);
+}
+
+// —— Campaign Analysis Runs ——
+
+export async function serverGetCampaignRuns(): Promise<CampaignRunRow[]> {
+  const client = requireAdminClient();
+  const { data, error } = await client
+    .from("campaign_analysis_runs")
+    .select("*")
+    .order("created_at", { ascending: false });
+
+  if (error) throw error;
+  return (data ?? []) as CampaignRunRow[];
+}
+
+export async function serverGetCampaignRunById(id: string): Promise<CampaignRunRow | null> {
+  const client = requireAdminClient();
+  const { data, error } = await client
+    .from("campaign_analysis_runs")
+    .select("*")
+    .eq("id", id)
+    .single();
+
+  if (error && error.code !== "PGRST116") throw error;
+  return (data as CampaignRunRow) ?? null;
+}
+
+export async function serverCreateCampaignRun(payload: CreateCampaignRunPayload): Promise<CampaignRunRow> {
+  const client = requireAdminClient();
+  const { data, error } = await client
+    .from("campaign_analysis_runs")
+    .insert({
+      ...payload,
+      round_history: payload.round_history ?? [],
+      improvements: payload.improvements ?? [],
+      agent_categories: payload.agent_categories ?? [],
+      final_mails: payload.final_mails ?? [],
+      tools_used: payload.tools_used ?? [],
+      terminal_logs: payload.terminal_logs ?? [],
+      messages: payload.messages ?? [],
+      segments: payload.segments ?? [],
+      twin_cards: payload.twin_cards ?? [],
+      raw_payload: payload.raw_payload ?? null,
+      updated_at: new Date().toISOString(),
+    })
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data as CampaignRunRow;
+}
+
+export async function serverUpdateCampaignRun(
+  id: string,
+  payload: Partial<CreateCampaignRunPayload>
+): Promise<CampaignRunRow> {
+  const client = requireAdminClient();
+  const { data, error } = await client
+    .from("campaign_analysis_runs")
+    .update({
+      ...payload,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", id)
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data as CampaignRunRow;
 }
 
 export async function serverUpdateCampaign(

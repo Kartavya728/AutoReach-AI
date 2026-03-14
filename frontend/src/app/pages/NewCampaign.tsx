@@ -40,6 +40,7 @@ import type {
   AgentTwinCard,
   AgentTwinCardStage,
   AgentTwinPersonaDecision,
+  CreateCampaignRunPayload,
 } from "../../lib/types";
 
 const DEFAULT_BRIEF =
@@ -63,6 +64,86 @@ interface ChatMessage {
   kind?: string;
   agent?: string;
   timestamp: number;
+}
+
+function deriveCampaignName(prompt: string) {
+  const firstLine = prompt.trim().split("\n").find((line) => line.trim().length > 0) || "";
+  return firstLine.slice(0, 80) || "Untitled Campaign";
+}
+
+function buildRoundImprovements(roundHistory: AgentRoundComplete[]) {
+  return roundHistory.map((round, index) => {
+    const previous = index > 0 ? roundHistory[index - 1] : null;
+    const openDelta = previous ? round.summary.openRate - previous.summary.openRate : 0;
+    const clickDelta = previous ? round.summary.clickRate - previous.summary.clickRate : 0;
+    return {
+      round: round.round,
+      open_rate: Number(round.summary.openRate || 0),
+      click_rate: Number(round.summary.clickRate || 0),
+      open_rate_delta: Number(openDelta.toFixed(2)),
+      click_rate_delta: Number(clickDelta.toFixed(2)),
+    };
+  });
+}
+
+function buildAgentCategories(messages: ChatMessage[]) {
+  const bucket = new Map<string, { message_count: number; thought_count: number; action_count: number; observation_count: number }>();
+
+  messages.forEach((message) => {
+    if (message.role === "user") return;
+    const agent = message.agent || "Agent";
+    const kind = (message.kind || "status").toLowerCase();
+    const current = bucket.get(agent) || {
+      message_count: 0,
+      thought_count: 0,
+      action_count: 0,
+      observation_count: 0,
+    };
+
+    current.message_count += 1;
+    if (kind === "thought") current.thought_count += 1;
+    if (kind === "action") current.action_count += 1;
+    if (kind === "observation") current.observation_count += 1;
+    bucket.set(agent, current);
+  });
+
+  return Array.from(bucket.entries())
+    .map(([agent, value]) => ({ agent, ...value }))
+    .sort((a, b) => b.message_count - a.message_count);
+}
+
+function extractToolsUsed(terminalLogs: string[], messages: ChatMessage[]) {
+  const tools = new Set<string>();
+  const knownTools = [
+    "open_clicks_preditor",
+    "fetch_campaign_report",
+    "fetch_customer_cohort",
+    "send_campaign",
+    "match_documents",
+    "search",
+    "retriever",
+  ];
+
+  terminalLogs.forEach((line) => {
+    const lowered = line.toLowerCase();
+    knownTools.forEach((tool) => {
+      if (lowered.includes(tool)) tools.add(tool);
+    });
+    const toolMatch = line.match(/tool(?:\s+used)?[:=]\s*([a-zA-Z0-9_.-]+)/i);
+    if (toolMatch?.[1]) {
+      tools.add(toolMatch[1].toLowerCase());
+    }
+  });
+
+  messages.forEach((message) => {
+    if ((message.kind || "").toLowerCase() !== "action") return;
+    const actionMatch = message.text.match(/action[:\s]+([a-zA-Z0-9_.-]+)/i);
+    if (actionMatch?.[1]) {
+      tools.add(actionMatch[1].toLowerCase());
+    }
+  });
+
+  return Array.from(tools).sort();
 }
 
 function kindLabel(kind?: string) {
@@ -164,6 +245,143 @@ function kindVisualConfig(kind?: string) {
         accentColor: "#22d3ee",
       };
   }
+}
+
+function normalizeAgentKey(agent?: string) {
+  const value = (agent || "").toLowerCase();
+  if (value.includes("war room") || value.includes("warroom") || value.includes("war_room")) return "war_room";
+  if (value.includes("simulator") || value.includes("twin")) return "simulator";
+  if (value.includes("bandit")) return "bandit";
+  if (value.includes("strateg")) return "strategist";
+  if (value.includes("hitl") || value.includes("human")) return "hitl";
+  if (value.includes("segment") || value.includes("cohort")) return "segment";
+  if (value.includes("content") || value.includes("copy")) return "content";
+  if (value.includes("planner")) return "planner";
+  return "agent";
+}
+
+function getAgentProfile(agent?: string) {
+  const key = normalizeAgentKey(agent);
+  if (key === "war_room") {
+    return {
+      key,
+      label: "War Room",
+      description: "Coordinates cross-agent decisions and resolves strategy conflicts.",
+      icon: Gavel,
+      badgeBg: "rgba(168,85,247,0.14)",
+      badgeBorder: "1px solid rgba(192,132,252,0.35)",
+      badgeColor: "#e9d5ff",
+      bubbleBg: "rgba(59,7,100,0.3)",
+      bubbleBorder: "1px solid rgba(168,85,247,0.24)",
+    };
+  }
+  if (key === "simulator") {
+    return {
+      key,
+      label: "Simulator",
+      description: "Tests content with digital-twin personas before campaign decisions.",
+      icon: Eye,
+      badgeBg: "rgba(14,116,144,0.16)",
+      badgeBorder: "1px solid rgba(34,211,238,0.3)",
+      badgeColor: "#a5f3fc",
+      bubbleBg: "rgba(4,47,46,0.32)",
+      bubbleBorder: "1px solid rgba(45,212,191,0.24)",
+    };
+  }
+  if (key === "bandit") {
+    return {
+      key,
+      label: "Bandit",
+      description: "Explores and exploits variants to improve open and click outcomes.",
+      icon: TrendingUp,
+      badgeBg: "rgba(16,185,129,0.16)",
+      badgeBorder: "1px solid rgba(52,211,153,0.3)",
+      badgeColor: "#a7f3d0",
+      bubbleBg: "rgba(6,78,59,0.3)",
+      bubbleBorder: "1px solid rgba(16,185,129,0.24)",
+    };
+  }
+  if (key === "hitl") {
+    return {
+      key,
+      label: "HITL",
+      description: "Human-in-the-loop checkpoint for approvals, rejections, and edits.",
+      icon: User,
+      badgeBg: "rgba(251,146,60,0.15)",
+      badgeBorder: "1px solid rgba(251,146,60,0.32)",
+      badgeColor: "#fed7aa",
+      bubbleBg: "rgba(67,20,7,0.3)",
+      bubbleBorder: "1px solid rgba(251,146,60,0.24)",
+    };
+  }
+  if (key === "strategist") {
+    return {
+      key,
+      label: "Strategist",
+      description: "Builds messaging strategy, positioning, and optimization direction.",
+      icon: BrainCircuit,
+      badgeBg: "rgba(99,102,241,0.15)",
+      badgeBorder: "1px solid rgba(129,140,248,0.32)",
+      badgeColor: "#c7d2fe",
+      bubbleBg: "rgba(30,27,75,0.32)",
+      bubbleBorder: "1px solid rgba(99,102,241,0.24)",
+    };
+  }
+  if (key === "segment") {
+    return {
+      key,
+      label: "Segment Engine",
+      description: "Finds customer segments and targeting criteria.",
+      icon: Search,
+      badgeBg: "rgba(56,189,248,0.15)",
+      badgeBorder: "1px solid rgba(56,189,248,0.3)",
+      badgeColor: "#bae6fd",
+      bubbleBg: "rgba(15,23,42,0.7)",
+      bubbleBorder: "1px solid rgba(56,189,248,0.24)",
+    };
+  }
+  if (key === "content") {
+    return {
+      key,
+      label: "Content Agent",
+      description: "Generates email subjects, bodies, and variant refinements.",
+      icon: Pencil,
+      badgeBg: "rgba(244,114,182,0.15)",
+      badgeBorder: "1px solid rgba(244,114,182,0.3)",
+      badgeColor: "#fbcfe8",
+      bubbleBg: "rgba(80,7,36,0.25)",
+      bubbleBorder: "1px solid rgba(244,114,182,0.24)",
+    };
+  }
+  if (key === "planner") {
+    return {
+      key,
+      label: "Planner",
+      description: "Plans execution order and manages step-by-step workflow.",
+      icon: Sparkles,
+      badgeBg: "rgba(245,158,11,0.15)",
+      badgeBorder: "1px solid rgba(251,191,36,0.32)",
+      badgeColor: "#fde68a",
+      bubbleBg: "rgba(45,26,3,0.35)",
+      bubbleBorder: "1px solid rgba(245,158,11,0.24)",
+    };
+  }
+  return {
+    key,
+    label: agent || "Agent",
+    description: "General orchestration and execution updates.",
+    icon: Bot,
+    badgeBg: "rgba(15,23,42,0.45)",
+    badgeBorder: "1px solid rgba(148,163,184,0.3)",
+    badgeColor: "#cbd5e1",
+    bubbleBg: "rgba(15,23,42,0.72)",
+    bubbleBorder: "1px solid rgba(148,163,184,0.2)",
+  };
+}
+
+function shouldAttachTwinInsights(agent?: string) {
+  const key = normalizeAgentKey(agent);
+  return key === "war_room" || key === "simulator";
 }
 
 function formatPercent(value?: number | null) {
@@ -438,14 +656,18 @@ export default function NewCampaign() {
   const [expandedBodies, setExpandedBodies] = useState<Set<string>>(new Set());
   const [collapsedSections, setCollapsedSections] = useState<Record<string,boolean>>({});
   const [terminalLogs, setTerminalLogs] = useState<string[]>([]);
-  const [showTerminal, setShowTerminal] = useState(false);
+  const [isSavingCampaign, setIsSavingCampaign] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [campaignRunId, setCampaignRunId] = useState<string | null>(null);
   const terminalEndRef = useRef<HTMLDivElement>(null);
+  const campaignRunIdRef = useRef<string | null>(null);
+  const activeRunAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    if (showTerminal && terminalEndRef.current) {
+    if (terminalEndRef.current) {
       terminalEndRef.current.scrollIntoView({ behavior: "smooth" });
     }
-  }, [terminalLogs, showTerminal]);
+  }, [terminalLogs]);
 
   const thinkingMessages = useMemo(() => [
     "Agent thinking",
@@ -473,6 +695,10 @@ export default function NewCampaign() {
     isValidUrl(ctaLink) &&
     phase !== "running" &&
     phase !== "paused";
+
+  useEffect(() => {
+    campaignRunIdRef.current = campaignRunId;
+  }, [campaignRunId]);
 
   const triggerScroll = useCallback(() => {
     const el = chatRef.current;
@@ -519,7 +745,6 @@ export default function NewCampaign() {
     setExpandedBodies(new Set());
     setCollapsedSections({});
     setTerminalLogs([]);
-    setShowTerminal(false);
     
     setLatestMetrics((currentMetrics) => {
       if (isOptimization) {
@@ -653,12 +878,15 @@ export default function NewCampaign() {
   }, []);
 
   const runAgent = useCallback(async (prompt: string, mode: RunMode) => {
+    const abortController = new AbortController();
+    activeRunAbortRef.current = abortController;
     setPhase("running");
 
     try {
       const finalResult = await streamCampaignAgent(prompt, {
         rounds: MAX_INTERACTIVE_OPTIMIZATION_ROUNDS,
         interactive: true,
+        signal: abortController.signal,
         onThinking: (step) => {
           if (sameThinkingStep(latestThinkingRef.current, step)) return;
           latestThinkingRef.current = step;
@@ -789,6 +1017,20 @@ export default function NewCampaign() {
         text: `Campaign plan is ready. Final open rate ${formatPercent(finalResult.finalOpenRate)} and click rate ${formatPercent(finalResult.finalClickRate)}.`,
       });
     } catch (runError) {
+      const isAbort = runError instanceof Error && runError.name === "AbortError";
+      if (isAbort) {
+        setPendingPause(null);
+        pauseResponderRef.current = null;
+        setError(null);
+        setPhase("complete");
+        pushMessage({
+          role: "system",
+          kind: "final",
+          text: "Campaign run ended by user.",
+        });
+        return;
+      }
+
       const message = runError instanceof Error ? runError.message : "Campaign agent execution failed.";
       setError(message);
       setPhase("error");
@@ -800,6 +1042,10 @@ export default function NewCampaign() {
         kind: "final",
         text: message,
       });
+    } finally {
+      if (activeRunAbortRef.current === abortController) {
+        activeRunAbortRef.current = null;
+      }
     }
   }, [pushMessage]);
 
@@ -808,10 +1054,62 @@ export default function NewCampaign() {
     const link = ctaLink.trim();
     if (!prompt || !link || !canStart) return;
 
+    activeRunAbortRef.current?.abort();
+    activeRunAbortRef.current = null;
+    campaignRunIdRef.current = null;
+    setCampaignRunId(null);
+    setSaveError(null);
+
     resetRunState(false);
     setMessages([]);
     setLatestPrompt(prompt);
     setLatestCtaLink(link);
+    const initialPayload: CreateCampaignRunPayload = {
+      campaign_name: deriveCampaignName(prompt),
+      prompt,
+      cta_link: link || undefined,
+      phase: "running",
+      total_rounds: 0,
+      total_sent: 0,
+      total_opened: 0,
+      total_clicked: 0,
+      open_rate: 0,
+      click_rate: 0,
+      metrics: null,
+      round_history: [],
+      improvements: [],
+      agent_categories: [],
+      final_mails: [],
+      tools_used: [],
+      terminal_logs: [],
+      messages: [],
+      segments: [],
+      twin_cards: [],
+      raw_payload: null,
+    };
+
+    try {
+      const createResponse = await fetch("/api/campaign-runs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(initialPayload),
+      });
+
+      if (!createResponse.ok) {
+        const errorData = await createResponse.json().catch(() => ({}));
+        throw new Error(errorData?.message || "Failed to initialize campaign run.");
+      }
+
+      const created = await createResponse.json();
+      const createdId = String(created?.id || "");
+      if (createdId) {
+        campaignRunIdRef.current = createdId;
+        setCampaignRunId(createdId);
+      }
+    } catch (createError) {
+      setSaveError(createError instanceof Error ? createError.message : "Unable to initialize campaign run storage.");
+    }
+
     const finalPrompt = buildPromptWithLink(prompt, link);
     pushMessage({ role: "user", text: `${prompt}\n\nCTA link: ${link}` });
     await runAgent(finalPrompt, "initial");
@@ -923,13 +1221,196 @@ export default function NewCampaign() {
   const totalClicked = baselineMetrics.clicked + activeTotalClicked;
   const aggregateOpenRate = totalSent > 0 ? (totalOpened / totalSent) * 100 : 0;
   const aggregateClickRate = totalSent > 0 ? (totalClicked / totalSent) * 100 : 0;
+  const hasCampaignData = messages.length > 0 || roundHistory.length > 0 || !!result;
+
+  const buildCampaignRunPayload = useCallback((
+    phaseOverride?: RunPhase,
+    promptOverride?: string,
+    ctaOverride?: string
+  ): CreateCampaignRunPayload | null => {
+    const prompt = (promptOverride ?? latestPrompt ?? brief).trim();
+    if (!prompt) {
+      return null;
+    }
+
+    const resolvedCta = (ctaOverride ?? latestCtaLink ?? ctaLink).trim();
+
+    return {
+      campaign_name: deriveCampaignName(prompt),
+      prompt,
+      cta_link: resolvedCta || undefined,
+      phase: phaseOverride ?? phase,
+      total_rounds: Math.max(roundHistory.length, latestMetrics?.round ?? 0, result?.metricsProgression?.length ?? 0),
+      total_sent: Math.max(0, totalSent),
+      total_opened: Math.max(0, totalOpened),
+      total_clicked: Math.max(0, totalClicked),
+      open_rate: Number(aggregateOpenRate.toFixed(2)),
+      click_rate: Number(aggregateClickRate.toFixed(2)),
+      metrics: latestMetrics,
+      round_history: roundHistory,
+      improvements: buildRoundImprovements(roundHistory),
+      agent_categories: buildAgentCategories(messages),
+      final_mails: approvalDrafts.map((draft) => ({
+        segment_id: draft.segmentId,
+        segment_name: draft.segmentName,
+        subject: draft.subject,
+        body: ensureDraftContainsLink(draft.body, resolvedCta),
+        tone: draft.tone || null,
+        tags: draft.tags || [],
+        cta_link: draft.ctaLink || resolvedCta || null,
+        approved: draftApprovalStatus[draft.segmentId] !== "rejected",
+      })),
+      tools_used: extractToolsUsed(terminalLogs, messages),
+      terminal_logs: terminalLogs,
+      messages: messages.map(({ id, role, text, kind, agent, timestamp }) => ({
+        id,
+        role,
+        text,
+        kind: kind || "status",
+        agent: agent || "Agent",
+        timestamp,
+      })),
+      segments: segmentCards,
+      twin_cards: Object.values(twinCards),
+      raw_payload: {
+        baselineMetrics,
+        result,
+      },
+    };
+  }, [
+    approvalDrafts,
+    aggregateClickRate,
+    aggregateOpenRate,
+    baselineMetrics,
+    brief,
+    ctaLink,
+    draftApprovalStatus,
+    latestCtaLink,
+    latestMetrics,
+    latestPrompt,
+    messages,
+    phase,
+    result,
+    roundHistory,
+    segmentCards,
+    terminalLogs,
+    totalClicked,
+    totalOpened,
+    totalSent,
+    twinCards,
+  ]);
+
+  const persistCampaignRun = useCallback(async ({
+    forceCreate = false,
+    phaseOverride,
+    promptOverride,
+    ctaOverride,
+  }: {
+    forceCreate?: boolean;
+    phaseOverride?: RunPhase;
+    promptOverride?: string;
+    ctaOverride?: string;
+  } = {}): Promise<string | null> => {
+    const payload = buildCampaignRunPayload(phaseOverride, promptOverride, ctaOverride);
+    if (!payload) {
+      return null;
+    }
+
+    try {
+      const existingId = forceCreate ? null : campaignRunIdRef.current;
+      const endpoint = existingId ? `/api/campaign-runs/${existingId}` : "/api/campaign-runs";
+      const method = existingId ? "PATCH" : "POST";
+
+      const response = await fetch(endpoint, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData?.message || "Failed to persist campaign data.");
+      }
+
+      const saved = await response.json();
+      const savedId = String(saved?.id || existingId || "");
+      if (savedId && savedId !== campaignRunIdRef.current) {
+        campaignRunIdRef.current = savedId;
+        setCampaignRunId(savedId);
+      }
+
+      return savedId || null;
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Unable to persist campaign data right now.");
+      return null;
+    }
+  }, [buildCampaignRunPayload]);
+
+  const handleEndCampaignAndViewAnalysis = useCallback(async () => {
+    if (!hasCampaignData || isSavingCampaign) return;
+
+    activeRunAbortRef.current?.abort();
+    activeRunAbortRef.current = null;
+    pauseResponderRef.current = null;
+    setPendingPause(null);
+    setPhase("complete");
+
+    setIsSavingCampaign(true);
+    setSaveError(null);
+    try {
+      const savedId = await persistCampaignRun({
+        phaseOverride: "complete",
+        promptOverride: latestPrompt || brief,
+        ctaOverride: latestCtaLink || ctaLink,
+      });
+
+      if (!savedId) {
+        throw new Error("Campaign data could not be saved before redirect.");
+      }
+
+      router.push(`/campaign/${savedId}/analysis`);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Unable to end campaign right now.");
+    } finally {
+      setIsSavingCampaign(false);
+    }
+  }, [
+    brief,
+    ctaLink,
+    hasCampaignData,
+    isSavingCampaign,
+    latestCtaLink,
+    latestPrompt,
+    persistCampaignRun,
+    router,
+  ]);
+
+  useEffect(() => {
+    if (isSavingCampaign || !campaignRunId || roundHistory.length === 0) {
+      return;
+    }
+    void persistCampaignRun({ phaseOverride: phase });
+  }, [campaignRunId, isSavingCampaign, phase, roundHistory.length, persistCampaignRun]);
+
+  useEffect(() => {
+    if (isSavingCampaign || !campaignRunId) {
+      return;
+    }
+    if (phase !== "complete" && phase !== "error") {
+      return;
+    }
+    void persistCampaignRun({ phaseOverride: phase });
+  }, [campaignRunId, isSavingCampaign, phase, persistCampaignRun]);
 
   return (
-    <div className="min-h-screen pt-20 pb-10 px-4" style={{ background: "linear-gradient(180deg, #070f19 0%, #0b1624 100%)" }}>
+    <div
+      className={`${hasConversation ? "h-screen overflow-hidden" : "min-h-screen"} pt-20 px-4 ${hasConversation ? "pb-6" : "pb-10"}`}
+      style={{ background: "linear-gradient(180deg, #070f19 0%, #0b1624 100%)" }}
+    >
       <Navbar />
 
-      <div className="max-w-4xl mx-auto">
-        <div className="flex items-center justify-between mb-5">
+      <div className={`${hasConversation ? "max-w-[1400px] h-full flex flex-col" : "max-w-4xl"} mx-auto`}>
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
           <button
             onClick={() => router.push("/dashboard")}
             className="inline-flex items-center gap-2 text-slate-300 hover:text-white transition-colors"
@@ -939,19 +1420,59 @@ export default function NewCampaign() {
             Back to dashboard
           </button>
 
-          <div
-            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full"
-            style={{
-              background: "rgba(15,23,42,0.75)",
-              border: "1px solid rgba(148,163,184,0.2)",
-              color: "#cbd5e1",
-              fontSize: "0.76rem",
-            }}
-          >
-            {phase === "running" ? <LoaderCircle className="w-3.5 h-3.5 animate-spin" /> : <Clock3 className="w-3.5 h-3.5" />}
-            {statusText}
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {hasConversation && phase === "complete" && latestPrompt && (
+              <motion.button
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                onClick={() => void handlePerformOptimizationRound()}
+                className="inline-flex items-center gap-2 px-3 py-2 rounded-xl text-white"
+                style={{ background: "linear-gradient(135deg, #16a34a 0%, #15803d 100%)", fontSize: "0.76rem", fontWeight: 700 }}
+              >
+                <Play className="w-4 h-4" />
+                Perform Optimization Round
+              </motion.button>
+            )}
+
+            {hasConversation && (
+              <motion.button
+                whileHover={{ scale: hasCampaignData && !isSavingCampaign ? 1.01 : 1 }}
+                whileTap={{ scale: hasCampaignData && !isSavingCampaign ? 0.99 : 1 }}
+                onClick={() => void handleEndCampaignAndViewAnalysis()}
+                disabled={!hasCampaignData || isSavingCampaign}
+                className="inline-flex items-center gap-2 px-3 py-2 rounded-xl text-white disabled:opacity-45 disabled:cursor-not-allowed"
+                style={{ background: "linear-gradient(135deg, #0369a1 0%, #1d4ed8 100%)", fontSize: "0.76rem", fontWeight: 700 }}
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                {isSavingCampaign ? "Ending Campaign..." : "End Campaign and View Analysis"}
+              </motion.button>
+            )}
+
+            <div
+              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full"
+              style={{
+                background: "rgba(15,23,42,0.75)",
+                border: "1px solid rgba(148,163,184,0.2)",
+                color: "#cbd5e1",
+                fontSize: "0.76rem",
+              }}
+            >
+              {phase === "running" ? <LoaderCircle className="w-3.5 h-3.5 animate-spin" /> : <Clock3 className="w-3.5 h-3.5" />}
+              {statusText}
+            </div>
           </div>
         </div>
+
+        {hasConversation && saveError && (
+          <p className="text-rose-300 mb-3" style={{ fontSize: "0.76rem" }}>
+            {saveError}
+          </p>
+        )}
+        {hasConversation && error && (
+          <p className="text-rose-300 mb-3" style={{ fontSize: "0.76rem" }}>
+            {error}
+          </p>
+        )}
 
         {!hasConversation ? (
           <div className="min-h-[68vh] flex items-center justify-center">
@@ -1029,10 +1550,12 @@ export default function NewCampaign() {
             </motion.section>
           </div>
         ) : (
-          <>
+          <div className="flex-1 min-h-0 flex flex-col gap-4">
+            <div className="grid flex-1 min-h-0 grid-cols-1 xl:grid-cols-12 gap-4">
+              <div className="xl:col-span-8 min-h-0 flex flex-col gap-4">
             <div
               ref={chatRef}
-              className="rounded-[28px] p-4 md:p-6 h-[66vh] overflow-y-auto"
+              className="rounded-[28px] p-4 md:p-6 flex-1 min-h-0 overflow-y-auto"
               style={{
                 background: "linear-gradient(180deg, rgba(8,18,33,0.94) 0%, rgba(11,24,40,0.95) 100%)",
                 border: "1px solid rgba(148,163,184,0.2)",
@@ -1063,7 +1586,24 @@ export default function NewCampaign() {
                       prevMsg.agent === message.agent && !showPhaseSeparator;
 
                     const kindConfig = kindVisualConfig(message.kind);
-                    const KindIcon = kindConfig.icon;
+                    const kindLabelText = kindLabel(message.kind);
+                    const kindIconConfig = kindVisualConfig(message.kind);
+                    const KindIcon = kindIconConfig.icon;
+                    const agentProfile = getAgentProfile(message.agent);
+                    const AgentIcon = agentProfile.icon;
+                    const isLastAgentMessage = !messages
+                      .slice(index + 1)
+                      .some(
+                        (next) =>
+                          next.role === message.role &&
+                          (next.agent || "Agent") === (message.agent || "Agent")
+                      );
+                    const canShowTwinDropdown =
+                      !isUser &&
+                      !isSystem &&
+                      shouldAttachTwinInsights(message.agent) &&
+                      digitalTwinCards.length > 0 &&
+                      isLastAgentMessage;
 
                     // User messages
                     if (isUser) {
@@ -1123,42 +1663,66 @@ export default function NewCampaign() {
                             className={`max-w-[95%] md:max-w-[88%] rounded-xl ${isSameAgentContinuation ? "ml-6" : ""}`}
                             style={{
                               padding: isSameAgentContinuation ? "6px 12px" : "10px 14px",
-                              background: kindConfig.bubbleBg,
-                              border: kindConfig.bubbleBorder,
+                              background: isSystem ? kindConfig.bubbleBg : agentProfile.bubbleBg,
+                              border: isSystem ? kindConfig.bubbleBorder : agentProfile.bubbleBorder,
                             }}
                           >
                             {/* Header - shown only for first message in a group or different agents */}
                             {!isSameAgentContinuation && (
                               <div className="flex items-center gap-2 mb-1.5">
                                 <div
-                                  className="w-5 h-5 rounded-md flex items-center justify-center"
-                                  style={{ background: kindConfig.badgeBg, border: kindConfig.badgeBorder }}
+                                  className="flex items-center gap-1.5"
+                                  title={`${agentProfile.label}: ${agentProfile.description}`}
                                 >
-                                  <KindIcon className="w-3 h-3" style={{ color: kindConfig.accentColor }} />
+                                  <div
+                                    className="w-5 h-5 rounded-md flex items-center justify-center"
+                                    style={{
+                                      background: isSystem ? kindIconConfig.badgeBg : agentProfile.badgeBg,
+                                      border: isSystem ? kindIconConfig.badgeBorder : agentProfile.badgeBorder,
+                                    }}
+                                  >
+                                    {isSystem ? (
+                                      <KindIcon className="w-3 h-3" style={{ color: kindIconConfig.accentColor }} />
+                                    ) : (
+                                      <AgentIcon
+                                        className="w-3 h-3"
+                                        style={{ color: isSystem ? kindIconConfig.badgeColor : agentProfile.badgeColor }}
+                                      />
+                                    )}
+                                  </div>
+                                  <span
+                                    className="text-slate-200"
+                                    style={{ fontSize: "0.7rem", fontWeight: 700 }}
+                                  >
+                                    {message.agent || "Agent"}
+                                  </span>
                                 </div>
-                                <span className="text-slate-300" style={{ fontSize: "0.7rem", fontWeight: 600 }}>
-                                  {message.agent || "Agent"}
-                                </span>
                                 <span
                                   className="px-1.5 py-0.5 rounded-full"
                                   style={{
                                     fontSize: "0.6rem",
                                     fontWeight: 700,
-                                    color: kindConfig.badgeColor,
-                                    background: kindConfig.badgeBg,
-                                    border: kindConfig.badgeBorder,
+                                    color: kindIconConfig.badgeColor,
+                                    background: kindIconConfig.badgeBg,
+                                    border: kindIconConfig.badgeBorder,
                                   }}
                                 >
-                                  {kindLabel(message.kind)}
+                                  {kindLabelText}
                                 </span>
                               </div>
                             )}
                             {/* Compact inline badge for continuation messages */}
                             {isSameAgentContinuation && (
-                              <div className="flex items-center gap-1.5 mb-1">
-                                <KindIcon className="w-3 h-3" style={{ color: kindConfig.accentColor, opacity: 0.7 }} />
-                                <span className="px-1.5 py-0.5 rounded-full" style={{ fontSize: "0.58rem", fontWeight: 600, color: kindConfig.badgeColor, background: kindConfig.badgeBg, border: kindConfig.badgeBorder, opacity: 0.8 }}>
-                                  {kindLabel(message.kind)}
+                              <div
+                                className="flex items-center gap-1.5 mb-1"
+                                title={`${agentProfile.label}: ${agentProfile.description}`}
+                              >
+                                <AgentIcon className="w-3 h-3" style={{ color: agentProfile.badgeColor, opacity: 0.9 }} />
+                                <span className="text-slate-300" style={{ fontSize: "0.62rem", fontWeight: 700 }}>
+                                  {message.agent || "Agent"}
+                                </span>
+                                <span className="px-1.5 py-0.5 rounded-full" style={{ fontSize: "0.58rem", fontWeight: 600, color: kindIconConfig.badgeColor, background: kindIconConfig.badgeBg, border: kindIconConfig.badgeBorder, opacity: 0.8 }}>
+                                  {kindLabelText}
                                 </span>
                               </div>
                             )}
@@ -1170,9 +1734,102 @@ export default function NewCampaign() {
                                    text={message.text} 
                                    onUpdate={triggerScroll}
                                    onComplete={() => setCompletedMessageIds((current) => new Set(current).add(message.id))}
-                                 />
-                              )}
+                                  />
+                               )}
                             </p>
+
+                            {canShowTwinDropdown && (
+                              <details
+                                className="mt-2 rounded-lg p-2"
+                                style={{
+                                  background: "rgba(2,6,23,0.65)",
+                                  border: "1px solid rgba(94,234,212,0.2)",
+                                }}
+                              >
+                                <summary
+                                  className="cursor-pointer text-slate-200"
+                                  style={{ fontSize: "0.72rem", fontWeight: 700 }}
+                                >
+                                  Digital Twin Review ({formatCount(digitalTwinCards.length)} categories)
+                                </summary>
+                                <div className="mt-2 max-h-[260px] overflow-y-auto pr-1 space-y-2">
+                                  {visibleDigitalTwinCards.map(({ segment, draft, twin }) => {
+                                    const badge = twinStageStyles(twin.stage);
+                                    const activeDraft = draft ?? {
+                                      subject: twin.subject,
+                                      body: twin.body,
+                                      ctaLink: twin.ctaLink,
+                                    };
+                                    const personaApprovals = twin.personas.filter((persona) => persona.decision === "open" || persona.decision === "click").length;
+                                    return (
+                                      <div
+                                        key={`${message.id}-${segment.segmentId}`}
+                                        className="rounded-lg p-2"
+                                        style={{ background: "rgba(15,23,42,0.75)", border: "1px solid rgba(148,163,184,0.18)" }}
+                                      >
+                                        <div className="flex items-center justify-between gap-2">
+                                          <div className="text-slate-100" style={{ fontSize: "0.72rem", fontWeight: 700 }}>
+                                            {segment.name}
+                                          </div>
+                                          <div
+                                            className="px-1.5 py-0.5 rounded-full"
+                                            style={{ fontSize: "0.58rem", fontWeight: 700, background: badge.background, border: badge.border, color: badge.color }}
+                                          >
+                                            {badge.label}
+                                          </div>
+                                        </div>
+                                        <div className="text-slate-400 mt-1" style={{ fontSize: "0.64rem" }}>
+                                          Subject: {activeDraft.subject || "Waiting for draft"}
+                                        </div>
+                                        <div className="mt-1 flex flex-wrap gap-1.5">
+                                          {twin.personas.slice(0, 3).map((persona) => {
+                                            const personaStyle = personaStyles(persona.decision);
+                                            return (
+                                              <span
+                                                key={`${segment.segmentId}-${persona.personaId}`}
+                                                className="px-1.5 py-0.5 rounded-full"
+                                                style={{ fontSize: "0.56rem", background: personaStyle.background, border: personaStyle.border, color: personaStyle.color }}
+                                                title={personaStyle.verdict}
+                                              >
+                                                {persona.name}: {personaStyle.detail}
+                                              </span>
+                                            );
+                                          })}
+                                        </div>
+                                        <div className="text-slate-400 mt-1" style={{ fontSize: "0.62rem" }}>
+                                          Attempt {Math.max(twin.attempt, 1)} / {twin.maxAttempts} • {formatCount(personaApprovals)} approved • {formatCount(twin.ignoreVotes)} declined
+                                        </div>
+                                        <div className="text-sky-200 mt-1" style={{ fontSize: "0.62rem" }}>
+                                          CTA: {activeDraft.ctaLink || twin.ctaLink || pendingPause?.ctaLink || latestCtaLink || ctaLink}
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                                {(digitalTwinCards.length > visibleTwinCards || visibleTwinCards > INITIAL_VISIBLE_TWIN_CARDS) && (
+                                  <div className="flex gap-2 mt-2">
+                                    {digitalTwinCards.length > visibleTwinCards && (
+                                      <button
+                                        onClick={() => setVisibleTwinCards((current) => current + INITIAL_VISIBLE_TWIN_CARDS)}
+                                        className="px-2 py-1 rounded-md text-slate-100"
+                                        style={{ fontSize: "0.64rem", background: "rgba(30,41,59,0.85)", border: "1px solid rgba(148,163,184,0.26)" }}
+                                      >
+                                        View more
+                                      </button>
+                                    )}
+                                    {visibleTwinCards > INITIAL_VISIBLE_TWIN_CARDS && (
+                                      <button
+                                        onClick={() => setVisibleTwinCards(INITIAL_VISIBLE_TWIN_CARDS)}
+                                        className="px-2 py-1 rounded-md text-slate-100"
+                                        style={{ fontSize: "0.64rem", background: "rgba(15,23,42,0.85)", border: "1px solid rgba(148,163,184,0.22)" }}
+                                      >
+                                        View less
+                                      </button>
+                                    )}
+                                  </div>
+                                )}
+                              </details>
+                            )}
                           </div>
                         </motion.div>
                       </React.Fragment>
@@ -1184,43 +1841,15 @@ export default function NewCampaign() {
                   <motion.div
                     initial={{ opacity: 0, y: 8 }}
                     animate={{ opacity: 1, y: 0 }}
-                    className="flex flex-col gap-2 justify-start w-full"
+                    className="flex justify-start w-full"
                   >
                     <div className="rounded-2xl px-4 py-3 self-start" style={{ background: "rgba(15,23,42,0.82)", border: "1px solid rgba(148,163,184,0.2)" }}>
-                      <div className="flex items-center justify-between gap-4">
-                        <div className="flex items-center gap-2 text-slate-200" style={{ fontSize: "0.78rem" }}>
-                          <Bot className="w-3.5 h-3.5" />
-                          {thinkingMessages[thinkingMsgIndex]}
-                          <TypingDots />
-                        </div>
-                        <button 
-                          onClick={() => setShowTerminal(s => !s)}
-                          className="flex items-center gap-1 text-slate-400 hover:text-slate-200 focus:outline-none"
-                        >
-                          <span style={{ fontSize: "0.65rem", textTransform: "uppercase" }}>Logs</span>
-                          {showTerminal ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                        </button>
+                      <div className="flex items-center gap-2 text-slate-200" style={{ fontSize: "0.78rem" }}>
+                        <Bot className="w-3.5 h-3.5" />
+                        {thinkingMessages[thinkingMsgIndex]}
+                        <TypingDots />
                       </div>
                     </div>
-                    
-                    <AnimatePresence>
-                      {showTerminal && terminalLogs.length > 0 && (
-                        <motion.div 
-                          initial={{ opacity: 0, height: 0 }}
-                          animate={{ opacity: 1, height: "auto" }}
-                          exit={{ opacity: 0, height: 0 }}
-                          className="rounded-xl p-3 w-full bg-slate-900/80 border border-slate-700/50 overflow-y-auto"
-                          style={{ maxHeight: "250px", fontFamily: "monospace", fontSize: "0.75rem", color: "#94a3b8" }}
-                        >
-                          {terminalLogs.map((log, i) => (
-                            <div key={i} className="mb-1 leading-relaxed whitespace-pre-wrap flex gap-2">
-                              {log}
-                            </div>
-                          ))}
-                          <div ref={terminalEndRef} />
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
                   </motion.div>
                 )}
 
@@ -1522,322 +2151,115 @@ export default function NewCampaign() {
                 )}
               </div>
             </div>
+            </div>
 
-            {(latestMetrics || roundHistory.length > 0 || (phase === "complete" && result) || digitalTwinCards.length > 0) && (
-              <div className="mt-8 border-t border-slate-800/60 pt-6 w-full">
-                <div className="flex items-center gap-2 mb-4">
-                  <TrendingUp className="w-5 h-5 text-indigo-400" />
-                  <span className="text-white text-lg font-bold">Insights & Analysis Dashboard</span>
+            <div className="xl:col-span-4 min-h-0 flex flex-col gap-4">
+              <div
+                className="rounded-[24px] p-4 md:p-5 flex-[1.25] min-h-0 flex flex-col"
+                style={{ background: "rgba(8,18,33,0.96)", border: "1px solid rgba(148,163,184,0.2)" }}
+              >
+                <div className="flex items-center gap-2">
+                  <BarChart3 className="w-5 h-5 text-cyan-400" />
+                  <span className="text-white text-lg font-bold">Analysis Stats</span>
                 </div>
-                
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
-                  
-                  {/* Left Column: Metrics */}
-                  <div className="flex flex-col gap-4">
-                    {(latestMetrics || roundHistory.length > 0 || (phase === "complete" && result)) && (
-                      <div className="rounded-[20px] p-5 w-full" style={{ background: "rgba(15,23,42,0.4)", border: "1px solid rgba(148,163,184,0.15)" }}>
-                        <div className="flex items-center gap-2 mb-4">
-                          <TrendingUp className="w-4 h-4 text-emerald-400" />
-                          <span className="text-white" style={{ fontSize: "0.95rem", fontWeight: 700 }}>Campaign Performance</span>
+                <p className="text-slate-400 mt-1" style={{ fontSize: "0.76rem" }}>
+                  Performance trends for the current campaign run.
+                </p>
+
+                <div className="mt-4 flex-1 min-h-0 overflow-y-auto pr-1">
+                  {(latestMetrics || roundHistory.length > 0 || (phase === "complete" && result)) ? (
+                    <div className="rounded-[20px] p-4 w-full" style={{ background: "rgba(15,23,42,0.4)", border: "1px solid rgba(148,163,184,0.15)" }}>
+                      <div className="grid grid-cols-1 gap-2">
+                        <div className="rounded-2xl p-3" style={{ background: "linear-gradient(135deg, rgba(14,116,144,0.15) 0%, rgba(15,23,42,0.75) 100%)", border: "1px solid rgba(34,211,238,0.18)" }}>
+                          <div className="text-cyan-300" style={{ fontSize: "0.66rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>Audience Reached</div>
+                          <div className="text-white mt-1" style={{ fontSize: "1.1rem", fontWeight: 800 }}>{formatCount(totalSent || 0)}</div>
                         </div>
-                        <div className="grid grid-cols-2 gap-3">
-                          <div className="rounded-2xl p-4" style={{ background: "linear-gradient(135deg, rgba(14,116,144,0.15) 0%, rgba(15,23,42,0.75) 100%)", border: "1px solid rgba(34,211,238,0.18)" }}>
-                            <div className="text-cyan-300" style={{ fontSize: "0.7rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>Audience Reached</div>
-                            <div className="text-white mt-1" style={{ fontSize: "1.4rem", fontWeight: 800 }}>{formatCount(totalSent || 0)}</div>
-                          </div>
-                          <div className="rounded-2xl p-4" style={{ background: "linear-gradient(135deg, rgba(22,163,74,0.12) 0%, rgba(15,23,42,0.75) 100%)", border: "1px solid rgba(34,197,94,0.18)" }}>
-                            <div className="text-emerald-300" style={{ fontSize: "0.7rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>Open Rate</div>
-                            <div className="text-white mt-1" style={{ fontSize: "1.4rem", fontWeight: 800 }}>{formatPercent(aggregateOpenRate)}</div>
-                            <div className="text-emerald-400/60 mt-0.5" style={{ fontSize: "0.68rem" }}>{formatCount(totalOpened)} opens</div>
-                          </div>
-                          <div className="rounded-2xl p-4" style={{ background: "linear-gradient(135deg, rgba(37,99,235,0.12) 0%, rgba(15,23,42,0.75) 100%)", border: "1px solid rgba(59,130,246,0.18)" }}>
-                            <div className="text-blue-300" style={{ fontSize: "0.7rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>Click Rate</div>
-                            <div className="text-white mt-1" style={{ fontSize: "1.4rem", fontWeight: 800 }}>{formatPercent(aggregateClickRate)}</div>
-                            <div className="text-blue-400/60 mt-0.5" style={{ fontSize: "0.68rem" }}>{formatCount(totalClicked)} clicks</div>
-                          </div>
-                          <div className="rounded-2xl p-4" style={{ background: "linear-gradient(135deg, rgba(168,85,247,0.1) 0%, rgba(15,23,42,0.75) 100%)", border: "1px solid rgba(168,85,247,0.18)" }}>
-                            <div className="text-purple-300" style={{ fontSize: "0.7rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>Unique Engagement</div>
-                            <div className="text-white mt-1" style={{ fontSize: "1.4rem", fontWeight: 800 }}>{formatCount(activeUniqueOpened)}</div>
-                            <div className="text-purple-400/60 mt-0.5" style={{ fontSize: "0.68rem" }}>{formatCount(activeUniqueClicked)} clicks</div>
-                          </div>
+                        <div className="rounded-2xl p-3" style={{ background: "linear-gradient(135deg, rgba(22,163,74,0.12) 0%, rgba(15,23,42,0.75) 100%)", border: "1px solid rgba(34,197,94,0.18)" }}>
+                          <div className="text-emerald-300" style={{ fontSize: "0.66rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>Open Rate</div>
+                          <div className="text-white mt-1" style={{ fontSize: "1.1rem", fontWeight: 800 }}>{formatPercent(aggregateOpenRate)}</div>
+                          <div className="text-emerald-400/60 mt-0.5" style={{ fontSize: "0.66rem" }}>{formatCount(totalOpened)} opens</div>
                         </div>
-
-                        {/* Round History Timeline */}
-                        {roundHistory.length > 1 && (
-                          <div className="mt-4 rounded-2xl p-4" style={{ background: "rgba(15,23,42,0.65)", border: "1px solid rgba(148,163,184,0.14)" }}>
-                            <div className="text-slate-400 mb-2" style={{ fontSize: "0.72rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>Round Progression</div>
-                            <div className="flex items-end gap-2">
-                              {roundHistory.map((round) => {
-                                const maxRate = Math.max(...roundHistory.map(r => r.summary.openRate), 1);
-                                const barHeight = Math.max(16, (round.summary.openRate / maxRate) * 56);
-                                return (
-                                  <div key={round.round} className="flex flex-col items-center gap-1 flex-1">
-                                    <div className="text-emerald-300" style={{ fontSize: "0.62rem" }}>{formatPercent(round.summary.openRate)}</div>
-                                    <div className="w-full rounded-t-md" style={{ height: `${barHeight}px`, background: "linear-gradient(180deg, rgba(34,197,94,0.5) 0%, rgba(34,197,94,0.15) 100%)", minWidth: "20px" }} />
-                                    <div className="text-slate-500" style={{ fontSize: "0.6rem" }}>R{round.round}</div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Right Column: Digital Twin */}
-                  <div className="flex flex-col gap-4">
-                    {digitalTwinCards.length > 0 && (
-                      <div className="rounded-[20px] p-5 w-full" style={{ background: "rgba(8,18,33,0.96)", border: "1px solid rgba(148,163,184,0.2)" }}>
-                        <button
-                          onClick={() => setCollapsedSections(c => ({ ...c, twin: !c.twin }))}
-                          className="flex items-center justify-between gap-3 w-full text-left"
-                        >
-                          <div>
-                            <div className="flex items-center gap-2">
-                              {collapsedSections.twin ? <ChevronDown className="w-4 h-4 text-slate-400" /> : <ChevronUp className="w-4 h-4 text-slate-400" />}
-                              <span className="text-white" style={{ fontSize: "0.95rem", fontWeight: 700 }}>Digital Twin Review</span>
-                            </div>
-                            <div className="text-slate-400 mt-1 ml-6" style={{ fontSize: "0.76rem" }}>
-                              Each category card shows the current email draft plus live persona approvals.
-                            </div>
-                          </div>
-                          <div className="text-slate-400" style={{ fontSize: "0.76rem" }}>
-                            {formatCount(digitalTwinCards.length)} categories
-                          </div>
-                        </button>
-
-                        {!collapsedSections.twin && (
-                          <>
-                          <div className="grid grid-cols-1 gap-3 mt-4">
-                  {visibleDigitalTwinCards.map(({ segment, draft, twin }) => {
-                    const badge = twinStageStyles(twin.stage);
-                    const activeDraft = draft ?? {
-                      subject: twin.subject,
-                      body: twin.body,
-                      ctaLink: twin.ctaLink,
-                    };
-                    const personaApprovals = twin.personas.filter((persona) => persona.decision === "open" || persona.decision === "click").length;
-                    return (
-                      <div
-                        key={segment.segmentId}
-                        className="rounded-2xl p-4"
-                        style={{
-                          background: "rgba(15,23,42,0.75)",
-                          border: "1px solid rgba(148,163,184,0.18)",
-                        }}
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <div className="text-white" style={{ fontSize: "0.84rem", fontWeight: 700 }}>
-                              {segment.name}
-                            </div>
-                            <div className="text-slate-400 mt-1" style={{ fontSize: "0.72rem" }}>
-                              {formatCount(segment.size)} customers
-                            </div>
-                          </div>
-                          <div
-                            className="px-2 py-1 rounded-full"
-                            style={{
-                              fontSize: "0.68rem",
-                              fontWeight: 700,
-                              background: badge.background,
-                              border: badge.border,
-                              color: badge.color,
-                            }}
-                          >
-                            {badge.label}
-                          </div>
+                        <div className="rounded-2xl p-3" style={{ background: "linear-gradient(135deg, rgba(37,99,235,0.12) 0%, rgba(15,23,42,0.75) 100%)", border: "1px solid rgba(59,130,246,0.18)" }}>
+                          <div className="text-blue-300" style={{ fontSize: "0.66rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>Click Rate</div>
+                          <div className="text-white mt-1" style={{ fontSize: "1.1rem", fontWeight: 800 }}>{formatPercent(aggregateClickRate)}</div>
+                          <div className="text-blue-400/60 mt-0.5" style={{ fontSize: "0.66rem" }}>{formatCount(totalClicked)} clicks</div>
                         </div>
-
-                        <div className="mt-3">
-                          <div className="text-slate-500" style={{ fontSize: "0.66rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>
-                            Subject
-                          </div>
-                          <div className="text-slate-100 mt-1" style={{ fontSize: "0.78rem", fontWeight: 600 }}>
-                            {activeDraft.subject || "Digital Twin is waiting for the first draft..."}
-                          </div>
-                        </div>
-
-                        <div className="mt-3">
-                          <div className="text-slate-500" style={{ fontSize: "0.66rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>
-                            Email
-                          </div>
-                          <div className="text-slate-300 mt-1" style={{ fontSize: "0.75rem", lineHeight: 1.55 }}>
-                            {activeDraft.body || "The simulator will show the generated email here as soon as this category enters review."}
-                          </div>
-                        </div>
-
-                        <div className="mt-3 flex flex-wrap gap-2 text-xs">
-                          <div className="px-2 py-1 rounded-full" style={{ background: "rgba(56,189,248,0.12)", border: "1px solid rgba(56,189,248,0.22)", color: "#bae6fd" }}>
-                            Attempt {Math.max(twin.attempt, 1)} / {twin.maxAttempts}
-                          </div>
-                          <div className="px-2 py-1 rounded-full" style={{ background: "rgba(34,197,94,0.12)", border: "1px solid rgba(34,197,94,0.22)", color: "#dcfce7" }}>
-                            {formatCount(personaApprovals)} approved
-                          </div>
-                          <div className="px-2 py-1 rounded-full" style={{ background: "rgba(248,113,113,0.12)", border: "1px solid rgba(248,113,113,0.22)", color: "#fee2e2" }}>
-                            {formatCount(twin.ignoreVotes)} declined
-                          </div>
-                        </div>
-
-                        <div className="mt-3 text-sky-200" style={{ fontSize: "0.7rem" }}>
-                          CTA link: {activeDraft.ctaLink || twin.ctaLink || pendingPause?.ctaLink || latestCtaLink || ctaLink}
-                        </div>
-
-                        <div className="mt-4">
-                          <div className="text-slate-500" style={{ fontSize: "0.66rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>
-                            Persona Decisions
-                          </div>
-                          {twin.personas.length > 0 ? (
-                            <div className="grid gap-2 mt-2">
-                              {twin.personas.map((persona) => {
-                                const personaBadge = personaStyles(persona.decision);
-                                return (
-                                  <div
-                                    key={persona.personaId}
-                                    className="rounded-xl p-3"
-                                    style={{ background: "rgba(2,6,23,0.65)", border: "1px solid rgba(148,163,184,0.14)" }}
-                                  >
-                                    <div className="flex items-start justify-between gap-3">
-                                      <div>
-                                        <div className="text-slate-100" style={{ fontSize: "0.76rem", fontWeight: 600 }}>
-                                          {persona.name}
-                                        </div>
-                                        <div className="text-slate-400 mt-1" style={{ fontSize: "0.68rem" }}>
-                                          {[persona.occupation, persona.city].filter(Boolean).join(" • ") || "Synthetic persona"}
-                                        </div>
-                                      </div>
-                                      <div
-                                        className="px-2 py-1 rounded-full"
-                                        style={{
-                                          fontSize: "0.64rem",
-                                          fontWeight: 700,
-                                          background: personaBadge.background,
-                                          border: personaBadge.border,
-                                          color: personaBadge.color,
-                                        }}
-                                      >
-                                        {personaBadge.verdict}
-                                      </div>
-                                    </div>
-                                    <div className="text-slate-300 mt-2" style={{ fontSize: "0.71rem", lineHeight: 1.5 }}>
-                                      {persona.monologue || personaBadge.detail}
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          ) : (
-                            <div className="text-slate-400 mt-2" style={{ fontSize: "0.74rem" }}>
-                              This category is queued. Persona reactions will appear here as soon as simulation starts.
-                            </div>
-                          )}
+                        <div className="rounded-2xl p-3" style={{ background: "linear-gradient(135deg, rgba(168,85,247,0.1) 0%, rgba(15,23,42,0.75) 100%)", border: "1px solid rgba(168,85,247,0.18)" }}>
+                          <div className="text-purple-300" style={{ fontSize: "0.66rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>Unique Engagement</div>
+                          <div className="text-white mt-1" style={{ fontSize: "1.1rem", fontWeight: 800 }}>{formatCount(activeUniqueOpened)}</div>
+                          <div className="text-purple-400/60 mt-0.5" style={{ fontSize: "0.66rem" }}>{formatCount(activeUniqueClicked)} clicks</div>
                         </div>
                       </div>
-                    )
-                  })}
+
+                      {roundHistory.length > 1 && (
+                        <div className="mt-3 rounded-2xl p-3" style={{ background: "rgba(15,23,42,0.65)", border: "1px solid rgba(148,163,184,0.14)" }}>
+                          <div className="text-slate-400 mb-2" style={{ fontSize: "0.68rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>Round Progression</div>
+                          <div className="flex items-end gap-1.5">
+                            {roundHistory.map((round) => {
+                              const maxRate = Math.max(...roundHistory.map((entry) => entry.summary.openRate), 1);
+                              const barHeight = Math.max(14, (round.summary.openRate / maxRate) * 44);
+                              return (
+                                <div key={round.round} className="flex flex-col items-center gap-1 flex-1">
+                                  <div className="text-emerald-300" style={{ fontSize: "0.58rem" }}>{formatPercent(round.summary.openRate)}</div>
+                                  <div className="w-full rounded-t-md" style={{ height: `${barHeight}px`, background: "linear-gradient(180deg, rgba(34,197,94,0.5) 0%, rgba(34,197,94,0.15) 100%)", minWidth: "16px" }} />
+                                  <div className="text-slate-500" style={{ fontSize: "0.56rem" }}>R{round.round}</div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="rounded-[20px] p-4" style={{ background: "rgba(15,23,42,0.4)", border: "1px solid rgba(148,163,184,0.16)" }}>
+                      <p className="text-slate-400" style={{ fontSize: "0.8rem", lineHeight: 1.6 }}>
+                        Analysis stats will populate when campaign metrics are produced.
+                      </p>
+                    </div>
+                  )}
                 </div>
-
-                {(digitalTwinCards.length > visibleTwinCards || visibleTwinCards > INITIAL_VISIBLE_TWIN_CARDS) && (
-                  <div className="flex justify-center gap-2 mt-4">
-                    {digitalTwinCards.length > visibleTwinCards && (
-                      <button
-                        onClick={() => setVisibleTwinCards((current) => current + INITIAL_VISIBLE_TWIN_CARDS)}
-                        className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-slate-100"
-                        style={{ background: "rgba(30,41,59,0.85)", border: "1px solid rgba(148,163,184,0.28)", fontSize: "0.78rem", fontWeight: 700 }}
-                      >
-                        View more
-                      </button>
-                    )}
-                    {visibleTwinCards > INITIAL_VISIBLE_TWIN_CARDS && (
-                      <button
-                        onClick={() => setVisibleTwinCards(INITIAL_VISIBLE_TWIN_CARDS)}
-                        className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-slate-100"
-                        style={{ background: "rgba(15,23,42,0.85)", border: "1px solid rgba(148,163,184,0.22)", fontSize: "0.78rem", fontWeight: 700 }}
-                      >
-                        View less
-                      </button>
-                    )}
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  </div>
-)}
-
-            {phase === "complete" && latestPrompt && (
-              <div className="mt-4 flex justify-center">
-                <motion.button
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  onClick={() => void handlePerformOptimizationRound()}
-                  className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-white"
-                  style={{ background: "linear-gradient(135deg, #16a34a 0%, #15803d 100%)", fontSize: "0.84rem", fontWeight: 700 }}
-                >
-                  <Play className="w-4 h-4" />
-                  Perform Optimization Round
-                </motion.button>
               </div>
-            )}
 
-            {error && (
-              <div className="mt-4 rounded-2xl p-4" style={{ background: "rgba(127,29,29,0.25)", border: "1px solid rgba(248,113,113,0.35)" }}>
-                <div className="text-rose-200" style={{ fontSize: "0.84rem", fontWeight: 700 }}>Run failed</div>
-                <p className="text-rose-100 mt-1" style={{ fontSize: "0.8rem", lineHeight: 1.6 }}>{error}</p>
-              </div>
-            )}
+              <div
+                className="rounded-[24px] p-4 md:p-5 flex-[0.9] min-h-0 flex flex-col"
+                style={{ background: "rgba(8,18,33,0.96)", border: "1px solid rgba(148,163,184,0.2)" }}
+              >
+                <div className="flex items-center gap-2">
+                  <Bot className="w-5 h-5 text-emerald-400" />
+                  <span className="text-white text-lg font-bold">Live Terminal Commands</span>
+                </div>
+                <p className="text-slate-400 mt-1" style={{ fontSize: "0.76rem" }}>
+                  Real-time command and process output from running agents.
+                </p>
 
-            <div className="mt-4 rounded-[24px] p-3" style={{ background: "rgba(8,18,33,0.96)", border: "1px solid rgba(148,163,184,0.2)" }}>
-              <textarea
-                value={brief}
-                onChange={(event) => setBrief(event.target.value)}
-                rows={3}
-                className="w-full bg-transparent text-slate-100 placeholder:text-slate-500 outline-none resize-none px-2 py-2"
-                placeholder="Enter a new campaign prompt"
-                style={{ fontSize: "0.9rem", lineHeight: 1.6 }}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey) {
-                    event.preventDefault();
-                    void handleStart();
-                  }
-                }}
-              />
-              <input
-                value={ctaLink}
-                onChange={(event) => setCtaLink(event.target.value)}
-                className="w-full bg-transparent text-slate-100 placeholder:text-slate-500 outline-none px-2 py-2"
-                placeholder="Required CTA link"
-                style={{ fontSize: "0.86rem", lineHeight: 1.5, borderTop: "1px solid rgba(148,163,184,0.14)" }}
-              />
-              <div className="flex justify-between items-center pt-1 px-1">
-                <button
-                  onClick={() => {
-                    setBrief(DEFAULT_BRIEF);
-                    setCtaLink(DEFAULT_CTA_LINK);
+                <div
+                  className="mt-3 flex-1 min-h-0 overflow-y-auto rounded-2xl p-3"
+                  style={{
+                    background: "rgba(2,6,23,0.75)",
+                    border: "1px solid rgba(148,163,184,0.2)",
+                    fontFamily: "monospace",
                   }}
-                  className="text-slate-400 hover:text-white transition-colors"
-                  style={{ fontSize: "0.76rem" }}
                 >
-                  Load sample
-                </button>
-                <motion.button
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  onClick={() => void handleStart()}
-                  disabled={!canStart}
-                  className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-white disabled:opacity-45 disabled:cursor-not-allowed"
-                  style={{ background: "linear-gradient(135deg, #0ea5e9 0%, #2563eb 100%)", fontSize: "0.82rem", fontWeight: 700 }}
-                >
-                  <Send className="w-4 h-4" />
-                  {phase === "complete" || phase === "error" ? "Send new prompt" : "Send prompt"}
-                </motion.button>
+                  {terminalLogs.length > 0 ? (
+                    <div className="space-y-1">
+                      {terminalLogs.map((log, i) => (
+                        <div key={`term-${i}`} className="text-slate-300 whitespace-pre-wrap leading-relaxed" style={{ fontSize: "0.68rem" }}>
+                          {log}
+                        </div>
+                      ))}
+                      <div ref={terminalEndRef} />
+                    </div>
+                  ) : (
+                    <p className="text-slate-500" style={{ fontSize: "0.72rem", lineHeight: 1.6 }}>
+                      Terminal output will appear here when agents execute commands.
+                    </p>
+                  )}
+                </div>
+              </div>
               </div>
             </div>
-          </>
+
+          </div>
         )}
       </div>
     </div>
