@@ -1672,15 +1672,10 @@ async def run_react_planner_executor(
     channel.set_background_mode(False)
     print_header("FINAL CAMPAIGN SUMMARY")
     channel.emit_thinking(
-        "Compiling final campaign summary and cumulative performance.",
+        "Compiling final campaign summary.",
         agent="Orchestrator",
         kind="final",
     )
-    for item in all_round_metrics:
-        channel.log(
-            f"{item.get('phase_label', 'Round')} {item.get('display_round', item['round'])}: audience={item['audience']}, "
-            f"open={item['open_rate']}%, click={item['click_rate']}%"
-        )
 
     unique_audience = set(str(cid) for cid in state.get("target_customer_ids", []))
     opened_unique = set()

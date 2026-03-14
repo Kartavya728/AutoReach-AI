@@ -30,10 +30,10 @@ export default function CustomersCRMPage() {
   const [metricsFilter, setMetricsFilter] = useState("all");
 
   // ── Data fetching ──
-  const fetchCustomers = async () => {
+  const fetchCustomers = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/customers");
+      const res = await fetch("/api/customers", { cache: "no-store" });
       if (res.ok) {
         const data = await res.json();
         setCustomers(data.customers || []);
@@ -43,28 +43,55 @@ export default function CustomersCRMPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  const handleSync = async () => {
+  const syncCustomersFromApi = useCallback(async (showAlertOnError: boolean) => {
+    const res = await fetch("/api/customers/sync", { method: "POST", cache: "no-store" });
+    if (!res.ok && showAlertOnError) {
+      throw new Error("Failed to sync customers from API.");
+    }
+    return res.ok;
+  }, []);
+
+  const handleSync = useCallback(async () => {
     setSyncing(true);
     try {
-      const res = await fetch("/api/customers/sync", { method: "POST" });
-      if (res.ok) {
-        await fetchCustomers();
-      } else {
-        alert("Failed to sync customers from API.");
-      }
+      await syncCustomersFromApi(true);
+      await fetchCustomers();
     } catch (e) {
       console.error(e);
       alert("Error syncing customers.");
     } finally {
       setSyncing(false);
     }
-  };
+  }, [fetchCustomers, syncCustomersFromApi]);
 
   useEffect(() => {
-    fetchCustomers();
-  }, []);
+    let cancelled = false;
+
+    const loadCustomers = async () => {
+      setSyncing(true);
+      try {
+        await syncCustomersFromApi(false);
+      } catch (e) {
+        console.warn("Initial customer sync fell back to cached CRM data.", e);
+      } finally {
+        if (!cancelled) {
+          setSyncing(false);
+        }
+      }
+
+      if (!cancelled) {
+        await fetchCustomers();
+      }
+    };
+
+    void loadCustomers();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchCustomers, syncCustomersFromApi]);
 
   // ── Scroll-to-top listener ──
   useEffect(() => {
@@ -160,7 +187,7 @@ export default function CustomersCRMPage() {
             className="flex items-center gap-2 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white rounded-xl px-5 py-3 font-semibold shadow-lg shadow-indigo-500/25 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <RefreshCw className={`h-4 w-4 ${syncing ? "animate-spin" : ""}`} />
-            {syncing ? "Syncing API..." : "Sync from Autoreach AI"}
+            {syncing ? "Syncing API..." : "Sync from CampaignX API"}
           </button>
         </div>
 

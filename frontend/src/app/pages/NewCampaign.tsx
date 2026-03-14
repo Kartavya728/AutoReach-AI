@@ -508,6 +508,27 @@ function isValidUrl(value: string) {
   }
 }
 
+function shouldHideTerminalLine(line: string) {
+  const normalized = line.trim();
+  if (!normalized) return true;
+  return (
+    /^Brief:/i.test(normalized) ||
+    /^Configured interactive optimization rounds:/i.test(normalized) ||
+    /^\[Dispatch\]/i.test(normalized) ||
+    /^\[Round \d+\] Sending /i.test(normalized) ||
+    /Starting 3 automatic Virtual Rate Prediction Tool rounds\./i.test(normalized) ||
+    /Compiling final campaign summary(?: and cumulative performance)?\./i.test(normalized)
+  );
+}
+
+function toTerminalLines(text: string) {
+  return text
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter((line) => !shouldHideTerminalLine(line));
+}
+
 function buildPromptWithLink(prompt: string, ctaLink: string) {
   const cleanPrompt = prompt.trim();
   const cleanLink = ctaLink.trim();
@@ -767,15 +788,23 @@ export default function NewCampaign() {
   const [isSavingCampaign, setIsSavingCampaign] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [campaignRunId, setCampaignRunId] = useState<string | null>(null);
-  const terminalEndRef = useRef<HTMLDivElement>(null);
+  const terminalContainerRef = useRef<HTMLDivElement>(null);
+  const expandedTerminalContainerRef = useRef<HTMLDivElement>(null);
   const campaignRunIdRef = useRef<string | null>(null);
   const activeRunAbortRef = useRef<AbortController | null>(null);
 
+  const scrollTerminalToBottom = useCallback(() => {
+    const targets = [terminalContainerRef.current, expandedTerminalContainerRef.current];
+    targets.forEach((target) => {
+      if (!target) return;
+      target.scrollTop = target.scrollHeight;
+    });
+  }, []);
+
   useEffect(() => {
-    if (terminalEndRef.current) {
-      terminalEndRef.current.scrollIntoView({ behavior: "smooth" });
-    }
-  }, [terminalLogs]);
+    const frame = window.requestAnimationFrame(scrollTerminalToBottom);
+    return () => window.cancelAnimationFrame(frame);
+  }, [isTerminalExpanded, scrollTerminalToBottom, terminalLogs]);
 
   const thinkingMessages = useMemo(() => [
     "Agent thinking",
@@ -1037,9 +1066,15 @@ export default function NewCampaign() {
           });
         },
         onPause: (pause, respond) => {
-          if (mode === "optimization" && pause.pauseType === "next_round" && Number(pause.round ?? 0) <= 1) {
-            respond({ continueOptimization: true });
-            return;
+          if (pause.pauseType === "next_round") {
+            if (mode === "initial") {
+              respond({ continueOptimization: false });
+              return;
+            }
+            if (mode === "optimization" && Number(pause.round ?? 0) <= 1) {
+              respond({ continueOptimization: true });
+              return;
+            }
           }
 
           pauseResponderRef.current = respond;
@@ -1103,25 +1138,28 @@ export default function NewCampaign() {
             return [...current, round];
           });
 
-          const b = baselineMetricsRef.current;
-          const metrics = round.summary;
-          const openNum = metrics.uniqueOpened ?? Math.floor(metrics.audience * (metrics.openRate / 100));
-          const clickNum = metrics.uniqueClicked ?? Math.floor(metrics.audience * (metrics.clickRate / 100));
-          const totalSent = Math.max(b.sent, metrics.audience);
-          const totalOpened = b.opened + openNum;
-          const totalClicked = b.clicked + clickNum;
-          const aggOpenRate = totalSent > 0 ? (totalOpened / totalSent) * 100 : 0;
-          const aggClickRate = totalSent > 0 ? (totalClicked / totalSent) * 100 : 0;
           const roundLabel = getRoundLabel(round);
 
           pushMessage({
             role: "system",
             kind: "summary",
-            text: `${roundLabel} complete. Cumulative open ${formatPercent(aggOpenRate)} and click ${formatPercent(aggClickRate)}.`,
+            text: `${roundLabel} complete.`,
           });
         },
         onTerminal: (text) => {
-          setTerminalLogs((current) => [...current, text]);
+          const nextLines = toTerminalLines(text);
+          if (nextLines.length === 0) {
+            return;
+          }
+          setTerminalLogs((current) => {
+            const merged = [...current];
+            nextLines.forEach((line) => {
+              if (merged[merged.length - 1] !== line) {
+                merged.push(line);
+              }
+            });
+            return merged;
+          });
         },
       });
 
@@ -2442,6 +2480,7 @@ export default function NewCampaign() {
                 </p>
 
                 <div
+                  ref={terminalContainerRef}
                   className="mt-3 flex-1 min-h-0 overflow-y-auto rounded-2xl p-3"
                   style={{
                     background: "rgba(2,6,23,0.75)",
@@ -2456,7 +2495,6 @@ export default function NewCampaign() {
                           {log}
                         </div>
                       ))}
-                      <div ref={terminalEndRef} />
                     </div>
                   ) : (
                     <p className="text-slate-500" style={{ fontSize: "0.72rem", lineHeight: 1.6 }}>
@@ -2509,6 +2547,7 @@ export default function NewCampaign() {
               </div>
 
               <div
+                ref={expandedTerminalContainerRef}
                 className="mt-4 flex-1 min-h-0 overflow-y-auto rounded-2xl p-4"
                 style={{
                   background: "rgba(2,6,23,0.78)",
@@ -2523,7 +2562,6 @@ export default function NewCampaign() {
                         {log}
                       </div>
                     ))}
-                    <div ref={terminalEndRef} />
                   </div>
                 ) : (
                   <p className="text-slate-500" style={{ fontSize: "0.76rem", lineHeight: 1.6 }}>
