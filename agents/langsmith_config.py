@@ -13,11 +13,10 @@ from agents.config import (
     LANGSMITH_PROJECT,
 )
 
-
 def configure_tracing() -> bool:
     """
     Configure LangSmith tracing by setting environment variables.
-    
+
     Returns True if tracing was enabled, False otherwise.
     Tracing failures are silenced — they should never crash the agent workflow.
     """
@@ -26,13 +25,11 @@ def configure_tracing() -> bool:
             os.environ["LANGCHAIN_TRACING_V2"] = "false"
             return False
 
-        # Standard LangChain env vars
         os.environ["LANGCHAIN_TRACING_V2"] = "true"
         os.environ["LANGCHAIN_ENDPOINT"] = LANGCHAIN_ENDPOINT or "https://api.smith.langchain.com"
         os.environ["LANGCHAIN_API_KEY"] = LANGSMITH_API_KEY
         os.environ["LANGCHAIN_PROJECT"] = LANGCHAIN_PROJECT or "ai mailing agent"
 
-        # Newer LangSmith SDK variants
         os.environ["LANGSMITH_TRACING"] = "true"
         os.environ["LANGSMITH_API_KEY"] = LANGSMITH_API_KEY
         os.environ["LANGSMITH_ENDPOINT"] = LANGCHAIN_ENDPOINT or "https://api.smith.langchain.com"

@@ -9,9 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Iterable
 
-
 DEFAULT_AUTO_OPTIMIZATION_ROUNDS = 2
-
 
 @dataclass
 class OpenClicksPreditor:
@@ -37,7 +35,7 @@ class OpenClicksPreditor:
         incremental_open_rate: float | None = None,
         incremental_click_rate: float | None = None,
     ) -> dict[str, float | int]:
-        # Increment mode (used by optimization rounds)
+
         if incremental_open_rate is not None or incremental_click_rate is not None:
             open_gain = max(0.0, float(incremental_open_rate or 0.0))
             click_gain = max(0.0, float(incremental_click_rate or 0.0))
@@ -54,7 +52,6 @@ class OpenClicksPreditor:
                 "click_rate": self.cumulative_click_rate,
             }
 
-        # ID mode (legacy behavior)
         self.opened_ids.update(str(cid) for cid in (opened_ids or []))
         self.clicked_ids.update(str(cid) for cid in (clicked_ids or []))
         return self.metrics()
@@ -83,7 +80,6 @@ class OpenClicksPreditor:
             "open_rate": open_rate,
             "click_rate": click_rate,
         }
-
 
 def open_clicks_preditor(total_audience: int) -> OpenClicksPreditor:
     """Factory function exposed as the requested tool entry point."""

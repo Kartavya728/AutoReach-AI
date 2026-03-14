@@ -16,7 +16,6 @@ from langchain_core.messages import HumanMessage
 from agents.config import GEMINI_API_KEY, GEMINI_MODEL
 from agents.supabase_client import get_customers, update_customer_weights
 
-
 def _get_model() -> ChatGoogleGenerativeAI:
     if not GEMINI_API_KEY:
         raise EnvironmentError("Missing GEMINI_API_KEY")
@@ -26,7 +25,6 @@ def _get_model() -> ChatGoogleGenerativeAI:
         temperature=0.7,
     )
 
-
 async def run_weight_optimization(
     campaign_id: str,
     analysis_report: dict,
@@ -35,7 +33,7 @@ async def run_weight_optimization(
     """
     Ask Gemini which weight to increase/decrease for engaged users
     based on the campaign topic, then return the suggested adjustment.
-    
+
     Returns:
         dict with {increaseWeight, decreaseWeight, adjustmentAmount}
         or False if parsing failed.
@@ -83,19 +81,5 @@ async def run_weight_optimization(
         f"[Weight Agent] Suggested: increase {increase_weight}, "
         f"decrease {decrease_weight} by {adjustment_amount}"
     )
-
-    # In a full implementation, you would apply these weight shifts
-    # to all customers who engaged (opened/clicked) in this campaign.
-    # For the hackathon, we return the suggestion for logging.
-    #
-    # Example application:
-    #   customers = get_customers()
-    #   for c in engaged_customers:
-    #       new_w = {
-    #           "w1": c["w1"], "w2": c["w2"], "w3": c["w3"],
-    #       }
-    #       new_w[increase_weight] = min(10, new_w[increase_weight] + adjustment_amount)
-    #       new_w[decrease_weight] = max(0, new_w[decrease_weight] - 1)
-    #       update_customer_weights(c["customer_id"], **new_w)
 
     return parsed

@@ -46,7 +46,7 @@ const AGENT_ENV_PASSTHROUGH_KEYS = [
 
 type UnknownRecord = Record<string, unknown>;
 
-// ── Module-level singleton ──
+
 const globalAny = global as any;
 
 function isRecord(value: unknown): value is UnknownRecord {
@@ -533,7 +533,7 @@ function ensureStandaloneServer(): Promise<number> {
     }
 
     const httpServer = createServer((_req, res) => {
-      // CORS preflight for WS bootstrap
+      
       res.writeHead(200, {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, OPTIONS",
@@ -552,7 +552,7 @@ function ensureStandaloneServer(): Promise<number> {
 
     httpServer.on("error", (err: NodeJS.ErrnoException) => {
       if (err.code === "EADDRINUSE") {
-        // Port already in use — another instance is already running
+        
         console.log(`[Agent WS] Port ${WS_PORT} already in use, reusing existing server`);
         globalAny.__wsServerReady = true;
         resolve(WS_PORT);

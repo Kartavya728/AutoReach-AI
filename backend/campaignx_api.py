@@ -13,7 +13,6 @@ from uuid import uuid4
 import httpx
 from backend.config import CAMPAIGNX_BASE_URL, require_env
 
-
 ENDPOINTS = {
     "cohort": {"method": "GET",  "path": "/api/v1/get_customer_cohort"},
     "send":   {"method": "POST", "path": "/api/v1/send_campaign"},
@@ -26,7 +25,6 @@ def _get_headers() -> dict[str, str]:
         "Content-Type": "application/json",
         "X-API-Key": api_key,
     }
-
 
 async def _campaignx_request(
     endpoint: str,
@@ -51,14 +49,9 @@ async def _campaignx_request(
         )
     return resp.json()
 
-
-# ── Public API ──
-
-
 async def fetch_customer_cohort() -> dict:
     """Fetch the full customer cohort from CampaignX."""
     return await _campaignx_request("cohort")
-
 
 async def send_campaign(
     subject: str,
@@ -68,13 +61,13 @@ async def send_campaign(
 ) -> dict:
     """
     Send a campaign via CampaignX.
-    
+
     Args:
         subject: Email subject line
         body: Email body content
         customer_ids: List of customer IDs to target
         send_time: Send time in DD:MM:YY HH:MM:SS format
-    
+
     Returns:
         dict with campaign_id, response_code, etc.
     """
@@ -85,7 +78,6 @@ async def send_campaign(
         "send_time": send_time,
     }
     return await _campaignx_request("send", body=payload)
-
 
 async def fetch_campaign_report(campaign_id: str) -> dict:
     """Fetch the performance report for a given campaign ID."""

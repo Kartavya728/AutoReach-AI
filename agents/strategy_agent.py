@@ -14,7 +14,6 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from agents.state import WorkflowState
 from agents.config import GEMINI_API_KEY, GEMINI_MODEL
 
-
 def _get_model() -> ChatGoogleGenerativeAI:
     if not GEMINI_API_KEY:
         raise EnvironmentError("Missing GEMINI_API_KEY")
@@ -24,14 +23,12 @@ def _get_model() -> ChatGoogleGenerativeAI:
         temperature=0.7,
     )
 
-
 def _parse_json(text: str) -> dict:
     start = text.find("{")
     end = text.rfind("}")
     if start == -1 or end == -1 or end <= start:
         raise ValueError("No JSON object found")
     return json.loads(text[start : end + 1])
-
 
 async def plan_strategy(state: WorkflowState) -> dict:
     """
@@ -43,7 +40,6 @@ async def plan_strategy(state: WorkflowState) -> dict:
     segments = state.get("segments", [])
     crm_data = state.get("crm_data", [])
 
-    # Build segment summary for the LLM
     segment_summary = "\n".join(
         f"  - {s['segment_name']}: {s['size']} customers ({s['criteria']})"
         for s in segments

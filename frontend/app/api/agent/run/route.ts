@@ -237,7 +237,7 @@ export async function POST(request: Request) {
               encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
             );
           } catch {
-            // Stream likely already closed by client disconnect.
+            
           }
         };
 

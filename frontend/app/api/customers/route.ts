@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { serverGetCustomers } from "@/src/lib/server/customers";
 
-// Prevent Next.js from caching this route — always fetch fresh data from Supabase
+
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 

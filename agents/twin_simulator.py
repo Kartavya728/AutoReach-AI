@@ -19,7 +19,7 @@ def _get_model() -> ChatGoogleGenerativeAI:
 class TwinSimulator:
     def __init__(self):
         self.llm = _get_model()
-        
+
     async def simulate_reaction(self, user: dict, subject: str, body: str) -> dict:
         """
         Returns <CLICK>, <OPEN_ONLY>, or <IGNORE> along with reasoning.
@@ -30,7 +30,7 @@ class TwinSimulator:
         city = user.get("city") or "Mumbai"
         family_size = user.get("family_size") or 2
         credit_score = user.get("credit_score") or 700
-        
+
         system_prompt = f"""You are {name}, a {age}-year-old {occupation} in {city}. You have a family size of {family_size} and a credit score of {credit_score}.
 You are skeptical of marketing emails. You check your email on mobile during your commute.
 Your task is to realistically simulate your reaction to an email.
@@ -50,14 +50,14 @@ DECISION: <TOKEN>
             SystemMessage(content=system_prompt),
             HumanMessage(content=user_prompt)
         ])
-        
+
         reply = str(response.content).strip()
         decision = "IGNORE"
         if "<CLICK>" in reply:
             decision = "CLICK"
         elif "<OPEN_ONLY>" in reply:
             decision = "OPEN"
-            
+
         return {"decision": decision, "monologue": reply}
 
     def bayesian_kill_rule(self, simulated_results: list[dict]) -> bool:
@@ -66,7 +66,7 @@ DECISION: <TOKEN>
         """
         clicks = sum(1 for r in simulated_results if r["decision"] == "CLICK")
         if len(simulated_results) > 0 and clicks / len(simulated_results) < 0.2:
-            return True # Kill it
+            return True 
         return False
 
 twin_engine = TwinSimulator()

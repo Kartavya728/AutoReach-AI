@@ -8,7 +8,7 @@ export async function serverUpsertCustomers(customers: Partial<CustomerCRMRecord
   for (let i = 0; i < customers.length; i += CHUNK_SIZE) {
     const chunk = customers.slice(i, i + CHUNK_SIZE);
 
-    // Upsert by customer_id
+    
     const { error } = await client
       .from("customers")
       .upsert(chunk, { onConflict: "customer_id" });
@@ -44,11 +44,11 @@ export async function serverGetCustomers(): Promise<CustomerCRMRecord[]> {
     if (data && data.length > 0) {
       allData = allData.concat(data);
       if (data.length < PAGE_SIZE) {
-        break; // Reached the end
+        break; 
       }
       from += PAGE_SIZE;
     } else {
-      break; // No more data
+      break; 
     }
   }
 
@@ -117,7 +117,7 @@ export async function serverBulkIncrementCustomerMetrics(
     const chunk = updates.slice(i, i + CHUNK_SIZE);
     const ids = chunk.map((u) => u.customer_id);
 
-    // Fetch existing metrics and all other non-null columns to satisfy constraints
+    
     const { data: existingCustomers, error: fetchError } = await client
       .from("customers")
       .select("*")
@@ -133,7 +133,7 @@ export async function serverBulkIncrementCustomerMetrics(
     const upsertPayload = existingCustomers.map((c: any) => {
       const u = updatesMap.get(c.customer_id);
       return {
-        ...c, // Preserve all existing columns
+        ...c, 
         emails_sent: (c.emails_sent || 0) + (u?.sent || 0),
         emails_opened: (c.emails_opened || 0) + (u?.opened || 0),
         emails_clicked: (c.emails_clicked || 0) + (u?.clicked || 0),

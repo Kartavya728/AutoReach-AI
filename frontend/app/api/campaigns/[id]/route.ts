@@ -27,20 +27,22 @@ export async function GET(
       );
     }
 
-    // Fetch optimization suggestions
+    
     let optimizations: OptimizationSuggestionRow[] = [];
     try {
       optimizations = await serverGetOptimizations(params.id);
-    } catch { /* ignore */ }
+    } catch { 
+ }
 
-    // Fetch optimization history
+    
     let optimizationHistory: any[] = [];
     try {
       optimizationHistory = await serverGetOptimizationHistory(params.id);
-    } catch { /* ignore */ }
+    } catch { 
+ }
 
-    // Always generate analysis — either from report data or from campaign.total_customers
-    // The CampaignX sandbox never populates EO/EC so we always simulate
+    
+    
     let analysisReport: any = null;
     try {
       let reportRecords: any[] = [];
@@ -50,23 +52,25 @@ export async function GET(
             campaign.external_campaign_id
           );
           reportRecords = reportResp.data || [];
-        } catch { /* can't fetch report — fall through to synthetic */ }
+        } catch { 
+ }
       }
 
-      // If no records from API, create synthetic ones based on total_customers
+      
       const totalSentCount = reportRecords.length > 0
         ? reportRecords.length
         : (campaign.total_customers || 0);
 
       if (totalSentCount > 0) {
-        // Build a synthetic records array if needed
+        
         const records = reportRecords.length > 0
           ? reportRecords
           : Array.from({ length: totalSentCount }, (_, i) => ({ EO: "N", EC: "N", customer_id: `CUST${i}`, send_time: "", invokation_time: "" }));
 
-        // Fetch CRM customers for data-driven analysis breakdowns
+        
         let crmCustomers;
-        try { crmCustomers = await serverGetCustomers(); } catch { /* non-critical */ }
+        try { crmCustomers = await serverGetCustomers(); } catch { 
+ }
 
         analysisReport = computeAnalysisFromReport(
           campaign.external_campaign_id || campaign.id,
@@ -79,21 +83,21 @@ export async function GET(
       console.warn("[API] Could not compute analysis:", err);
     }
 
-    // If optimizations are still empty after attempting to fetch, generate them NOW
+    
     if (optimizations.length === 0 && analysisReport && campaign.brief) {
       try {
         const generated = await generateOptimizationSuggestions(params.id, analysisReport, campaign.brief);
         if (generated && generated.length > 0) {
-          // Add required table fields
+          
           const optRows = generated.map(s => ({
             ...s,
             campaign_id: params.id,
-            id: crypto.randomUUID(), // Assume frontend env has crypto if needed, though supabase can ignore id if it generates it
+            id: crypto.randomUUID(), 
             created_at: new Date().toISOString()
           }));
           
           await serverSaveOptimizations(params.id, optRows);
-          // Return the generated ones immediately to the client
+          
           optimizations = optRows as OptimizationSuggestionRow[];
         }
       } catch (genErr) {

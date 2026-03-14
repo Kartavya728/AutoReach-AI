@@ -71,7 +71,8 @@ export function CustomizeParams({
               boxShadow: "0 25px 80px rgba(139, 92, 246, 0.3)",
             }}
           >
-            {/* Header */}
+            {
+}
             <div
               className="px-6 py-4 flex items-center justify-between"
               style={{
@@ -104,7 +105,8 @@ export function CustomizeParams({
             </div>
 
             <div className="p-6 space-y-6 max-h-[70vh] overflow-y-auto">
-              {/* Toggle options */}
+              {
+}
               <div>
                 <h3
                   className="text-gray-300 mb-3 flex items-center gap-2"
@@ -178,7 +180,8 @@ export function CustomizeParams({
                 </div>
               </div>
 
-              {/* Temperature */}
+              {
+}
               <div>
                 <h3
                   className="text-gray-300 mb-3 flex items-center gap-2"
@@ -249,7 +252,8 @@ export function CustomizeParams({
                 </div>
               </div>
 
-              {/* Tone selection */}
+              {
+}
               <div>
                 <h3
                   className="text-gray-300 mb-3 flex items-center gap-2"
@@ -292,7 +296,8 @@ export function CustomizeParams({
                 </div>
               </div>
 
-              {/* Custom add-on */}
+              {
+}
               <div>
                 <h3
                   className="text-gray-300 mb-3 flex items-center gap-2"
@@ -324,7 +329,8 @@ export function CustomizeParams({
               </div>
             </div>
 
-            {/* Footer */}
+            {
+}
             <div
               className="px-6 py-4 flex gap-3"
               style={{ borderTop: "1px solid rgba(255,255,255,0.05)" }}

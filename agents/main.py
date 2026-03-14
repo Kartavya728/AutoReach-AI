@@ -29,11 +29,6 @@ from agents.content_agent import generate_segment_variant, _get_model
 from agents.segment_engine import get_segment_profile
 from agents.state import SegmentResult
 
-
-# ════════════════════════════════════════════════════════════════
-#  DEFAULTS
-# ════════════════════════════════════════════════════════════════
-
 DEFAULT_BRIEF = (
     "Run an email campaign for launching XDeposit, a flagship term deposit "
     "product from SuperBFSI, that gives 1 percentage point higher returns "
@@ -44,21 +39,14 @@ DEFAULT_BRIEF = (
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
-
-# ════════════════════════════════════════════════════════════════
-#  HELPERS
-# ════════════════════════════════════════════════════════════════
-
 def print_header(title: str):
     print("\n" + "=" * 70)
     print(f"  {title}")
     print("=" * 70)
 
-
 def format_time(dt: datetime) -> str:
     """Format as DD:MM:YY HH:MM:SS in IST for CampaignX API."""
     return dt.astimezone(IST).strftime("%d:%m:%y %H:%M:%S")
-
 
 def print_segment_metrics(results: list[SegmentResult]):
     """Print per-segment metrics table."""
@@ -71,7 +59,6 @@ def print_segment_metrics(results: list[SegmentResult]):
             f"{r['total_clicked']:>8} {r['open_rate']:>6.1f}% {r['click_rate']:>6.1f}%"
         )
 
-    # Totals
     total_sent = sum(r["total_sent"] for r in results)
     total_opened = sum(r["total_opened"] for r in results)
     total_clicked = sum(r["total_clicked"] for r in results)
@@ -83,11 +70,6 @@ def print_segment_metrics(results: list[SegmentResult]):
         f"{total_clicked:>8} {overall_open:>6.1f}% {overall_click:>6.1f}%"
     )
     return overall_open, overall_click
-
-
-# ════════════════════════════════════════════════════════════════
-#  SEND ONE SEGMENT
-# ════════════════════════════════════════════════════════════════
 
 async def send_segment(
     segment_name: str,
@@ -123,11 +105,6 @@ async def send_segment(
 
     return campaign_ids
 
-
-# ════════════════════════════════════════════════════════════════
-#  FETCH REAL METRICS FOR A SEGMENT
-# ════════════════════════════════════════════════════════════════
-
 from agents.personalization import personalization_engine
 
 async def fetch_segment_metrics(
@@ -140,27 +117,26 @@ async def fetch_segment_metrics(
     """Fetch real EO/EC from CampaignX API."""
     records = []
     expected_count = len(customer_ids)
-    
+
     if campaign_ids:
         max_retries = 15
         for campaign_id in campaign_ids:
             batch_records = []
-            # Calculate proportion of expected count for this batch for logging
-            # (Though keeping it simple by checking total accumulated records vs expected_count is also fine)
+
             for attempt in range(max_retries):
                 try:
                     resp = await fetch_campaign_report(campaign_id)
                     batch_records = resp.get("data", [])
-                    
+
                     if batch_records:
                         records.extend(batch_records)
                         break
                     else:
                         print(f"    ⏳ {segment_name} ({campaign_id}): Waiting for CampaignX processing...")
                         await asyncio.sleep(3)
-                        
+
                 except Exception as e:
-                    # Break early on rate limits for this batch
+
                     if "429" in str(e):
                         print(f"    ⚠️  Rate limit (429) hit for {segment_name} ({campaign_id}). Falling back.")
                         break
@@ -168,7 +144,7 @@ async def fetch_segment_metrics(
                     await asyncio.sleep(3)
 
     if not records and expected_count > 0:
-        # Fallback to generate stubs if API rate limits us (429) for all batches
+
         records = [{"customer_id": cid, "EO": "N", "EC": "N"} for cid in customer_ids]
 
     first_cid = campaign_ids[0] if campaign_ids else segment_id
@@ -189,15 +165,9 @@ async def fetch_segment_metrics(
         "variant_used": variant,
     }
 
-
-# ════════════════════════════════════════════════════════════════
-#  FULL AUTO PIPELINE
-# ════════════════════════════════════════════════════════════════
-
 async def run_full_pipeline(brief: str, rounds: int = 1) -> dict:
     """Complete segmented pipeline with real EO/EC tracking."""
 
-    # ── STEP 1: Create campaign via LangGraph ──
     print_header("STEP 1: AI Campaign Creation (LangGraph + Segmentation)")
     print(f"\n📋 Brief: {brief}\n")
     print("-" * 70)
@@ -224,7 +194,6 @@ async def run_full_pipeline(brief: str, rounds: int = 1) -> dict:
     for step in result.get("steps", []):
         print(f"  [{step.get('agent', 'System')}] {step.get('step', '')}")
 
-    # ── STEP 2: Send different emails to different segments ──
     print_header("STEP 2: Sending Segment Campaigns to CampaignX API")
 
     segment_campaign_ids: dict[str, list[str]] = {}
@@ -236,11 +205,10 @@ async def run_full_pipeline(brief: str, rounds: int = 1) -> dict:
             return seg["segment_id"], []
 
         print(f"\n  📤 {seg['segment_name']} — {seg['size']} customers")
-        
-        # 1:1 Send-Time Optimization (Heuristic based on segment name)
+
         segment_name_lower = seg['segment_name'].lower()
         now_utc = datetime.now(timezone.utc)
-        
+
         if 'professional' in segment_name_lower or 'earner' in segment_name_lower:
             sto_time = now_utc.replace(hour=12, minute=30, second=0)
         elif 'senior' in segment_name_lower or 'retired' in segment_name_lower:
@@ -249,16 +217,16 @@ async def run_full_pipeline(brief: str, rounds: int = 1) -> dict:
             sto_time = now_utc.replace(hour=15, minute=30, second=0)
         else:
             sto_time = now_utc + timedelta(minutes=5)
-            
+
         if sto_time < now_utc:
             sto_time += timedelta(days=1)
-            
+
         if sto_time < now_utc + timedelta(minutes=5):
             sto_time = now_utc + timedelta(minutes=5)
-            
+
         sto_time_str = format_time(sto_time)
         print(f"    🕒 [Send-Time Optimizer] Scheduled Delivery: {sto_time_str} IST")
-            
+
         cids = await send_segment(
             seg["segment_name"], variant, seg["customer_ids"], sto_time_str,
         )
@@ -274,7 +242,6 @@ async def run_full_pipeline(brief: str, rounds: int = 1) -> dict:
     campaigns_created = sum(len(v) for v in segment_campaign_ids.values())
     print(f"\n🔗 {campaigns_created} segment campaigns created, {total_sent} total emails sent")
 
-    # ── STEP 3: Fetch REAL metrics per segment ──
     print_header("STEP 3: Fetching REAL Engagement Metrics (EO/EC)")
 
     segment_results: list[SegmentResult] = []
@@ -300,11 +267,9 @@ async def run_full_pipeline(brief: str, rounds: int = 1) -> dict:
         "segments": len(segment_results),
     }]
 
-    # ── STEP 4+: Optimization Rounds (re-target warm audience) ──
     for round_num in range(1, rounds + 1):
         print_header(f"OPTIMIZATION ROUND {round_num + 1}")
 
-        # Collect warm IDs across all segments (opened but didn't click)
         warm_ids_all = []
         cold_ids_all = []
         for sr in segment_results:
@@ -320,7 +285,6 @@ async def run_full_pipeline(brief: str, rounds: int = 1) -> dict:
             print("  ⚠️  No re-targetable audience, stopping.")
             break
 
-        # Re-target: warm audience with urgency CTA, cold with new subject
         retarget_groups = []
         if warm_ids_all:
             retarget_groups.append({
@@ -338,7 +302,7 @@ async def run_full_pipeline(brief: str, rounds: int = 1) -> dict:
         if cold_ids_all:
             retarget_groups.append({
                 "name": "❄️ Cold Re-target (Never Opened)",
-                "ids": cold_ids_all,  # Hit EVERYONE as requested
+                "ids": cold_ids_all,  
                 "prompt_extra": (
                     "These customers NEVER OPENED the previous email. "
                     "The previous subject line failed for them. "
@@ -349,7 +313,6 @@ async def run_full_pipeline(brief: str, rounds: int = 1) -> dict:
                 "emoji_level": "heavy",
             })
 
-        # Generate re-targeting content with LLM and dispatch in parallel
         retarget_results: list[SegmentResult] = []
         send_time_str = format_time(datetime.now(timezone.utc) + timedelta(minutes=5))
 
@@ -370,10 +333,8 @@ async def run_full_pipeline(brief: str, rounds: int = 1) -> dict:
             variant = await generate_segment_variant(brief, str(result["strategy"]), fake_segment)
             print(f"    Subject ({group['name'][:20]}...): {variant['subject'][:60]}...")
 
-            # Send
             cids = await send_segment(group["name"], variant, group["ids"], send_time_str)
 
-            # Wait and fetch real metrics
             sr = await fetch_segment_metrics(
                 group["name"], f"retarget_r{round_num + 1}",
                 cids, group["ids"], variant,
@@ -396,10 +357,8 @@ async def run_full_pipeline(brief: str, rounds: int = 1) -> dict:
             "segments": len(retarget_results),
         })
 
-        # Update segment_results for next round
         segment_results = retarget_results
 
-    # ── FINAL SUMMARY ──
     print_header("🏆 FINAL CAMPAIGN SUMMARY")
 
     print("\n📈 Metrics Progression (REAL EO/EC Data):")
@@ -410,20 +369,18 @@ async def run_full_pipeline(brief: str, rounds: int = 1) -> dict:
             f"  {m['round']:<8} {m['audience']:<12} {m['segments']:<10} "
             f"{m['open_rate']}%{'':<8} {m['click_rate']}%"
         )
-        
-    # Calculate cumulative unique metrics
+
     all_unique_opens = set()
     all_unique_clicks = set()
     total_unique_audience = 0
-    
-    # We reconstruct the total audience from round 1 segment sizes
+
     if len(all_round_metrics) > 0:
         total_unique_audience = all_round_metrics[0]["audience"]
-        
+
     for sr in master_segment_results:
         all_unique_opens.update(sr["opened_ids"])
         all_unique_clicks.update(sr["clicked_ids"])
-        
+
     unique_open_rate = round((len(all_unique_opens) / total_unique_audience * 100) if total_unique_audience > 0 else 0, 1)
     unique_click_rate = round((len(all_unique_clicks) / total_unique_audience * 100) if total_unique_audience > 0 else 0, 1)
 
@@ -433,7 +390,7 @@ async def run_full_pipeline(brief: str, rounds: int = 1) -> dict:
         print(f"\n  📊 Progression:")
         print(f"     Round 1 (1000 cold): {first['open_rate']}% open, {first['click_rate']}% click")
         print(f"     Round {last['round']} (warm re-target): {last['open_rate']}% open, {last['click_rate']}% click")
-        
+
     print(f"\n  🎯 Cumulative Pipeline Performance (Unique Customers Reached):")
     print(f"     Total Audience: {total_unique_audience}")
     print(f"     Unique Opens: {len(all_unique_opens)} ({unique_open_rate}%)")
@@ -453,11 +410,6 @@ async def run_full_pipeline(brief: str, rounds: int = 1) -> dict:
         "steps": result.get("steps", []),
     }
 
-
-# ════════════════════════════════════════════════════════════════
-#  CLI
-# ════════════════════════════════════════════════════════════════
-
 def parse_args():
     args = sys.argv[1:]
     rounds = 1
@@ -472,7 +424,6 @@ def parse_args():
             i += 1
     return " ".join(brief_parts) if brief_parts else DEFAULT_BRIEF, rounds
 
-
 async def main():
     brief, rounds = parse_args()
     result = await run_full_pipeline(brief, rounds)
@@ -480,7 +431,6 @@ async def main():
     with open("agent_output.json", "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2, ensure_ascii=False, default=str)
     print(f"\n💾 Full output saved to: agent_output.json")
-
 
 if __name__ == "__main__":
     if sys.platform == 'win32':

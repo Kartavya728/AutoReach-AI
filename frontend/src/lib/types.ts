@@ -1,4 +1,4 @@
-// Core records
+
 
 export interface CustomerRecord {
   customer_id: string;
@@ -82,7 +82,7 @@ export interface GetReportResponse {
   message: string;
 }
 
-// Agent runtime
+
 
 export interface GeneratedEmailVariant {
   subject: string;
@@ -278,7 +278,7 @@ export interface AgentRunResult {
   rawResult: unknown;
 }
 
-// Supabase campaign
+
 
 export interface CampaignRow {
   id: string;
@@ -442,7 +442,7 @@ export interface OptimizationHistoryRow {
   created_at: string;
 }
 
-// API payloads
+
 
 export interface CreateCampaignPayload {
   name: string;
@@ -516,7 +516,7 @@ export interface DashboardStats {
   pendingApprovals: number;
 }
 
-// Computed analysis report
+
 
 export interface ComputedAnalysisReport {
   campaignId: string;

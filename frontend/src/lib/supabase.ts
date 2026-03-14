@@ -56,7 +56,7 @@ function requireClient(): SupabaseClient {
   return client;
 }
 
-// ── Campaigns ──
+
 
 export async function getCampaigns(): Promise<CampaignRow[]> {
   const client = requireClient();
@@ -139,7 +139,7 @@ export async function updateCampaign(
   return data as CampaignRow;
 }
 
-// ── Campaign Variants ──
+
 
 export async function saveCampaignVariants(
   campaignId: string,
@@ -147,7 +147,7 @@ export async function saveCampaignVariants(
 ): Promise<CampaignVariantRow[]> {
   const client = requireClient();
 
-  // Delete existing variants first, then insert new ones
+  
   await client.from("campaign_variants").delete().eq("campaign_id", campaignId);
 
   const rows = variants.map((v) => ({ ...v, campaign_id: campaignId }));
@@ -160,7 +160,7 @@ export async function saveCampaignVariants(
   return (data ?? []) as CampaignVariantRow[];
 }
 
-// ── Optimization Suggestions ──
+
 
 export async function getOptimizationSuggestions(
   campaignId: string
@@ -210,7 +210,7 @@ export async function updateOptimizationStatus(
   if (error) throw error;
 }
 
-// ── Dashboard Stats ──
+
 
 export async function getDashboardStats(): Promise<DashboardStats> {
   const campaigns = await getCampaigns();
@@ -258,7 +258,7 @@ export async function getDashboardStats(): Promise<DashboardStats> {
   };
 }
 
-// ── Status check ──
+
 
 export function getSupabaseStatus() {
   const client = getSupabaseClient();

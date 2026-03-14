@@ -28,22 +28,19 @@ function getGeminiModel() {
   });
 }
 
-/**
- * Given a campaign ID and approved optimization suggestions,
- * generate new content, update the campaign in-place, and
- * produce an improvement report.
- */
+
+
 export async function runOptimizationAgent(
   campaignId: string,
   approvedSuggestions: OptimizationSuggestionRow[]
 ): Promise<ImprovementReport> {
-  // 1. Get the existing campaign
+  
   const campaign = await serverGetCampaignById(campaignId);
   if (!campaign) {
     throw new Error(`Campaign ${campaignId} not found`);
   }
 
-  // 2. Get report data if an external campaign exists
+  
   let analysisReport: ComputedAnalysisReport | null = null;
   if (campaign.external_campaign_id) {
     try {
@@ -51,7 +48,7 @@ export async function runOptimizationAgent(
         campaign.external_campaign_id
       );
       if (reportResp.data && reportResp.data.length > 0) {
-        // Fetch CRM customers for data-driven breakdowns
+        
         const crmCustomers = await serverGetCustomers();
         analysisReport = computeAnalysisFromReport(
           campaign.external_campaign_id,
@@ -59,7 +56,7 @@ export async function runOptimizationAgent(
           campaign,
           crmCustomers
         );
-        // Fire and forget the weight optimizer
+        
         if (analysisReport) {
           runWeightOptimizationAgent(campaignId, analysisReport, campaign.brief).catch(e => {
             console.error("[Optimize] Weight optimizer failed silently", e);
@@ -79,7 +76,7 @@ export async function runOptimizationAgent(
     totalClicked: analysisReport?.totalClicked ?? campaign.total_clicked ?? 0,
   };
 
-  // 3. Build Gemini prompt to regenerate content
+  
   const suggestionsText = approvedSuggestions
     .map(
       (s, i) =>
@@ -119,7 +116,7 @@ export async function runOptimizationAgent(
       resultText = String(result.content).trim();
     } catch (llmError) {
       console.warn("[Optimize] LLM generation failed, likely 429 Quota:", llmError);
-      // Fallback text to trigger the parsing catch block safely
+      
       resultText = "fallback error trigger";
     }
 
@@ -130,7 +127,7 @@ export async function runOptimizationAgent(
     }
     parsedResult = JSON.parse(resultText.slice(jsonStart, jsonEnd + 1));
   } catch {
-    // Fallback
+    
     parsedResult = {
       strategy: "Optimized strategy based on approved suggestions.",
       targetWeight: "w1",
@@ -142,12 +139,12 @@ export async function runOptimizationAgent(
     };
   }
 
-  // 3b. Logic for Audience Selection
+  
   const allCustomers = await serverGetCustomers();
   let validCustomers = allCustomers.filter(c => (c as any).status !== "inactive");
 
   if (campaign.target_customer_ids && campaign.target_customer_ids.length > 0) {
-    // Only optimize targeting for customers who were originally mailed
+    
     validCustomers = validCustomers.filter(c => campaign.target_customer_ids!.includes(c.customer_id));
   }
 
@@ -156,11 +153,11 @@ export async function runOptimizationAgent(
   const demoKeys = Object.keys(demoRules);
 
   const scored = validCustomers.map(c => {
-    // 65% weight (normalize to 1.0 logic, assuming max integer scale is around 10)
+    
     const rawWeight = Number(c[targetWeightKey as keyof typeof c]) || 0.5;
     const wScore = Math.min(1.0, rawWeight / 10.0) * 0.65;
 
-    // 35% strategy matching
+    
     let dScore = 0;
     if (demoKeys.length > 0) {
       let matches = 0;
@@ -171,27 +168,27 @@ export async function runOptimizationAgent(
       }
       dScore = (matches / demoKeys.length) * 0.35;
     } else {
-      dScore = 0.35; // Default if no demographics specified
+      dScore = 0.35; 
     }
 
     return { id: c.customer_id, score: wScore + dScore };
   });
 
-  // Sort by highest score
+  
   scored.sort((a, b) => b.score - a.score);
 
-  // Reduce audience to only the people who opened the previous mail:
-  // Using the totalOpened count from the analysis report to simulate opens
+  
+  
   const openedCount = analysisReport?.totalOpened ?? Math.max(1, Math.floor(validCustomers.length * 0.52));
   const newTotal = Math.min(scored.length, openedCount);
 
   const finalIds = scored.slice(0, newTotal).map(x => x.id);
 
-  // Send the actual campaign to CampaignX in staggered time batches
+  
   const updatedSubject = parsedResult.variants?.[0]?.subject ?? campaign.subject ?? "";
   const updatedBody = parsedResult.variants?.[0]?.body ?? campaign.body ?? "";
 
-  // Helper: CampaignX API requires DD:MM:YY HH:MM:SS format
+  
   function toCampaignXFormat(date: Date): string {
     const dd = String(date.getDate()).padStart(2, "0");
     const mm = String(date.getMonth() + 1).padStart(2, "0");
@@ -204,16 +201,16 @@ export async function runOptimizationAgent(
 
   let newExternalId = campaign.external_campaign_id;
   try {
-    // Split the finalIds into chunks of 100, stagger each chunk by 30 minutes
+    
     const BATCH_SIZE = 100;
     const now = new Date();
 
     for (let i = 0; i < finalIds.length; i += BATCH_SIZE) {
       const chunkIds = finalIds.slice(i, i + BATCH_SIZE);
 
-      // Calculate staggered time: current time + (chunkIndex * 30 minutes)
+      
       const sendDate = new Date(now.getTime() + (i / BATCH_SIZE) * 0.5 * 60 * 60 * 1000);
-      // CampaignX expects DD:MM:YY HH:MM:SS — NOT ISO format
+      
       const sendTimeStr = toCampaignXFormat(sendDate);
 
       console.log(`[Optimize] Sending batch ${i / BATCH_SIZE + 1}: ${chunkIds.length} customers at ${sendTimeStr}`);
@@ -225,7 +222,7 @@ export async function runOptimizationAgent(
         send_time: sendTimeStr
       });
 
-      // Save the first successful campaign ID as the parent external tracker if we don't have one
+      
       if (i === 0) {
         newExternalId = sendRes.campaign_id;
       }
@@ -236,7 +233,7 @@ export async function runOptimizationAgent(
 
   const newRound = (campaign.optimization_round ?? 1) + 1;
 
-  // Compile round analysis to store
+  
   const latestRoundLog = {
     campaign_id: campaignId,
     round: newRound,
@@ -249,7 +246,7 @@ export async function runOptimizationAgent(
     expected_improvements: parsedResult.expectedImprovements || []
   };
 
-  // Persist the history trace immediately
+  
   try {
     await serverSaveOptimizationHistory(latestRoundLog);
   } catch (err) {
@@ -261,7 +258,7 @@ export async function runOptimizationAgent(
     `Focused audience from ${latestRoundLog.previous_audience_size} down to ${latestRoundLog.new_audience_size} engaged users.\n` +
     `Improvements Expected: ${(parsedResult.expectedImprovements || []).join(", ")}`;
 
-  // 4. Update campaign in Supabase
+  
   await serverUpdateCampaign(campaignId, {
     subject: updatedSubject,
     body: updatedBody,
@@ -273,7 +270,7 @@ export async function runOptimizationAgent(
     strategy_reasoning: updatedStrategyReasoning,
   });
 
-  // 5. Save new variants
+  
   if (parsedResult.variants && parsedResult.variants.length > 0) {
     const variantRows = parsedResult.variants.map((v: any, i: number) => ({
       variant_label: v.variant || String.fromCharCode(65 + i),
@@ -286,7 +283,7 @@ export async function runOptimizationAgent(
     await serverSaveVariants(campaignId, variantRows);
   }
 
-  // 6. Save optimization records
+  
   try {
     const optRows = approvedSuggestions.map((s) => ({
       title: s.title,
@@ -317,9 +314,8 @@ export async function runOptimizationAgent(
   };
 }
 
-/**
- * Generate optimization suggestions for a campaign using Gemini
- */
+
+
 export async function generateOptimizationSuggestions(
   campaignId: string,
   analysisReport: ComputedAnalysisReport,
@@ -404,25 +400,24 @@ export async function generateOptimizationSuggestions(
   }
 }
 
-/**
- * Reads the campaign report and adjusts user weights (W1, W2, W3) via LLM analysis.
- */
+
+
 export async function runWeightOptimizationAgent(
   campaignId: string,
   analysisReport: ComputedAnalysisReport,
   brief: string
 ) {
-  // 1. Get current customers and their weights
+  
   const customers = await serverGetCustomers();
 
-  // Create a fast lookup
+  
   const customerMap = new Map(customers.map(c => [c.customer_id, c]));
 
-  // 2. Identify who we emailed and who engaged
+  
   const openedOrClicked = analysisReport.segmentPerformance.map(s => s.segment).filter(Boolean);
 
-  // We'll simplify this for the hackathon by asking the LLM how to shift weights generally,
-  // then applying it to the users who engaged.
+  
+  
 
   const model = getGeminiModel();
   const promptText = [
@@ -453,14 +448,14 @@ export async function runWeightOptimizationAgent(
   const { increaseWeight, decreaseWeight, adjustmentAmount } = parsed;
   if (!increaseWeight || !decreaseWeight || !adjustmentAmount) return false;
 
-  // 3. Apply changes to engaged users
+  
   let updatedCount = 0;
-  // This is a naive implementation; in reality, we'd cross-reference the report's exact customer IDs.
-  // We'll simulate by updating anyone whose ID appears in the report data (which we'd need to fetch fully or pass in).
-  // For the sake of the hackathon, we'll arbitrarily update a subset or just return the logic.
+  
+  
+  
 
-  // We will assume `analysisReport.segmentPerformance` gives us clues, but without the full report rows here, 
-  // we'll fetch them from supabase or campaignX if needed. To keep it fast, we'll just return the suggested adjustment.
+  
+  
   console.log(`[WeightAgent] Suggested: increase ${increaseWeight}, decrease ${decreaseWeight} by ${adjustmentAmount}`);
 
   return parsed;

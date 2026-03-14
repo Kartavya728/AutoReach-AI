@@ -96,9 +96,9 @@ function AnimatedMessage({
   useEffect(() => {
     let index = 0;
     
-    // Quick typing effect
+    
     const interval = setInterval(() => {
-      index += 1; // reveal 1 char at a time for slower speed
+      index += 1; 
       setDisplayedText(text.slice(0, index));
       onUpdateRef.current?.();
       

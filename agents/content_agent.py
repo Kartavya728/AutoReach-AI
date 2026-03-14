@@ -19,7 +19,6 @@ from agents.state import WorkflowState, EmailVariant, CustomerSegment
 from agents.config import GEMINI_API_KEY, GEMINI_MODEL
 from agents.segment_engine import get_segment_profile
 
-
 def _get_model() -> ChatGoogleGenerativeAI:
     if not GEMINI_API_KEY:
         raise EnvironmentError("Missing GEMINI_API_KEY")
@@ -29,12 +28,10 @@ def _get_model() -> ChatGoogleGenerativeAI:
         temperature=0.7,
     )
 
-
 def _parse_single_variant(text: str, segment_name: str) -> EmailVariant | None:
     """Parse a single JSON email variant from LLM text."""
     trimmed = text.strip()
 
-    # Try JSON object first
     start = trimmed.find("{")
     end = trimmed.rfind("}")
     if start != -1 and end > start:
@@ -50,7 +47,6 @@ def _parse_single_variant(text: str, segment_name: str) -> EmailVariant | None:
         except json.JSONDecodeError:
             pass
 
-    # Try JSON array
     start = trimmed.find("[")
     end = trimmed.rfind("]")
     if start != -1 and end > start:
@@ -70,7 +66,6 @@ def _parse_single_variant(text: str, segment_name: str) -> EmailVariant | None:
 
     return None
 
-
 from agents.twin_simulator import twin_engine
 from agents.war_room import war_room
 
@@ -80,16 +75,14 @@ async def generate_segment_variant(
     segment: CustomerSegment,
 ) -> EmailVariant:
     """Generate a high-performing email variant using the Multi-Agent War Room, Bandit, and Sim."""
-    
-    # 1. Get tier from segment (set by the data-aware segment engine)
-    #    Falls back to keyword heuristic if tier not present
+
     tier = segment.get('tier', '')
     if tier not in ('Diamond', 'Gold', 'Silver', 'Reactivate'):
-        # Fallback heuristic for retarget segments that don't have a tier
+
         seg_name_lower = segment['segment_name'].lower()
         criteria_lower = segment.get('criteria', '').lower()
         combined = seg_name_lower + ' ' + criteria_lower
-        
+
         if any(kw in combined for kw in ['high-value', 'diamond', 'premium', 'high income', 'high earner', 'wealthy']):
             tier = 'Diamond'
         elif any(kw in combined for kw in ['loyal', 'gold', 'existing', 'trust']):
@@ -98,8 +91,7 @@ async def generate_segment_variant(
             tier = 'Silver'
         else:
             tier = 'Reactivate'
-        
-    # 2. Heuristic chooses the best Angle for this Tier (Bandit removed)
+
     angle_map = {
         "Diamond": "authority",
         "Gold": "social_proof",
@@ -108,34 +100,32 @@ async def generate_segment_variant(
     }
     angle = angle_map.get(tier, "curiosity")
     print(f"      [Heuristic] Selected Angle: {angle.upper()} for Tier: {tier}")
-    
-    # 3. War Room generates and Digital Twin tests (Loop up to 3 times)
+
     variant = None
     for attempt in range(3):
         print(f"      [War Room] Generating draft {attempt+1}...")
         draft_variant = await war_room.generate_variants(brief, tier, angle)
-        
-        # Test draft using Digital Twin Simulation on 5 synthentic personas
+
         twin_results = []
         for sim_idx in range(5):
             mock_user = {"name": f"Mock_{sim_idx}", "age": 35, "occupation": "Professional", "city": "Delhi", "family_size": 2, "credit_score": 700}
             sim = await twin_engine.simulate_reaction(mock_user, draft_variant["subject"], draft_variant["body"])
             twin_results.append(sim)
-        
+
         clicks = sum(1 for r in twin_results if r["decision"] == "CLICK")
         opens = sum(1 for r in twin_results if r["decision"] == "OPEN")
-        
+
         print(f"      [Simulator] Twin Test: {clicks} Clicks, {opens} Opens out of 5")
-        
+
         if not twin_engine.bayesian_kill_rule(twin_results):
-            # Survived the kill rule!
+
             variant = draft_variant
             break
         else:
             print("      [Simulator] Kill Rule triggered. Variant failed test. Regenerating.")
-            
+
     if not variant:
-        # Fallback if all 3 attempts failed the simulator (unlikely)
+
         variant = draft_variant
 
     if "tags" not in variant:
@@ -144,7 +134,7 @@ async def generate_segment_variant(
     variant["variant"] = segment["segment_name"]
     if "tone" not in variant:
         variant["tone"] = angle
-        
+
     return variant
 
 async def generate_content(state: WorkflowState) -> dict:

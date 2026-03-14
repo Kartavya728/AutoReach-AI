@@ -17,7 +17,8 @@ import {
 import { Navbar } from "@/src/app/components/Navbar";
 import type { CustomerCRMRecord } from "@/src/lib/types";
 
-/** Number of rows shown per "page" */
+
+
 const PAGE_SIZE = 5;
 
 export default function CustomersCRMPage() {
@@ -29,7 +30,7 @@ export default function CustomersCRMPage() {
   const [showScrollTop, setShowScrollTop] = useState(false);
   const [metricsFilter, setMetricsFilter] = useState("all");
 
-  // ── Data fetching ──
+  
   const fetchCustomers = useCallback(async () => {
     setLoading(true);
     try {
@@ -93,7 +94,7 @@ export default function CustomersCRMPage() {
     };
   }, [fetchCustomers, syncCustomersFromApi]);
 
-  // ── Scroll-to-top listener ──
+  
   useEffect(() => {
     const onScroll = () => setShowScrollTop(window.scrollY > 400);
     window.addEventListener("scroll", onScroll, { passive: true });
@@ -104,11 +105,11 @@ export default function CustomersCRMPage() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }, []);
 
-  // ── Filtered customers ──
+  
   const filteredCustomers = useMemo(() => {
     let result = customers;
 
-    // 1. Text Search Filter
+    
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
       result = result.filter(
@@ -120,7 +121,7 @@ export default function CustomersCRMPage() {
       );
     }
 
-    // 2. Metrics Filter
+    
     if (metricsFilter !== "all") {
       result = result.filter((c) => {
         if (metricsFilter === "sent") return (c.emails_sent ?? 0) > 0;
@@ -136,12 +137,12 @@ export default function CustomersCRMPage() {
   const displayedCustomers = filteredCustomers.slice(0, visibleCount);
   const hasMore = visibleCount < filteredCustomers.length;
 
-  // Reset visible count when search or filters change
+  
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
   }, [searchQuery, metricsFilter]);
 
-  // ── Aggregated stats ──
+  
   const stats = useMemo(() => {
     if (customers.length === 0) return null;
     const total = customers.length;
@@ -171,7 +172,8 @@ export default function CustomersCRMPage() {
       <Navbar />
 
       <div className="max-w-7xl mx-auto mt-6">
-        {/* ── Header ── */}
+        {
+}
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8">
           <div>
             <h1 className="text-3xl md:text-4xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-white to-gray-400 tracking-tight mb-1">
@@ -191,7 +193,8 @@ export default function CustomersCRMPage() {
           </button>
         </div>
 
-        {/* ── Stats Panel ── */}
+        {
+}
         {stats && (
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
             {[
@@ -264,7 +267,8 @@ export default function CustomersCRMPage() {
           </div>
         )}
 
-        {/* ── Search Bar ── */}
+        {
+}
         <div
           className="mb-6 flex items-center gap-3 px-4 py-3 rounded-xl"
           style={{
@@ -290,7 +294,8 @@ export default function CustomersCRMPage() {
             </button>
           )}
 
-          {/* Metrics Filter Dropdown */}
+          {
+}
           <div className="h-6 w-px bg-gray-700/50 mx-2" />
           <div className="relative flex items-center group">
             <Filter className="w-4 h-4 text-gray-400 absolute left-3 group-hover:text-indigo-400 transition-colors pointer-events-none" />
@@ -319,7 +324,8 @@ export default function CustomersCRMPage() {
           </span>
         </div>
 
-        {/* ── Customer Table ── */}
+        {
+}
         <div
           className="overflow-hidden rounded-2xl shadow-xl"
           style={{
@@ -430,7 +436,8 @@ export default function CustomersCRMPage() {
             )}
           </div>
 
-          {/* ── View More / View Less buttons ── */}
+          {
+}
           {filteredCustomers.length > PAGE_SIZE && (
             <div
               className="flex items-center justify-center gap-4 px-6 py-4"
@@ -469,7 +476,8 @@ export default function CustomersCRMPage() {
         </div>
       </div>
 
-      {/* ── Scroll to Top Button ── */}
+      {
+}
       {showScrollTop && (
         <button
           onClick={scrollToTop}

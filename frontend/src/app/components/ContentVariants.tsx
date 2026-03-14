@@ -23,7 +23,8 @@ interface ContentVariantsProps {
   selectedVariant: string | null;
   onSelectVariant: (id: string) => void;
   variants?: EmailVariantCard[];
-  /** Callback when a variant is edited — pushes updated data to parent state */
+  
+
   onUpdateVariant?: (id: string, updated: { subject: string; body: string }) => void;
 }
 
@@ -56,7 +57,7 @@ export function ContentVariants({
     setEditingId(variant.id);
     setEditSubject(variant.subject);
     setEditBody(variant.body);
-    // Auto-expand the variant being edited
+    
     setExpandedVariant(variant.id);
   };
 
@@ -111,12 +112,14 @@ export function ContentVariants({
                 : "none",
             }}
           >
-            {/* Variant header */}
+            {
+}
             <div
               className="px-5 py-4 flex items-center gap-3 cursor-pointer"
               onClick={() => setExpandedVariant(isExpanded ? null : variant.id)}
             >
-              {/* Selection indicator */}
+              {
+}
               <button
                 onClick={(e) => {
                   e.stopPropagation();
@@ -197,7 +200,8 @@ export function ContentVariants({
                 </p>
               </div>
 
-              {/* Expected metrics */}
+              {
+}
               <div className="hidden md:flex items-center gap-4 mr-3">
                 <div className="text-center">
                   <div className="flex items-center gap-1 mb-0.5">
@@ -224,7 +228,8 @@ export function ContentVariants({
               </div>
 
               <div className="flex items-center gap-2 flex-shrink-0">
-                {/* Edit button */}
+                {
+}
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
@@ -264,7 +269,8 @@ export function ContentVariants({
               </div>
             </div>
 
-            {/* Expanded content */}
+            {
+}
             <motion.div
               initial={false}
               animate={{ height: isExpanded ? "auto" : 0, opacity: isExpanded ? 1 : 0 }}
@@ -275,7 +281,8 @@ export function ContentVariants({
                 className="px-5 pb-4 pt-0"
                 style={{ borderTop: "1px solid rgba(255,255,255,0.06)" }}
               >
-                {/* Email preview / editor */}
+                {
+}
                 <div
                   className="mt-4 rounded-xl p-4"
                   style={{
@@ -304,7 +311,8 @@ export function ContentVariants({
                   </div>
 
                   {isEditing ? (
-                    /* ── Edit Mode ── */
+                    
+
                     <div className="space-y-3">
                       <div>
                         <label className="text-gray-500 block mb-1" style={{ fontSize: "0.7rem" }}>
@@ -366,7 +374,8 @@ export function ContentVariants({
                       </div>
                     </div>
                   ) : (
-                    /* ── Preview Mode ── */
+                    
+
                     <>
                       <div className="mb-2 flex items-center gap-2">
                         <span className="text-gray-500" style={{ fontSize: "0.7rem" }}>
@@ -390,7 +399,8 @@ export function ContentVariants({
                   )}
                 </div>
 
-                {/* Tags */}
+                {
+}
                 <div className="flex flex-wrap gap-2 mt-3">
                   {variant.tags.map((tag) => (
                     <span

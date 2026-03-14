@@ -37,7 +37,6 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage
 from backend.strategist_agent import strategist_agent
 
-
 DEFAULT_BRIEF = (
     "Run email campaign for launching XDeposit, a flagship term deposit product from "
     "SuperBFSI, that gives 1 percentage point higher returns than its competitors. "
@@ -74,12 +73,10 @@ Question: {input}
 Thought:{agent_scratchpad}
 """
 
-
 def print_header(title: str):
     print("\n" + "=" * 78)
     print(f"  {title}")
     print("=" * 78, flush=True)
-
 
 def iter_exception_chain(exc: BaseException) -> list[BaseException]:
     chain: list[BaseException] = []
@@ -91,7 +88,6 @@ def iter_exception_chain(exc: BaseException) -> list[BaseException]:
         next_exc = current.__cause__ or current.__context__
         current = next_exc if isinstance(next_exc, BaseException) else None
     return chain
-
 
 def describe_runtime_failure(exc: BaseException) -> dict[str, Any]:
     chain = iter_exception_chain(exc)
@@ -132,7 +128,6 @@ def describe_runtime_failure(exc: BaseException) -> dict[str, Any]:
         "retryable": False,
     }
 
-
 def emit_runtime_failure(exc: BaseException):
     payload = describe_runtime_failure(exc)
     envelope = {"event": "error", "data": payload}
@@ -140,11 +135,9 @@ def emit_runtime_failure(exc: BaseException):
     sys.stderr.write(f"{payload['error']}: {payload['message']}\n")
     sys.stderr.flush()
 
-
 def format_time(dt: datetime) -> str:
     """CampaignX API format: DD:MM:YY HH:MM:SS in IST."""
     return dt.astimezone(IST).strftime("%d:%m:%y %H:%M:%S")
-
 
 def to_bool(value: Any, default: bool = False) -> bool:
     if isinstance(value, bool):
@@ -155,18 +148,15 @@ def to_bool(value: Any, default: bool = False) -> bool:
         return bool(value)
     return default
 
-
 def compact_json(data: Any) -> str:
     try:
         return json.dumps(data, ensure_ascii=False)
     except Exception:
         return str(data)
 
-
 def extract_cta_link(brief: str) -> str:
     match = URL_RE.search(brief or "")
     return match.group(0) if match else ""
-
 
 def ensure_variant_has_link(variant: dict[str, Any], cta_link: str) -> dict[str, Any]:
     if not cta_link:
@@ -179,7 +169,6 @@ def ensure_variant_has_link(variant: dict[str, Any], cta_link: str) -> dict[str,
     variant["cta_link"] = cta_link
     return variant
 
-
 def collect_target_ids(segments: list[dict[str, Any]]) -> list[str]:
     ordered: list[str] = []
     seen: set[str] = set()
@@ -191,7 +180,6 @@ def collect_target_ids(segments: list[dict[str, Any]]) -> list[str]:
             seen.add(customer_id)
             ordered.append(customer_id)
     return ordered
-
 
 def parse_segment_approvals(
     segments: list[dict[str, Any]],
@@ -219,7 +207,6 @@ def parse_segment_approvals(
         if approval_map.get(seg_id, True):
             approved_segments.append(seg)
     return approved_segments
-
 
 def apply_variant_approvals(
     segments: list[dict[str, Any]],
@@ -278,7 +265,6 @@ def apply_variant_approvals(
 
     return approved_segments, approved_variants, approved_variant_list
 
-
 async def predict_open_click(
     segments: list[dict[str, Any]],
     segment_variants: dict[str, dict[str, Any]],
@@ -326,7 +312,7 @@ Body preview: {body[:300]}
 Based on the subject line quality, body persuasiveness, CTA clarity, and audience type,
 predict the open rate and click rate as percentages.
 
-Return ONLY a JSON object: {{"open_rate": <number>, "click_rate": <number>}}
+Return ONLY a JSON object: { "open_rate": <number>, "click_rate": <number>} 
 """
             try:
                 resp = await llm.ainvoke([HumanMessage(content=prompt)])
@@ -358,7 +344,7 @@ Return ONLY a JSON object: {{"open_rate": <number>, "click_rate": <number>}}
                 }
             )
     except Exception:
-        # Graceful fallback if LLM is unavailable
+
         for seg in segments:
             audience = int(seg.get("size", 0))
             if audience <= 0:
@@ -377,7 +363,6 @@ Return ONLY a JSON object: {{"open_rate": <number>, "click_rate": <number>}}
         "click_rate": click_rate,
         "by_segment": by_segment,
     }
-
 
 class RuntimeChannel:
     """Prints human-readable logs and emits structured control events for websocket runtime."""
@@ -487,12 +472,6 @@ class RuntimeChannel:
             )
             return message
 
-
-# -----------------------------------------------------------------------------
-# Data/Tool Helpers
-# -----------------------------------------------------------------------------
-
-
 def prepare_crm_data(api_customers: list[dict[str, Any]]) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for api in api_customers:
@@ -524,7 +503,6 @@ def prepare_crm_data(api_customers: list[dict[str, Any]]) -> list[dict[str, Any]
 
     return records
 
-
 def build_initial_state(brief: str) -> WorkflowState:
     return {
         "brief": brief,
@@ -539,7 +517,6 @@ def build_initial_state(brief: str) -> WorkflowState:
         "segment_variants": {},
         "steps": [{"agent": "Orchestrator", "step": "Initialized ReAct planner-executor workflow."}],
     }
-
 
 def summarize_customers(crm_data: list[dict[str, Any]]) -> dict[str, Any]:
     ages = [float(c["age"]) for c in crm_data if c.get("age") is not None]
@@ -563,7 +540,6 @@ def summarize_customers(crm_data: list[dict[str, Any]]) -> dict[str, Any]:
         "top_cities": sorted_cities,
         "top_occupations": sorted_occ,
     }
-
 
 def determine_dynamic_category_target(
     crm_data: list[dict[str, Any]],
@@ -610,7 +586,6 @@ def determine_dynamic_category_target(
 
     return min(8, target)
 
-
 def ensure_minimum_categories(
     segments: list[dict[str, Any]],
     min_count: int = 3,
@@ -621,7 +596,6 @@ def ensure_minimum_categories(
     if not clean:
         return []
 
-    # If fewer than min_count, split the largest segments until we reach min_count.
     while len(clean) < min_count:
         largest_idx = max(range(len(clean)), key=lambda i: int(clean[i].get("size", 0)))
         largest = clean[largest_idx]
@@ -665,7 +639,6 @@ def ensure_minimum_categories(
 
     return clean
 
-
 def category_cards(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     cards: list[dict[str, Any]] = []
     for seg in segments:
@@ -682,7 +655,6 @@ def category_cards(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
             }
         )
     return cards
-
 
 def content_cards(
     segments: list[dict[str, Any]],
@@ -708,18 +680,17 @@ def content_cards(
         )
     return cards
 
-
 async def predicted_send_time(segment_name: str) -> str:
     """Uses LLM to estimate the best time of day to send based on segment name."""
     now_utc = datetime.now(timezone.utc)
-    
+
     prompt = (
         f"You are a behavioral email marketer. What is the single best hour of the day (in UTC 0-23 format) "
         f"to send an email to a customer segment named: '{segment_name}'?\n"
         f"Assume young professionals check early/late, seniors check very early, businesses check mid-day.\n"
         f"Reply ONLY with a single integer representing the hour (0-23). Nothing else."
     )
-    
+
     try:
         llm = ChatGoogleGenerativeAI(
             api_key=GEMINI_API_KEY,
@@ -731,14 +702,13 @@ async def predicted_send_time(segment_name: str) -> str:
         hour = max(0, min(23, hour))
     except Exception:
         hour = (now_utc.hour + 1) % 24
-        
+
     slot = now_utc.replace(hour=hour, minute=0, second=0, microsecond=0)
-    
+
     if slot <= now_utc:
         slot += timedelta(days=1)
-        
-    return format_time(slot)
 
+    return format_time(slot)
 
 async def send_segment(
     segment_name: str,
@@ -771,7 +741,6 @@ async def send_segment(
             campaign_ids.append(str(campaign_id))
 
     return campaign_ids
-
 
 async def fetch_segment_metrics(
     segment_name: str,
@@ -821,7 +790,6 @@ async def fetch_segment_metrics(
         "variant_used": variant,
     }
 
-
 def aggregate_metrics(segment_results: list[dict[str, Any]]) -> dict[str, Any]:
     sent = sum(int(item.get("total_sent", 0)) for item in segment_results)
     opened = sum(int(item.get("total_opened", 0)) for item in segment_results)
@@ -837,12 +805,6 @@ def aggregate_metrics(segment_results: list[dict[str, Any]]) -> dict[str, Any]:
         "open_rate": open_rate,
         "click_rate": click_rate,
     }
-
-
-# -----------------------------------------------------------------------------
-# ReAct Planner / Executor
-# -----------------------------------------------------------------------------
-
 
 async def run_react_planner_executor(
     brief: str,
@@ -879,7 +841,6 @@ async def run_react_planner_executor(
         agent_scratchpad="",
     ).strip())
 
-    # Action 1: fetch_customers
     emit_react("thought", "I need customer records before any planning.")
     channel.log("Thought: I need customer records before any planning.")
     emit_react("action", "Fetching customer cohort from CampaignX API.")
@@ -896,7 +857,6 @@ async def run_react_planner_executor(
     emit_react("observation", f"Fetched {len(crm_data)} customers.")
     channel.log(f"Observation: Fetched {len(crm_data)} customers.")
 
-    # Action 2: study_customers
     emit_react("thought", "I should inspect the customer distribution before creating categories.")
     channel.log("Thought: I should inspect the customer distribution before creating categories.")
     emit_react("action", "Profiling age, income, city, and occupation distributions.")
@@ -904,7 +864,7 @@ async def run_react_planner_executor(
     channel.log("Action Input: {\"fields\": [\"age\", \"income\", \"city\", \"occupation\"]}")
 
     profile = summarize_customers(crm_data)
-    state["customer_profile"] = profile  # runtime-only key
+    state["customer_profile"] = profile  
 
     emit_react(
         "observation",
@@ -919,7 +879,6 @@ async def run_react_planner_executor(
         f"avg_income={profile.get('avg_income')}, top_cities={profile.get('top_cities')}"
     )
 
-    # Action 3: segment_customers
     desired_category_count = determine_dynamic_category_target(crm_data)
 
     emit_react("thought", "I now segment customers into approval-ready categories.")
@@ -947,7 +906,6 @@ async def run_react_planner_executor(
             f"Built {len(segments)} categories with sizes {[int(s.get('size', 0)) for s in segments]}."
         )
 
-        # Human gate: category approval
         cards = category_cards(segments)
         category_input = await channel.wait_for_human(
             "segment_approval",
@@ -967,8 +925,7 @@ async def run_react_planner_executor(
         channel.log("[HITL] Human rejected the categories. Retrying category generation.")
         emit_react("observation", "Human rejected the proposed categories. I must rethink and generate a new set of categories.")
         channel.emit_thinking("Categories rejected. Re-analyzing customer data to propose alternative categories.", agent="Orchestrator", kind="decision")
-        
-        # Append feedback to the brief to encourage different generation
+
         current_brief += "\n\nFeedback: The previous categories were rejected. Please generate entirely DIFFERENT categories this time."
 
     state["segments"] = segments
@@ -982,7 +939,6 @@ async def run_react_planner_executor(
     )
     channel.log(f"[HITL] Approved {len(segments)} categories covering {len(approved_ids)} customers.")
 
-    # Action 4: plan_strategy
     emit_react("thought", "With approved segments, I can produce the campaign strategy.")
     channel.log("Thought: With approved segments, I can produce the campaign strategy.")
     emit_react("action", "Planning segment-aware campaign strategy.")
@@ -996,7 +952,6 @@ async def run_react_planner_executor(
     emit_react("observation", "Strategy generated for all approved categories.")
     channel.log("Observation: Strategy generated for approved categories.")
 
-    # Action 5: generate_emails
     emit_react("thought", "Next I need one optimized email for each approved category.")
     channel.log("Thought: Next I need one optimized email for each approved category.")
     emit_react("action", "Generating segment emails with War Room, Bandit, and Twin Simulator.")
@@ -1018,7 +973,6 @@ async def run_react_planner_executor(
     )
     channel.log(f"Observation: Generated {len(state['content_variants'])} approved-draft emails.")
 
-    # Human gate: content approval
     cta_link = str(state.get("cta_link", ""))
     mail_cards = content_cards(segments, segment_variants, cta_link)
     content_input = await channel.wait_for_human(
@@ -1080,9 +1034,6 @@ async def run_react_planner_executor(
         f"Final Answer: Categories and emails are approved. Starting {AUTO_VIRTUAL_PREDICTION_ROUNDS} automatic Virtual Rate Prediction Tool rounds."
     )
 
-    # ------------------------------------------------------------------
-    # Execute virtual testing rounds
-    # ------------------------------------------------------------------
     all_round_metrics: list[dict[str, Any]] = []
     all_segment_results: list[dict[str, Any]] = []
     cumulative_sent: set[str] = set()
@@ -1294,7 +1245,6 @@ async def run_react_planner_executor(
             },
         )
 
-        # Prepare next optimization round candidates (warm + cold)
         hot_ids: list[str] = []
         warm_ids: list[str] = []
         cold_ids: list[str] = []
@@ -1401,10 +1351,8 @@ async def run_react_planner_executor(
                 channel.log(f"[Optimization Round {display_round}] Human chose to stop.")
                 break
 
-        # Build groups for next optimization round.
         next_groups: list[dict[str, Any]] = []
-        
-        # Helper for past metrics
+
         if segment_results:
             avg_open = sum(float(r.get("open_rate", 0)) for r in segment_results) / len(segment_results)
             avg_click = sum(float(r.get("click_rate", 0)) for r in segment_results) / len(segment_results)
@@ -1415,7 +1363,7 @@ async def run_react_planner_executor(
                 "click_rate": round(avg_click, 1),
                 "ctr": ctr,
                 "previous_subject": str(prev_variant.get("subject", "")),
-                # Pull constraints from the state memory if available
+
                 "length_constraint": state.get("campaign_memory", {}).get("last_length", "medium"),
                 "emoji_constraint": state.get("campaign_memory", {}).get("last_emoji", "some"),
                 "send_time": state.get("campaign_memory", {}).get("last_time", "12:00")
@@ -1452,7 +1400,7 @@ async def run_react_planner_executor(
             state["campaign_memory"]["last_length"] = meta_strategy.get('body_length', 'medium')
             state["campaign_memory"]["last_emoji"] = meta_strategy.get('emoji_usage', 'some')
             state["campaign_memory"]["last_time"] = meta_strategy.get('send_time', '12:00')
-            
+
         else:
             past_metrics_base = None
             meta_strategy = None
@@ -1544,7 +1492,7 @@ async def run_react_planner_executor(
                 "emoji_level": "moderate",
                 "tier": "Reactivate",
             }
-            # Build past metrics feedback for cold leads
+
             cold_past_metrics = past_metrics_base
             cold_variant = await generate_segment_variant(
                 brief,
@@ -1747,7 +1695,6 @@ async def run_react_planner_executor(
 
     return final_result
 
-
 async def run_full_pipeline(brief: str, rounds: int = DEFAULT_OPTIMIZATION_ROUNDS, interactive: bool = False) -> dict[str, Any]:
     channel = RuntimeChannel(interactive=interactive)
 
@@ -1760,14 +1707,12 @@ async def run_full_pipeline(brief: str, rounds: int = DEFAULT_OPTIMIZATION_ROUND
 
     return await run_react_planner_executor(brief=brief, rounds=rounds, channel=channel)
 
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="CampaignX ReAct agent orchestrator")
     parser.add_argument("brief", nargs="*", help="Campaign brief text")
     parser.add_argument("--rounds", type=int, default=DEFAULT_OPTIMIZATION_ROUNDS)
     parser.add_argument("--interactive", action="store_true", help="Enable human-in-the-loop pauses")
     return parser.parse_args()
-
 
 async def main() -> int:
     try:
@@ -1785,7 +1730,6 @@ async def main() -> int:
     except Exception as exc:
         emit_runtime_failure(exc)
         return 1
-
 
 if __name__ == "__main__":
     if sys.platform == "win32":

@@ -43,7 +43,7 @@ class EngagementMemory:
                 },
                 "intent_declarations": [],
                 "optimal_send_hour_utc": 14,
-                "funnel_stage": 1 # 1: Curiosity, 2: Interaction, 3: Offer, 4: Urgency
+                "funnel_stage": 1 
             }
         return self.data[customer_id]
 
@@ -54,22 +54,21 @@ class EngagementMemory:
         """
         user = self.get_user(customer_id)
         metrics = user["historical_metrics"]
-        
+
         if action == "send":
             metrics["total_received"] += 1
         elif action == "open":
             metrics["opens"] += 1
             if angle and angle in user["psychographic_tags"]:
-                # Bayesian-like update to psychographic preference
+
                 user["psychographic_tags"][angle] = min(1.0, user["psychographic_tags"][angle] + 0.1)
         elif action == "click":
             metrics["clicks"] += 1
             if angle and angle in user["psychographic_tags"]:
                 user["psychographic_tags"][angle] = min(1.0, user["psychographic_tags"][angle] + 0.25)
-            # Advance funnel stage
+
             user["funnel_stage"] = min(4, user["funnel_stage"] + 1)
-            
+
         self._save()
 
-# Global memory singleton for easy access
 memory_db = EngagementMemory()

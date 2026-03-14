@@ -13,7 +13,6 @@ from datetime import datetime, timezone
 from supabase import create_client, Client
 from agents.config import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
 
-
 def _get_client() -> Client:
     """Create a Supabase admin client (service role)."""
     if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
@@ -21,10 +20,6 @@ def _get_client() -> Client:
             "Supabase not configured — set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY"
         )
     return create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
-
-
-# ── Customers ──
-
 
 def get_customers() -> list[dict]:
     """Fetch all customers from Supabase, ordered by customer_id."""
@@ -37,7 +32,6 @@ def get_customers() -> list[dict]:
     )
     return response.data or []
 
-
 def upsert_customers(customers: list[dict]) -> list[dict]:
     """Upsert customers by customer_id."""
     client = _get_client()
@@ -48,7 +42,6 @@ def upsert_customers(customers: list[dict]) -> list[dict]:
     )
     return response.data or []
 
-
 def update_customer_weights(customer_id: str, w1: float, w2: float, w3: float):
     """Update engagement weights for a single customer."""
     client = _get_client()
@@ -58,7 +51,6 @@ def update_customer_weights(customer_id: str, w1: float, w2: float, w3: float):
         "w3": w3,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }).eq("customer_id", customer_id).execute()
-
 
 def increment_customer_metrics(
     customer_id: str,
@@ -92,10 +84,6 @@ def increment_customer_metrics(
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }).eq("customer_id", customer_id).execute()
 
-
-# ── Campaigns ──
-
-
 def get_campaigns() -> list[dict]:
     """List all campaigns with variants, newest first."""
     client = _get_client()
@@ -106,7 +94,6 @@ def get_campaigns() -> list[dict]:
         .execute()
     )
     return response.data or []
-
 
 def get_campaign_by_id(campaign_id: str) -> dict | None:
     """Get a single campaign with its variants."""
@@ -120,7 +107,6 @@ def get_campaign_by_id(campaign_id: str) -> dict | None:
     )
     return response.data
 
-
 def create_campaign(payload: dict) -> dict:
     """Create a new campaign, optionally with variants."""
     client = _get_client()
@@ -133,9 +119,7 @@ def create_campaign(payload: dict) -> dict:
         variant_rows = [{**v, "campaign_id": campaign["id"]} for v in variants]
         client.table("campaign_variants").insert(variant_rows).execute()
 
-    # Re-fetch with variants
     return get_campaign_by_id(campaign["id"]) or campaign
-
 
 def update_campaign(campaign_id: str, payload: dict) -> dict:
     """Update an existing campaign."""
@@ -149,23 +133,15 @@ def update_campaign(campaign_id: str, payload: dict) -> dict:
     )
     return response.data[0] if response.data else {}
 
-
-# ── Campaign Variants ──
-
-
 def save_variants(campaign_id: str, variants: list[dict]) -> list[dict]:
     """Replace all variants for a campaign."""
     client = _get_client()
-    # Delete existing
+
     client.table("campaign_variants").delete().eq("campaign_id", campaign_id).execute()
-    # Insert new
+
     rows = [{**v, "campaign_id": campaign_id} for v in variants]
     response = client.table("campaign_variants").insert(rows).execute()
     return response.data or []
-
-
-# ── Optimization Suggestions ──
-
 
 def get_optimizations(campaign_id: str) -> list[dict]:
     """Get optimization suggestions for a campaign."""
@@ -179,17 +155,12 @@ def get_optimizations(campaign_id: str) -> list[dict]:
     )
     return response.data or []
 
-
 def save_optimizations(campaign_id: str, suggestions: list[dict]) -> list[dict]:
     """Save optimization suggestions."""
     client = _get_client()
     rows = [{**s, "campaign_id": campaign_id} for s in suggestions]
     response = client.table("optimization_suggestions").insert(rows).execute()
     return response.data or []
-
-
-# ── Optimization History ──
-
 
 def get_optimization_history(campaign_id: str) -> list[dict]:
     """Get the optimization round history for a campaign."""
@@ -203,16 +174,11 @@ def get_optimization_history(campaign_id: str) -> list[dict]:
     )
     return response.data or []
 
-
 def save_optimization_history(history: dict) -> dict:
     """Save a single optimization history entry."""
     client = _get_client()
     response = client.table("campaign_optimization_history").insert(history).execute()
     return response.data[0] if response.data else {}
-
-
-# ── Agent Traces ──
-
 
 def persist_agent_trace(trace: dict):
     """Persist an agent execution trace (for LangSmith-style logging)."""

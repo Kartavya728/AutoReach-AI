@@ -174,7 +174,8 @@ export default function HowToUse() {
       <Navbar />
 
       <div className="max-w-5xl mx-auto">
-        {/* Header */}
+        {
+}
         <motion.div
           initial={{ opacity: 0, y: -10 }}
           animate={{ opacity: 1, y: 0 }}
@@ -212,7 +213,8 @@ export default function HowToUse() {
 
 
 
-        {/* Setup Steps */}
+        {
+}
         <div className="space-y-8 mb-16">
           {SETUP_STEPS.map((step, i) => (
             <motion.div
@@ -352,7 +354,8 @@ export default function HowToUse() {
           ))}
         </div>
 
-        {/* Architecture Overview */}
+        {
+}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           whileInView={{ opacity: 1, y: 0 }}
@@ -407,7 +410,8 @@ export default function HowToUse() {
           </div>
         </motion.div>
 
-        {/* SQL Schema Preview */}
+        {
+}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           whileInView={{ opacity: 1, y: 0 }}
@@ -460,7 +464,8 @@ export default function HowToUse() {
           </div>
         </motion.div>
 
-        {/* Flow description */}
+        {
+}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           whileInView={{ opacity: 1, y: 0 }}
@@ -531,7 +536,8 @@ export default function HowToUse() {
           </div>
         </motion.div>
 
-        {/* CTA */}
+        {
+}
         <motion.div
           initial={{ opacity: 0, scale: 0.95 }}
           whileInView={{ opacity: 1, scale: 1 }}

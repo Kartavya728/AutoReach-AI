@@ -40,28 +40,27 @@ class WarRoom:
             segment_profile: Real demographic summary of the target segment.
             past_metrics: Dict with open_rate, click_rate, previous_subject from prior round.
         """
-        # Build context blocks for the prompts
+
         profile_block = ""
         if segment_profile:
             profile_block = f"\n\nREAL AUDIENCE DATA (use this to make the email hyper-relevant):\n{segment_profile}\n"
 
         metrics_block = ""
         subject_mutation_prompt = ""
-        
+
         if past_metrics:
             prev_subject = past_metrics.get("previous_subject", "")
             prev_open = float(past_metrics.get("open_rate", 0))
             prev_click = float(past_metrics.get("click_rate", 0))
             ctr = round((prev_click / prev_open * 100), 1) if prev_open > 0 else 0
-            
+
             metrics_block = (
                 f"\n\nPREVIOUS ROUND PERFORMANCE (learn from this):\n"
                 f"- Previous subject line: \"{prev_subject}\"\n"
                 f"- Open rate achieved: {prev_open}%\n"
                 f"- Click rate achieved: {prev_click}% (CTR: {ctr}%)\n"
             )
-            
-            # Evolutionary Subject Mutation
+
             mutate = False
             if meta_strategy and "mutate_subject" in meta_strategy:
                 mutate = meta_strategy["mutate_subject"]
@@ -80,17 +79,17 @@ class WarRoom:
                     f"CRITICAL SUBJECT DIRECTIVE: The previous subject '{prev_subject}' failed or needs a refresh "
                     f"({prev_open}% open rate). Write a {s_style.upper()} subject line approach."
                 )
-                
+
             if ctr < 20.0:
                 c_str = meta_strategy.get("cta_strength", "stronger") if meta_strategy else "stronger"
                 metrics_block += f"- The Click-Through-Rate (CTR) was very poor ({ctr}%). Make the body vastly more compelling, shorter, and the CTA {c_str.upper()}.\n"
 
         cta_directive = ""
-        # CTA Friction Optimization Logic
+
         if meta_strategy:
             c_pos = meta_strategy.get("cta_position", "bottom")
             c_vis = meta_strategy.get("cta_visual", "none")
-            
+
             if c_pos == "top_and_bottom":
                 cta_directive += (
                     "CRITICAL CTA DIRECTIVE: You MUST insert the raw CTA link EXACTLY TWICE in the body. Do NOT use markdown links, square brackets, or HTML. Just output the raw URL.\n"
@@ -100,11 +99,10 @@ class WarRoom:
                 )
             else:
                 cta_directive += "CRITICAL CTA DIRECTIVE: Insert the raw CTA link exactly ONCE at the bottom. Do NOT use markdown links, square brackets, or HTML. Just output the raw URL.\n"
-                
+
             if c_vis != "none":
                 cta_directive += f"VISUAL ANCHOR DIRECTIVE: You MUST place this exact visual anchor immediately before the CTA link: '{c_vis}' (e.g. {c_vis} https://...)\n"
 
-        # Agent 1: Copywriter
         if emit_agent_message:
             emit_agent_message(
                 "War Room - Copywriter",
@@ -120,7 +118,7 @@ RULES:
 - Length: {length_constraint.upper()} (If 'short', strict maximum 3 sentences. If 'medium', max 6 sentences).
 - Structure: Enforce strict format: Hook -> Benefit -> Proof -> CTA.
 - Emojis: {emoji_constraint.upper()} (If 'none', use 0. If 'some', use 1-2 max).
-- Use {{name}}, {{city}}, and {{occupation}} placeholders for 1:1 dynamic insertion if it fits the flow naturally. Do not force it.
+- Use { name} , { city} , and { occupation}  placeholders for 1:1 dynamic insertion if it fits the flow naturally. Do not force it.
 - {subject_mutation_prompt}
 - {cta_directive}
 - Return ONLY JSON format with keys: "subject", "body"
@@ -130,7 +128,6 @@ Write the absolute best, most click-worthy copy for THIS specific audience!
         resp_cw = await self.llm.ainvoke([HumanMessage(content=prompt_cw)])
         draft_copy = str(resp_cw.content)
 
-        # Agent 2: Behavioral Psychologist
         if emit_agent_message:
             emit_agent_message(
                 "War Room - Psychologist",
@@ -148,7 +145,7 @@ YOUR MISSION: Maximize click rate while strictly obeying constraints.
 1. Length: {length_constraint.upper()}
 2. Emojis: {emoji_constraint.upper()}
 3. Apply psychological triggers: Loss aversion, Social proof, Specificity, Urgency.
-4. Retain {{name}}, {{city}}, {{occupation}} placeholders if present.
+4. Retain { name} , { city} , { occupation}  placeholders if present.
 5. {cta_directive}
 
 Return ONLY JSON with "subject" and "body".
@@ -156,7 +153,6 @@ Return ONLY JSON with "subject" and "body".
         resp_psy = await self.llm.ainvoke([HumanMessage(content=prompt_psy)])
         optimized_copy = str(resp_psy.content)
 
-        # Parse final
         try:
             start = optimized_copy.find("{")
             end = optimized_copy.rfind("}")
@@ -176,8 +172,8 @@ Return ONLY JSON with "subject" and "body".
                     "decision",
                 )
             return {
-                "subject": f"[{angle.upper()}] Exclusive for {{name}} in {{city}}",
-                "body": f"Hi {{name}},\nWe know as a {{occupation}} you value great returns...\n\nClaim your offer today."
+                "subject": f"[{angle.upper()}] Exclusive for { name}  in { city} ",
+                "body": f"Hi { name} ,\nWe know as a { occupation}  you value great returns...\n\nClaim your offer today."
             }
 
 war_room = WarRoom()

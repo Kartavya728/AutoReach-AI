@@ -18,7 +18,6 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from agents.config import AGENTS_TEST_MODE, GEMINI_API_KEY, GEMINI_MODEL
 from agents.memory import memory_db
 
-
 ALLOWED_ANGLES = {"curiosity", "urgency", "social_proof", "authority"}
 ALLOWED_SOURCES = {
     "clicked",
@@ -32,7 +31,6 @@ ALLOWED_SOURCES = {
 ALLOWED_TIERS = {"Diamond", "Gold", "Silver", "Reactivate"}
 URL_RE = re.compile(r"https?://[^\s)>\]]+")
 
-
 def _get_model() -> ChatGoogleGenerativeAI:
     if not GEMINI_API_KEY:
         raise EnvironmentError("Missing GEMINI_API_KEY")
@@ -41,7 +39,6 @@ def _get_model() -> ChatGoogleGenerativeAI:
         model=GEMINI_MODEL or "gemini-2.5-flash",
         temperature=0.3,
     )
-
 
 def _extract_json_object(text: str) -> dict[str, Any]:
     start = text.find("{")
@@ -53,14 +50,11 @@ def _extract_json_object(text: str) -> dict[str, Any]:
         raise ValueError("Expected object")
     return parsed
 
-
 def _extract_urls(text: str) -> list[str]:
     return [match.group(0) for match in URL_RE.finditer(text or "")]
 
-
 def _title_case_token(token: str) -> str:
     return " ".join(part.capitalize() for part in re.split(r"[_\s-]+", token.strip()) if part)
-
 
 def _heuristic_brief_context(brief: str) -> dict[str, Any]:
     urls = _extract_urls(brief)
@@ -104,7 +98,6 @@ def _heuristic_brief_context(brief: str) -> dict[str, Any]:
         "tone_preferences": tone_preferences,
     }
 
-
 async def _invoke_json_with_repair(
     system_prompt: str,
     user_prompt: str,
@@ -133,7 +126,6 @@ async def _invoke_json_with_repair(
         return _extract_json_object(str(response.content))
     except Exception:
         return fallback
-
 
 async def parse_campaign_brief(brief: str) -> dict[str, Any]:
     fallback = _heuristic_brief_context(brief)
@@ -166,7 +158,6 @@ async def parse_campaign_brief(brief: str) -> dict[str, Any]:
     parsed["cta_url"] = str(parsed.get("cta_url", "")).strip()
     return parsed
 
-
 def build_brief_context(brief: str, campaign_context: dict[str, Any]) -> str:
     sections = ["Original Campaign Brief:", brief.strip()]
 
@@ -186,18 +177,14 @@ def build_brief_context(brief: str, campaign_context: dict[str, Any]) -> str:
     sections.append("\n".join(structured_lines))
     return "\n\n".join(section for section in sections if section.strip())
 
-
 def _safe_pct(numerator: int, denominator: int) -> float:
     return round((numerator / denominator) * 100, 1) if denominator > 0 else 0.0
-
 
 def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
 
-
 def _default_send_window() -> str:
     return "13:00"
-
 
 def _tone_from_angle(angle: str) -> str:
     mapping = {
@@ -208,7 +195,6 @@ def _tone_from_angle(angle: str) -> str:
     }
     return mapping.get(angle, "professional")
 
-
 def _to_ist_window(hour_utc: int | None) -> str:
     if hour_utc is None:
         return _default_send_window()
@@ -216,7 +202,6 @@ def _to_ist_window(hour_utc: int | None) -> str:
     hour = total_minutes // 60
     minute = total_minutes % 60
     return f"{hour:02d}:{minute:02d}"
-
 
 def _memory_send_window(customer_ids: list[str], memory_data: dict[str, Any]) -> str:
     hours: list[int] = []
@@ -230,7 +215,6 @@ def _memory_send_window(customer_ids: list[str], memory_data: dict[str, Any]) ->
         return _default_send_window()
     best_hour = Counter(hours).most_common(1)[0][0]
     return _to_ist_window(best_hour)
-
 
 def _behavior_ids(result: dict[str, Any]) -> dict[str, list[str]]:
     customer_ids = [str(x) for x in result.get("customer_ids", []) if str(x).strip()]
@@ -247,7 +231,6 @@ def _behavior_ids(result: dict[str, Any]) -> dict[str, list[str]]:
         "full_segment": customer_ids,
     }
 
-
 def _segment_pattern(
     open_rate: float,
     click_rate: float,
@@ -263,7 +246,6 @@ def _segment_pattern(
     if open_rate < median_open and click_rate < median_click:
         return "low-visibility"
     return "mixed-signal"
-
 
 def _build_segment_analytics(segment_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     analytics: list[dict[str, Any]] = []
@@ -307,7 +289,6 @@ def _build_segment_analytics(segment_results: list[dict[str, Any]]) -> list[dict
         )
     return analytics
 
-
 def _candidate_score(
     source_type: str,
     estimated_size: int,
@@ -329,7 +310,6 @@ def _candidate_score(
     else:
         uplift_signal = min(1.0, max(click_rate / 20.0, open_rate / 70.0))
     return round((0.45 * audience_score) + (0.35 * uplift_signal) + (0.20 * memory_strength), 3)
-
 
 def _summarize_segment_results(segment_results: list[dict[str, Any]]) -> str:
     lines: list[str] = []
@@ -356,7 +336,6 @@ def _summarize_segment_results(segment_results: list[dict[str, Any]]) -> str:
             )
         )
     return "\n".join(lines)
-
 
 def _build_candidate_catalog(
     round_num: int,
@@ -500,7 +479,6 @@ def _build_candidate_catalog(
     candidates.sort(key=lambda item: (float(item["priority_score"]), int(item["estimated_size"])), reverse=True)
     return candidates[:10]
 
-
 def _heuristic_plan_from_candidates(round_num: int, candidates: list[dict[str, Any]]) -> dict[str, Any]:
     selected = candidates[: min(4, len(candidates))]
     optimization_plan: list[dict[str, Any]] = []
@@ -525,7 +503,6 @@ def _heuristic_plan_from_candidates(round_num: int, candidates: list[dict[str, A
         "planner_notes": "Heuristic optimization plan generated from observed segment behavior and memory signals.",
         "optimization_plan": optimization_plan,
     }
-
 
 def _summarize_candidates(candidates: list[dict[str, Any]]) -> str:
     lines: list[str] = []
@@ -554,7 +531,6 @@ def _summarize_candidates(candidates: list[dict[str, Any]]) -> str:
             )
         )
     return "\n".join(lines)
-
 
 def _normalize_optimization_items(parsed: dict[str, Any], candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     candidate_index = {str(candidate["candidate_id"]): candidate for candidate in candidates}
@@ -607,7 +583,6 @@ def _normalize_optimization_items(parsed: dict[str, Any], candidates: list[dict[
             }
         )
     return normalized
-
 
 def _build_round_plan(round_num: int, parsed: dict[str, Any], candidates: list[dict[str, Any]]) -> dict[str, Any]:
     normalized_items = _normalize_optimization_items(parsed, candidates)
@@ -662,7 +637,6 @@ def _build_round_plan(round_num: int, parsed: dict[str, Any], candidates: list[d
         "retarget_segments": retarget_segments,
     }
 
-
 async def plan_retargeting_round(
     brief_context: str,
     strategy: str,
@@ -711,7 +685,6 @@ async def plan_retargeting_round(
 
     parsed = await _invoke_json_with_repair(system_prompt, user_prompt, fallback)
     return _build_round_plan(round_num, parsed, candidates)
-
 
 def summarize_angle_preferences(customer_ids: list[str], memory_data: dict[str, Any]) -> dict[str, float]:
     scores = Counter()

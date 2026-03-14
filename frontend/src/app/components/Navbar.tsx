@@ -41,7 +41,8 @@ export function Navbar() {
           boxShadow: "0 4px 40px rgba(139, 92, 246, 0.15)",
         }}
       >
-        {/* Logo */}
+        {
+}
         <Link href="/" className="flex items-center gap-2 group">
           <motion.div
             whileHover={{ scale: 1.1, rotate: 180 }}
@@ -74,7 +75,8 @@ export function Navbar() {
           </div>
         </Link>
 
-        {/* Desktop nav */}
+        {
+}
         <div className="hidden md:flex items-center gap-1">
           {navLinks.map((link) => {
             const isActive = pathname === link.href;
@@ -112,7 +114,8 @@ export function Navbar() {
           })}
         </div>
 
-        {/* Right side */}
+        {
+}
         <div className="hidden md:flex items-center gap-3">
           <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
             <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
@@ -122,7 +125,8 @@ export function Navbar() {
           </div>
         </div>
 
-        {/* Mobile menu button */}
+        {
+}
         <button
           className="md:hidden text-gray-400 hover:text-white"
           onClick={() => setMobileOpen(!mobileOpen)}
@@ -131,7 +135,8 @@ export function Navbar() {
         </button>
       </motion.div>
 
-      {/* Mobile menu */}
+      {
+}
       <AnimatePresence>
         {mobileOpen && (
           <motion.div

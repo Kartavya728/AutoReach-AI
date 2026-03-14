@@ -19,7 +19,7 @@ class StrategistAgent:
         self.llm = ChatGoogleGenerativeAI(
             api_key=GEMINI_API_KEY,
             model=GEMINI_MODEL or "gemini-2.5-flash",
-            temperature=0.4, # Lower temp for logical analysis
+            temperature=0.4, 
         )
 
     async def analyze_results(self, segment_metrics: Dict[str, Any], campaign_memory: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -36,7 +36,7 @@ class StrategistAgent:
             "length_constraint": "medium",
             "emoji_constraint": "some"
         }
-        
+
         Output:
         {
             "diagnosis": "str",
@@ -96,24 +96,23 @@ Read the data. Diagnose the bottleneck. Generate the JSON strategy for the next 
                 HumanMessage(content=prompt)
             ])
             text = str(response.content)
-            
-            # Parse JSON safely
+
             start = text.find("{")
             end = text.rfind("}")
             if start != -1 and end != -1:
                 return json.loads(text[start:end+1])
             else:
                 raise ValueError("No JSON block found in the output.")
-                
+
         except Exception as e:
             logger.error(f"Strategist Agent failed: {e}")
-            # Safe Fallback Strategy
+
             return {
                 "diagnosis": "Fallback triggered due to analysis error.",
                 "subject_style": "benefit",
                 "body_length": "short",
                 "emoji_usage": "none",
-                "send_time": "10:00", # Safe mid-morning UTC
+                "send_time": "10:00", 
                 "cta_strength": "direct",
                 "cta_position": "bottom",
                 "cta_visual": "none",

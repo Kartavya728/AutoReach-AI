@@ -1,13 +1,7 @@
 import { getServerConfig } from "@/src/lib/server/env";
 
-/**
- * SSE proxy endpoint — streams agent reasoning logs from the Python service.
- *
- * Usage: GET /api/agent/logs?session=<session_id>
- *
- * Translates Python log format ({agent, thought, action, timestamp})
- * into the frontend's expected format ({step, agent}).
- */
+
+
 export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const sessionId = searchParams.get("session");
@@ -46,7 +40,7 @@ export async function GET(request: Request) {
             transform(chunk, controller) {
                 const text = decoder.decode(chunk, { stream: true });
 
-                // Split SSE messages and translate format
+                
                 const messages = text.split("\n\n");
                 for (const msg of messages) {
                     if (!msg.trim()) continue;
@@ -64,7 +58,7 @@ export async function GET(request: Request) {
 
                     try {
                         const entry = JSON.parse(dataMatch[1]);
-                        // Translate Python format → frontend format
+                        
                         const frontendEvent = {
                             step: entry.action || entry.thought || "",
                             agent: entry.agent || "Agent",
@@ -73,7 +67,7 @@ export async function GET(request: Request) {
                             encoder.encode(`event: step\ndata: ${JSON.stringify(frontendEvent)}\n\n`)
                         );
                     } catch {
-                        // Pass through as-is if we can't parse
+                        
                         controller.enqueue(encoder.encode(msg + "\n\n"));
                     }
                 }

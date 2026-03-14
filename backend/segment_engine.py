@@ -15,7 +15,6 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from backend.state import CustomerRecord, CustomerSegment
 from backend.config import GEMINI_API_KEY, GEMINI_MODEL
 
-
 def _get_model() -> ChatGoogleGenerativeAI:
     return ChatGoogleGenerativeAI(
         api_key=GEMINI_API_KEY,
@@ -23,16 +22,10 @@ def _get_model() -> ChatGoogleGenerativeAI:
         temperature=0.2,
     )
 
-
 def _safe_print(message: str):
     encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
     safe_message = message.encode(encoding, errors="replace").decode(encoding, errors="replace")
     print(safe_message)
-
-
-# ══════════════════════════════════════════════════════════════
-#  RULE EVALUATOR
-# ══════════════════════════════════════════════════════════════
 
 def _evaluate_rule(rule: dict, customer: CustomerRecord) -> bool:
     """Evaluates a single rule like {"field": "income", "op": ">", "value": 300000}"""
@@ -45,13 +38,11 @@ def _evaluate_rule(rule: dict, customer: CustomerRecord) -> bool:
 
     c_val = customer.get(field)
 
-    # Handle missing values
     if c_val is None:
         if op == "==" and value in [None, "None", ""]:
             return True
         return False
 
-    # Cast c_val to match value type
     try:
         if isinstance(value, (int, float)):
             c_val = float(c_val)
@@ -80,7 +71,6 @@ def _evaluate_rule(rule: dict, customer: CustomerRecord) -> bool:
     except Exception:
         return False
 
-
 def _evaluate_condition(cond: dict, customer: CustomerRecord) -> bool:
     """Evaluates an OR/AND block or a single rule."""
     if "AND" in cond:
@@ -90,17 +80,11 @@ def _evaluate_condition(cond: dict, customer: CustomerRecord) -> bool:
     else:
         return _evaluate_rule(cond, customer)
 
-
-# ══════════════════════════════════════════════════════════════
-#  DATA PROFILER — Builds statistical summary for the LLM
-# ══════════════════════════════════════════════════════════════
-
 def _build_field_profile(crm_data: list[CustomerRecord]) -> str:
     """Analyze actual data ranges and distributions to give the LLM real context."""
     if not crm_data:
         return "No data available."
 
-    # Fields to profile
     numeric_fields = ["age", "income", "credit_score", "family_size", "kids", "w1", "w2", "w3"]
     categorical_fields = ["gender", "occupation", "city", "marital_status", "kyc_status",
                           "app_installed", "existing_customer", "social_media_active"]
@@ -110,7 +94,6 @@ def _build_field_profile(crm_data: list[CustomerRecord]) -> str:
     lines.append(f"Total customers: {len(crm_data)}")
     lines.append("")
 
-    # Numeric summaries
     lines.append("NUMERIC FIELDS:")
     for field in numeric_fields:
         vals = []
@@ -129,7 +112,6 @@ def _build_field_profile(crm_data: list[CustomerRecord]) -> str:
 
     lines.append("")
 
-    # Categorical summaries
     lines.append("CATEGORICAL FIELDS:")
     for field in categorical_fields:
         counter: Counter = Counter()
@@ -144,11 +126,6 @@ def _build_field_profile(crm_data: list[CustomerRecord]) -> str:
 
     return "\n".join(lines)
 
-
-# ══════════════════════════════════════════════════════════════
-#  DYNAMIC SEGMENT GENERATOR (Single LLM call)
-# ══════════════════════════════════════════════════════════════
-
 async def generate_dynamic_segments(brief: str, crm_data: list[CustomerRecord]) -> list[dict]:
     """
     Single-call approach: Gemini sees the brief + real data profile + sample records,
@@ -156,10 +133,8 @@ async def generate_dynamic_segments(brief: str, crm_data: list[CustomerRecord]) 
     """
     llm = _get_model()
 
-    # Build the data profile from ALL records
     data_profile = _build_field_profile(crm_data)
 
-    # Send 3 sample records as JSON (with real values)
     sample_records = []
     for c in crm_data[:3]:
         sample_records.append({k: v for k, v in c.items() if k != "id"})
@@ -192,7 +167,7 @@ CRITICAL RULES:
 5. Ensure segments cover the ENTIRE audience (last segment must be a catch-all with empty logic).
 
 Output a raw JSON array (no markdown). Each object:
-{{
+{ 
   "segment_id": "short_name",
   "segment_name": "Display Name with Emoji",
   "criteria": "Human readable criteria",
@@ -201,9 +176,9 @@ Output a raw JSON array (no markdown). Each object:
   "emoji_level": "none" | "moderate" | "heavy",
   "tier": "Diamond" | "Gold" | "Silver" | "Reactivate",
   "logic": [
-     {{"AND": [{{"field": "age", "op": ">", "value": 50}}, {{"field": "income", "op": ">", "value": 200000}}]}}
+     { "AND": [{ "field": "age", "op": ">", "value": 50} , { "field": "income", "op": ">", "value": 200000} ]} 
   ]
-}}
+} 
 
 "tier" must be one of: Diamond (highest value), Gold (medium-high), Silver (medium), Reactivate (lowest).
 "logic" is a list of condition blocks. Customer matches if ANY block evaluates to True (OR of AND/OR blocks).
@@ -229,11 +204,6 @@ Last segment MUST have empty "logic": [] as a catch-all.
 
     return []
 
-
-# ══════════════════════════════════════════════════════════════
-#  MAIN SEGMENTATION FUNCTION
-# ══════════════════════════════════════════════════════════════
-
 async def segment_customers(crm_data: list[CustomerRecord], brief: str = "") -> list[CustomerSegment]:
     """Assign each customer to a dynamic, data-aware segment."""
     assigned: set[str] = set()
@@ -255,7 +225,6 @@ async def segment_customers(crm_data: list[CustomerRecord], brief: str = "") -> 
             "logic": []
         }]
 
-    # Print the factors the LLM identified
     for seg_def in dynamic_defs:
         tier = seg_def.get("tier", "Reactivate")
         _safe_print(
@@ -274,9 +243,8 @@ async def segment_customers(crm_data: list[CustomerRecord], brief: str = "") -> 
             if not cid or cid in assigned:
                 continue
 
-            # Evaluate logic
             matched = False
-            if not logic_blocks:  # Empty list = catch-all
+            if not logic_blocks:  
                 matched = True
             else:
                 for block in logic_blocks:
@@ -298,8 +266,8 @@ async def segment_customers(crm_data: list[CustomerRecord], brief: str = "") -> 
             "focus": seg_def.get("focus", ""),
             "emoji_level": seg_def.get("emoji_level", "moderate"),
         }
-        # Stash tier for content_agent to use
-        segment["tier"] = seg_def.get("tier", "Reactivate")  # type: ignore
+
+        segment["tier"] = seg_def.get("tier", "Reactivate")  
         segments.append(segment)
 
     total = sum(s["size"] for s in segments)
@@ -309,7 +277,6 @@ async def segment_customers(crm_data: list[CustomerRecord], brief: str = "") -> 
         _safe_print(f"  {s['segment_name']}: {s['size']} customers ({pct}%) -> Tier: {s.get('tier', '?')}")
 
     return segments
-
 
 def get_segment_profile(segment: CustomerSegment) -> str:
     """Build a compact text profile of a segment for prompting the LLM."""

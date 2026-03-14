@@ -2,10 +2,8 @@ import { NextResponse } from "next/server";
 import { getServerConfig } from "@/src/lib/server/env";
 import type { OptimizeRequest } from "@/src/lib/types";
 
-/**
- * Optimization endpoint — proxies to the Python FastAPI agent service.
- * Runs the optimization loop on an existing campaign.
- */
+
+
 export async function POST(request: Request) {
   try {
     const payload = (await request.json()) as OptimizeRequest;
@@ -30,7 +28,7 @@ export async function POST(request: Request) {
     const config = getServerConfig();
     const pythonUrl = config.pythonAgentUrl;
 
-    // Proxy to the Python FastAPI service
+    
     const response = await fetch(`${pythonUrl}/optimize_campaign`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

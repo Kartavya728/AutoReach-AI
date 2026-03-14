@@ -117,7 +117,7 @@ function ParticleCanvas() {
         ctx.fillStyle = p.color + Math.floor(p.opacity * 255).toString(16).padStart(2, "0");
         ctx.fill();
 
-        // Draw connections
+        
         particles.slice(i + 1, i + 5).forEach((p2) => {
           const dx = p.x - p2.x;
           const dy = p.y - p2.y;
@@ -188,7 +188,8 @@ export default function Landing() {
     <div ref={containerRef} className="min-h-screen overflow-x-hidden">
       <ParticleCanvas />
 
-      {/* Hero */}
+      {
+}
       <div className="relative z-10 min-h-screen flex flex-col items-center justify-center px-4 pt-24">
         <motion.div
           initial={{ opacity: 0, scale: 0.9 }}
@@ -196,7 +197,8 @@ export default function Landing() {
           transition={{ duration: 0.6 }}
           className="text-center max-w-5xl mx-auto"
         >
-          {/* Badge */}
+          {
+}
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -224,7 +226,8 @@ export default function Landing() {
             </span>
           </motion.div>
 
-          {/* Main heading */}
+          {
+}
           <motion.div
             initial={{ opacity: 0, y: 30 }}
             animate={{ opacity: 1, y: 0 }}
@@ -284,7 +287,8 @@ export default function Landing() {
             human-in-loop approval at every critical step.
           </motion.p>
 
-          {/* CTAs */}
+          {
+}
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -340,7 +344,8 @@ export default function Landing() {
             </Link>
           </motion.div>
 
-          {/* Scroll indicator */}
+          {
+}
           <motion.div
             animate={{ y: [0, 8, 0] }}
             transition={{ duration: 2, repeat: Infinity }}
@@ -363,7 +368,8 @@ export default function Landing() {
         </motion.div>
       </div>
 
-      {/* Stats Section */}
+      {
+}
       <motion.section
         onViewportEnter={() => setStatsVisible(true)}
         className="relative z-10 py-24 px-4"
@@ -431,7 +437,8 @@ export default function Landing() {
         </div>
       </motion.section>
 
-      {/* Features Grid */}
+      {
+}
       <section className="relative z-10 py-20 px-4">
         <div className="max-w-6xl mx-auto">
           <motion.div
@@ -484,7 +491,8 @@ export default function Landing() {
                   border: "1px solid rgba(255,255,255,0.07)",
                 }}
               >
-                {/* Hover glow */}
+                {
+}
                 <motion.div
                   className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 rounded-2xl"
                   style={{
@@ -515,7 +523,8 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* Architecture section */}
+      {
+}
       <section className="relative z-10 py-20 px-4">
         <div className="max-w-4xl mx-auto">
           <motion.div
@@ -537,7 +546,8 @@ export default function Landing() {
               </p>
             </div>
 
-            {/* Architecture flow */}
+            {
+}
             <div className="flex flex-wrap justify-center items-center gap-3">
               {[
                 { label: "Campaign Brief", icon: Mail, color: "#7c3aed" },
@@ -580,7 +590,8 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* CTA Section */}
+      {
+}
       <section className="relative z-10 py-24 px-4">
         <div className="max-w-3xl mx-auto text-center">
           <motion.div
@@ -657,7 +668,8 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* Footer */}
+      {
+}
       <footer className="relative z-10 py-8 px-4 text-center border-t border-white/5">
         <p className="text-gray-600" style={{ fontSize: "0.8rem" }}>
           Autoreach AI · Built for FrostHack XPECTO 2026 · IIT Mandi ·{" "}

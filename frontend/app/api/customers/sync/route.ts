@@ -29,8 +29,8 @@ export async function POST(request: Request) {
       existing_customer: raw["Existing Customer"],
       credit_score: raw["Credit score"],
       social_media_active: raw.Social_Media_Active,
-      // Default tracking values; onConflict 'customer_id' will update demographics but not overwrite tracking if we specify it smartly, or here we are just blindly upserting.
-      // Alternatively, we let the DB handle defaults for new rows.
+      
+      
     }));
 
     await serverUpsertCustomers(customersToUpsert);

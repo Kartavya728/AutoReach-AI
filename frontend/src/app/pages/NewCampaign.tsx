@@ -761,9 +761,9 @@ function AnimatedMessage({
   useEffect(() => {
     let index = 0;
     
-    // Quick typing effect
+    
     const interval = setInterval(() => {
-      index += 1; // reveal 1 char at a time for slower speed
+      index += 1; 
       setDisplayedText(text.slice(0, index));
       onUpdateRef.current?.();
       
@@ -879,7 +879,7 @@ export default function NewCampaign() {
 
   useEffect(() => {
     preloadAgentStream().catch(() => {
-      // Preload is best-effort only.
+      
     });
   }, []);
 
@@ -922,7 +922,7 @@ export default function NewCampaign() {
     
     setLatestMetrics((currentMetrics) => {
       if (isOptimization) {
-        // When optimization starts, currentMetrics is whatever the last round finished at.
+        
         const newBaseline = {
           sent: Math.max(baselineMetricsRef.current.sent, currentMetrics?.sent || 0),
           opened: baselineMetricsRef.current.opened + (currentMetrics?.opened || 0),
@@ -1800,14 +1800,14 @@ export default function NewCampaign() {
 
                     if (!shouldStartRevealing) return null;
 
-                    // Check if this is the start of a new agent (phase separator)
+                    
                     const prevMsg = index > 0 ? messages[index - 1] : null;
                     const showPhaseSeparator = !isUser && !isSystem && prevMsg && (
                       prevMsg.role === "user" ||
                       (prevMsg.agent && message.agent && prevMsg.agent !== message.agent)
                     );
 
-                    // Same-agent consecutive message = compact mode (thinner, no header)
+                    
                     const isSameAgentContinuation = !isUser && !isSystem && prevMsg &&
                       prevMsg.role !== "user" && prevMsg.role !== "system" &&
                       prevMsg.agent === message.agent && !showPhaseSeparator;
@@ -1833,7 +1833,7 @@ export default function NewCampaign() {
                       digitalTwinCards.length > 0 &&
                       isLastAgentMessage;
 
-                    // User messages
+                    
                     if (isUser) {
                       return (
                         <motion.div
@@ -1863,7 +1863,7 @@ export default function NewCampaign() {
                       );
                     }
 
-                    // Agent / System messages - styled by kind
+                    
                     return (
                       <React.Fragment key={message.id}>
                         {showPhaseSeparator && (
@@ -1895,7 +1895,8 @@ export default function NewCampaign() {
                               border: isSystem ? kindConfig.bubbleBorder : agentProfile.bubbleBorder,
                             }}
                           >
-                            {/* Header - shown only for first message in a group or different agents */}
+                            {
+}
                             {!isSameAgentContinuation && (
                               <div className="flex items-center gap-2 mb-1.5">
                                 <div
@@ -1939,7 +1940,8 @@ export default function NewCampaign() {
                                 </span>
                               </div>
                             )}
-                            {/* Compact inline badge for continuation messages */}
+                            {
+}
                             {isSameAgentContinuation && (
                               <div
                                 className="flex items-center gap-1.5 mb-1"

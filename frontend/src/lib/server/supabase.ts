@@ -29,7 +29,7 @@ export function requireAdminClient(): SupabaseClient {
   return client;
 }
 
-// ── Agent Trace (original) ──
+
 
 export async function persistAgentTrace(trace: {
   run_id: string;
@@ -44,7 +44,7 @@ export async function persistAgentTrace(trace: {
   await client.from("agent_traces").insert(trace);
 }
 
-// ── Campaigns ──
+
 
 export async function serverGetCampaigns(): Promise<CampaignRow[]> {
   const client = requireAdminClient();
@@ -95,12 +95,12 @@ export async function serverCreateCampaign(payload: CreateCampaignPayload): Prom
     }
   }
 
-  // Re-fetch with variants joined
+  
   const full = await serverGetCampaignById(campaign.id);
   return full ?? (campaign as CampaignRow);
 }
 
-// —— Campaign Analysis Runs ——
+
 
 export async function serverGetCampaignRuns(): Promise<CampaignRunRow[]> {
   const client = requireAdminClient();
@@ -185,7 +185,7 @@ export async function serverUpdateCampaign(
   return data as CampaignRow;
 }
 
-// ── Campaign Variants ──
+
 
 export async function serverSaveVariants(
   campaignId: string,
@@ -193,7 +193,7 @@ export async function serverSaveVariants(
 ): Promise<CampaignVariantRow[]> {
   const client = requireAdminClient();
 
-  // Replace variants
+  
   await client.from("campaign_variants").delete().eq("campaign_id", campaignId);
 
   const rows = variants.map((v) => ({ ...v, campaign_id: campaignId }));
@@ -206,7 +206,7 @@ export async function serverSaveVariants(
   return (data ?? []) as CampaignVariantRow[];
 }
 
-// ── Optimization Suggestions ──
+
 
 export async function serverGetOptimizations(
   campaignId: string
@@ -237,7 +237,7 @@ export async function serverSaveOptimizations(
   return (data ?? []) as OptimizationSuggestionRow[];
 }
 
-// ── Optimization History ──
+
 
 export async function serverGetOptimizationHistory(
   campaignId: string

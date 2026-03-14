@@ -14,7 +14,6 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage
 from agents.config import GEMINI_API_KEY, GEMINI_MODEL
 
-
 def _get_model() -> ChatGoogleGenerativeAI:
     if not GEMINI_API_KEY:
         raise EnvironmentError("Missing GEMINI_API_KEY")
@@ -24,12 +23,6 @@ def _get_model() -> ChatGoogleGenerativeAI:
         temperature=0.7,
     )
 
-
-# ══════════════════════════════════════════════════════════════
-#  REAL METRICS COMPUTATION
-# ══════════════════════════════════════════════════════════════
-
-
 def compute_analysis(
     campaign_id: str,
     records: list[dict],
@@ -37,7 +30,7 @@ def compute_analysis(
 ) -> dict:
     """
     Compute analysis with Intelligent Scenario Simulation.
-    
+
     Since the CampaignX sandbox randomly generates a flat ~2% click rate,
     we intercept the real data and use a deterministic simulation formula
     that accurately models the >50% conversion uplift you'd see when
@@ -49,21 +42,20 @@ def compute_analysis(
 
     eo_yes = []
     ec_yes = []
-    
+
     for r in records:
         if not r.get("customer_id"):
             continue
-            
+
         if str(r.get("EO", "")).strip().upper() == "Y":
             eo_yes.append(r)
-            
+
         if str(r.get("EC", "")).strip().upper() == "Y":
             ec_yes.append(r)
 
     total_opened = len(eo_yes)
     total_clicked = len(ec_yes)
 
-    # Extract customer IDs of engaged users
     opened_ids = [r.get("customer_id", "") for r in eo_yes if r.get("customer_id")]
     clicked_ids = [r.get("customer_id", "") for r in ec_yes if r.get("customer_id")]
 
@@ -85,15 +77,14 @@ def compute_analysis(
         "click_rate": click_rate,
         "opened_ids": opened_ids,
         "clicked_ids": clicked_ids,
-        # IDs that opened but didn't click (warm but unconverted)
+
         "warm_ids": [cid for cid in opened_ids if cid not in set(clicked_ids)],
-        # IDs that never opened (cold)
+
         "cold_ids": [
             r.get("customer_id", "") for r in records
             if str(r.get("EO", "N")).upper() != "Y" and r.get("customer_id")
         ],
     }
-
 
 def _empty_report(campaign_id: str) -> dict:
     return {
@@ -103,12 +94,6 @@ def _empty_report(campaign_id: str) -> dict:
         "opened_ids": [], "clicked_ids": [],
         "warm_ids": [], "cold_ids": [],
     }
-
-
-# ══════════════════════════════════════════════════════════════
-#  AI OPTIMIZATION SUGGESTIONS
-# ══════════════════════════════════════════════════════════════
-
 
 async def generate_optimization_suggestions(
     campaign_id: str,
@@ -122,7 +107,6 @@ async def generate_optimization_suggestions(
     """
     model = _get_model()
 
-    # Build segment context if available
     segment_context = ""
     if segment_results:
         segment_context = "\n\nPer-segment performance (REAL data):\n"

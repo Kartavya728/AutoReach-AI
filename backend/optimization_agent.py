@@ -30,7 +30,6 @@ from backend.supabase_client import (
 from backend.campaignx_api import fetch_campaign_report, send_campaign
 from backend.analysis_agent import compute_analysis
 
-
 def _get_model() -> ChatGoogleGenerativeAI:
     if not GEMINI_API_KEY:
         raise EnvironmentError("Missing GEMINI_API_KEY")
@@ -40,14 +39,12 @@ def _get_model() -> ChatGoogleGenerativeAI:
         temperature=0.7,
     )
 
-
 def _to_campaignx_time(dt: datetime) -> str:
     """Format datetime as DD:MM:YY HH:MM:SS (CampaignX API format, IST)."""
-    # CampaignX API expects IST (UTC+5:30), not UTC
+
     ist = timezone(timedelta(hours=5, minutes=30))
     dt_ist = dt.astimezone(ist)
     return dt_ist.strftime("%d:%m:%y %H:%M:%S")
-
 
 async def run_optimization_agent(
     campaign_id: str,
@@ -55,7 +52,7 @@ async def run_optimization_agent(
 ) -> dict:
     """
     Execute the full optimization loop:
-    
+
     1. Load campaign from Supabase
     2. Fetch report from CampaignX API
     3. Compute analysis metrics
@@ -64,15 +61,14 @@ async def run_optimization_agent(
     6. Narrow to previously-engaged subset
     7. Batch send to CampaignX API
     8. Save history + update campaign in Supabase
-    
+
     Returns an ImprovementReport dict.
     """
-    # ── 1. Fetch campaign ──
+
     campaign = get_campaign_by_id(campaign_id)
     if not campaign:
         raise ValueError(f"Campaign {campaign_id} not found")
 
-    # ── 2. Fetch report + compute analysis ──
     analysis_report = None
     external_id = campaign.get("external_campaign_id")
     if external_id:
@@ -92,7 +88,6 @@ async def run_optimization_agent(
         "total_clicked": (analysis_report or {}).get("total_clicked", campaign.get("total_clicked", 0)),
     }
 
-    # ── 3. LLM: Generate updated content ──
     suggestions_text = "\n".join(
         f"{i + 1}. [{s['priority']}] {s['title']}: {s.get('suggested_value') or s.get('reasoning', '')}"
         for i, s in enumerate(approved_suggestions)
@@ -151,11 +146,9 @@ async def run_optimization_agent(
             ],
         }
 
-    # ── 4. Score & filter customers ──
     all_customers = get_customers()
     valid_customers = [c for c in all_customers if c.get("status") != "inactive"]
 
-    # Constrain to original target set if it exists
     original_target_ids = campaign.get("target_customer_ids") or []
     if original_target_ids:
         target_set = set(original_target_ids)
@@ -167,11 +160,10 @@ async def run_optimization_agent(
 
     scored = []
     for c in valid_customers:
-        # 65% weight score (normalized to 0-1, assuming max ~10)
+
         raw_weight = float(c.get(target_weight_key, 0.5) or 0.5)
         w_score = min(1.0, raw_weight / 10.0) * 0.65
 
-        # 35% demographic match score
         if demo_keys:
             matches = sum(
                 1
@@ -180,13 +172,12 @@ async def run_optimization_agent(
             )
             d_score = (matches / len(demo_keys)) * 0.35
         else:
-            d_score = 0.35  # Default if no demographics specified
+            d_score = 0.35  
 
         scored.append({"id": c["customer_id"], "score": w_score + d_score})
 
     scored.sort(key=lambda x: x["score"], reverse=True)
 
-    # Narrow to previously-engaged (opened) count
     opened_count = (
         (analysis_report or {}).get("total_opened")
         or max(1, int(len(valid_customers) * 0.52))
@@ -194,7 +185,6 @@ async def run_optimization_agent(
     new_total = min(len(scored), opened_count)
     final_ids = [x["id"] for x in scored[:new_total]]
 
-    # ── 5. Batch send to CampaignX API ──
     updated_subject = (
         (parsed_result.get("variants") or [{}])[0].get("subject")
         or campaign.get("subject", "")
@@ -206,7 +196,7 @@ async def run_optimization_agent(
 
     BATCH_SIZE = 100
     new_external_id = external_id
-    now = datetime.now(timezone.utc) + timedelta(minutes=5)  # 5min buffer so API doesn't reject as "past"
+    now = datetime.now(timezone.utc) + timedelta(minutes=5)  
 
     try:
         for i in range(0, len(final_ids), BATCH_SIZE):
@@ -229,7 +219,6 @@ async def run_optimization_agent(
     except Exception as e:
         print(f"[Optimize] Failed to resend batched campaign: {e}")
 
-    # ── 6. Save optimization history ──
     new_round = (campaign.get("optimization_round") or 1) + 1
 
     history_entry = {
@@ -249,7 +238,6 @@ async def run_optimization_agent(
     except Exception as err:
         print(f"[Optimize] Failed to save history: {err}")
 
-    # ── 7. Update campaign in Supabase ──
     updated_reasoning = (campaign.get("strategy_reasoning") or "") + (
         f"\n\n--- Optimization Round {new_round} ---\n"
         f"Focused audience from {history_entry['previous_audience_size']} "
@@ -268,7 +256,6 @@ async def run_optimization_agent(
         "strategy_reasoning": updated_reasoning,
     })
 
-    # ── 8. Save new variants ──
     llm_variants = parsed_result.get("variants") or []
     if llm_variants:
         variant_rows = [
@@ -284,7 +271,6 @@ async def run_optimization_agent(
         ]
         save_variants(campaign_id, variant_rows)
 
-    # ── 9. Save optimization records ──
     try:
         opt_rows = [
             {

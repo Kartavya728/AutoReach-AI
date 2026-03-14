@@ -264,7 +264,7 @@ async function recoverLatestAgentResult(expectedBrief: string): Promise<AgentRun
         }
       }
     } catch {
-      // Ignore polling errors during close recovery.
+      
     }
 
     await delay(CLOSE_RECOVERY_DELAY_MS);
@@ -305,7 +305,7 @@ export async function streamCampaignAgent(
     let ws: WebSocket;
     if (preconnectedWs && (preconnectedWs.readyState === WebSocket.OPEN || preconnectedWs.readyState === WebSocket.CONNECTING)) {
       ws = preconnectedWs;
-      preconnectedWs = null; // Consume the preloaded socket
+      preconnectedWs = null; 
       preconnectUrl = null;
     } else {
       ws = new WebSocket(wsUrl);
@@ -338,7 +338,7 @@ export async function streamCampaignAgent(
       try {
         ws.close();
       } catch {
-        // Ignore close errors.
+        
       }
       reject(error);
     };

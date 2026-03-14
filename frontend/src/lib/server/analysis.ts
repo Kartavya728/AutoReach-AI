@@ -1,8 +1,5 @@
-/**
- * Compute analysis report from raw CampaignX report records.
- * Derives segment/region/gender breakdowns from actual CRM data, while
- * using simulated open/click totals (the sandbox API never populates real EO/EC).
- */
+
+
 
 import type {
   CampaignReportRecord,
@@ -10,7 +7,8 @@ import type {
   CustomerCRMRecord,
 } from "@/src/lib/types";
 
-/** Round a number to exactly N decimal places (returns a number, not string). */
+
+
 function round(value: number, decimals = 2): number {
   return parseFloat(value.toFixed(decimals));
 }
@@ -28,10 +26,8 @@ function isPositiveFlag(value: string | null | undefined): boolean {
   return String(value ?? "").trim().toUpperCase() === "Y";
 }
 
-/**
- * Deterministic hash for a campaign ID — produces a stable integer seed so that
- * the same campaign always shows the same simulated variance.
- */
+
+
 function stableHash(id: string): number {
   return id.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0);
 }
@@ -124,9 +120,9 @@ export function computeAnalysisFromReport(
     };
   }
 
-  // ── Normalize engagement totals ──
-  // CampaignX often returns EO/EC as all "N" in sandbox mode, so we fall back
-  // to stored campaign metrics and then project those metrics back onto records.
+  
+  
+  
   const hash = stableHash(campaignId);
   const dbOpenRate = Math.max(0, toNumber(campaign?.open_rate));
   const dbClickRate = Math.max(0, toNumber(campaign?.click_rate));
@@ -170,7 +166,7 @@ export function computeAnalysisFromReport(
     ? assignSyntheticEngagement(normalizedRecords, totalOpened, totalClicked, hash)
     : normalizedRecords;
 
-  // ── Time-series: group by hour ──
+  
   const hourlyMap = new Map<number, { opens: number; clicks: number }>();
   const hours = assignedRecords.map((r) => r._hour);
   const minHour = Math.min(...hours);
@@ -204,7 +200,7 @@ export function computeAnalysisFromReport(
   }
   const hourlyBestPerformance = `${bestHour}-${bestHour + 2} ${bestHour < 12 ? "AM" : "PM"}`;
 
-  // ── Derive breakdowns from CRM data when available ──
+  
   const segmentPerformance = buildSegmentPerformance(
     customers,
     openRate,
@@ -226,7 +222,7 @@ export function computeAnalysisFromReport(
   );
   const deviceBreakdown = buildDeviceBreakdown();
 
-  // Find top-performing segment dynamically
+  
   const topRegion = regionPerformance.reduce(
     (best, r) => ((r.openRate + r.clickRate) > (best.openRate + best.clickRate) ? r : best),
     regionPerformance[0]
@@ -254,7 +250,7 @@ export function computeAnalysisFromReport(
   };
 }
 
-// ─── Helpers: build breakdowns from real CRM data ───────────────────────────
+
 
 function buildSegmentPerformance(
   customers: CustomerCRMRecord[] | undefined,
@@ -264,7 +260,7 @@ function buildSegmentPerformance(
   hash: number
 ) {
   if (!customers || customers.length === 0) {
-    // Fallback: derive from base rates with small variance
+    
     return [
       { segment: "All Customers", openRate: baseOpen, clickRate: baseClick, count: totalSent },
       { segment: "High Earners", openRate: round(baseOpen + 3.5), clickRate: round(baseClick + 1.8), count: Math.floor(totalSent * 0.3) },
@@ -272,7 +268,7 @@ function buildSegmentPerformance(
     ];
   }
 
-  // Real data: group by occupation_type or income bracket
+  
   const highEarners = customers.filter((c) => (c.monthly_income ?? 0) >= 50000);
   const youngAdults = customers.filter((c) => (c.age ?? 30) >= 18 && (c.age ?? 30) <= 35);
   const seniors = customers.filter((c) => (c.age ?? 30) >= 55);
@@ -310,7 +306,7 @@ function buildRegionPerformance(
     ];
   }
 
-  // Group customers by city → region mapping
+  
   const regionMap = new Map<string, CustomerCRMRecord[]>();
   for (const c of customers) {
     const city = (c.city ?? "Unknown").toLowerCase();
@@ -329,7 +325,7 @@ function buildRegionPerformance(
   for (const [region, group] of regionMap.entries()) {
     if (region === "Other" && regionMap.size > 2) continue;
     const avgWeight = group.reduce((s, c) => s + (c.w1 + c.w2 + c.w3) / 3, 0) / group.length;
-    const weightBoost = (avgWeight - 0.5) * 8; // higher-weight regions get a boost
+    const weightBoost = (avgWeight - 0.5) * 8; 
     const variance = ((hash + idx) % 5 - 2) / 2;
     results.push({
       region,
@@ -339,7 +335,7 @@ function buildRegionPerformance(
     idx++;
   }
 
-  // Ensure at least 2 regions
+  
   if (results.length < 2) {
     results.push(
       { region: "North India", openRate: round(baseOpen + 1.2), clickRate: round(baseClick + 0.5) },

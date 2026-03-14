@@ -14,8 +14,6 @@ import asyncio
 from backend.state import WorkflowState, CustomerRecord
 from backend.segment_engine import segment_customers
 
-
-
 async def _fetch_from_api() -> list[dict]:
     """Fetch customer cohort from CampaignX API (richer data)."""
     try:
@@ -26,7 +24,6 @@ async def _fetch_from_api() -> list[dict]:
         print(f"[Cohort Agent] CampaignX API fetch failed: {e}")
         return []
 
-
 def _prepare_crm_data(api_customers: list[dict]) -> list[CustomerRecord]:
     """
     Condense API data to targeting fields.
@@ -36,7 +33,7 @@ def _prepare_crm_data(api_customers: list[dict]) -> list[CustomerRecord]:
         cid = api.get("customer_id", "")
         if not cid:
             continue
-            
+
         records.append({
             "id": cid,
             "age": api.get("Age"),
@@ -59,11 +56,10 @@ def _prepare_crm_data(api_customers: list[dict]) -> list[CustomerRecord]:
 
     return records
 
-
 async def load_cohort(state: WorkflowState) -> dict:
     """
     LangGraph node: Fetch CRM from both sources, merge, condense, and segment.
-    
+
     - Fetches from Supabase (weights) + CampaignX API (demographics)
     - Merges and condenses to essential targeting fields
     - Runs segment engine to create 5 micro-segments
@@ -71,19 +67,16 @@ async def load_cohort(state: WorkflowState) -> dict:
     """
     print(f"[Cohort Agent] Starting — brief: {state.get('brief', '')[:80]}...")
 
-    # Fetch from API
     api_customers = await _fetch_from_api()
 
     print(f"[Cohort Agent] Fetched: {len(api_customers)} records from CampaignX API")
 
-    # Condense
     crm_data = _prepare_crm_data(api_customers)
     customer_count = len(crm_data)
 
     if not crm_data:
         print("[Cohort Agent] WARNING: Fetched 0 customers!")
 
-    # Run segment engine
     segments = await segment_customers(crm_data, state.get('brief', ''))
 
     print(f"[Cohort Agent] Finished — {customer_count} customers, {len(segments)} segments")

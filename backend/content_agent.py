@@ -23,7 +23,6 @@ from backend.state import WorkflowState, EmailVariant, CustomerSegment
 from backend.config import GEMINI_API_KEY, GEMINI_MODEL
 from backend.segment_engine import get_segment_profile
 
-
 def _get_model() -> ChatGoogleGenerativeAI:
     if not GEMINI_API_KEY:
         raise EnvironmentError("Missing GEMINI_API_KEY")
@@ -33,7 +32,6 @@ def _get_model() -> ChatGoogleGenerativeAI:
         temperature=0.7,
     )
 
-
 def _safe_print(message: str, enabled: bool = True):
     if not enabled:
         return
@@ -41,12 +39,10 @@ def _safe_print(message: str, enabled: bool = True):
     safe_message = message.encode(encoding, errors="replace").decode(encoding, errors="replace")
     print(safe_message)
 
-
 def _parse_single_variant(text: str, segment_name: str) -> EmailVariant | None:
     """Parse a single JSON email variant from LLM text."""
     trimmed = text.strip()
 
-    # Try JSON object first
     start = trimmed.find("{")
     end = trimmed.rfind("}")
     if start != -1 and end > start:
@@ -62,7 +58,6 @@ def _parse_single_variant(text: str, segment_name: str) -> EmailVariant | None:
         except json.JSONDecodeError:
             pass
 
-    # Try JSON array
     start = trimmed.find("[")
     end = trimmed.rfind("]")
     if start != -1 and end > start:
@@ -82,7 +77,6 @@ def _parse_single_variant(text: str, segment_name: str) -> EmailVariant | None:
 
     return None
 
-
 from backend.twin_simulator import twin_engine
 from backend.war_room import war_room
 from backend.bandit import bandit_engine
@@ -91,11 +85,9 @@ URL_RE = re.compile(r"https?://[^\s<>\"]+")
 TwinProgressEmitter = Callable[[dict[str, Any]], None]
 AgentMessageEmitter = Callable[[str, str, str], None]
 
-
 def _extract_cta_link(brief: str) -> str:
     match = URL_RE.search(brief or "")
     return match.group(0) if match else ""
-
 
 def _ensure_variant_has_cta_link(variant: EmailVariant, cta_link: str) -> EmailVariant:
     if not cta_link:
@@ -107,7 +99,6 @@ def _ensure_variant_has_cta_link(variant: EmailVariant, cta_link: str) -> EmailV
     variant["body"] = body
     variant["cta_link"] = cta_link
     return variant
-
 
 async def _build_twin_personas(segment: CustomerSegment) -> list[dict[str, Any]]:
     segment_name = segment.get("segment_name", "Unknown Segment")
@@ -158,7 +149,6 @@ Return ONLY a valid JSON array of 5 objects. Do not use markdown wrappers like `
     except Exception as e:
         _safe_print(f"      [Simulator] Failed to dynamically generate personas: {e}. Using fallback.")
 
-    # Fallback if the LLM fails to generate valid JSON
     base_personas = [
         {"persona_id": "persona-1", "name": "Aarav", "age": 29, "occupation": "Product Manager", "city": "Bengaluru", "family_size": 2, "credit_score": 742},
         {"persona_id": "persona-2", "name": "Meera", "age": 41, "occupation": "School Principal", "city": "Pune", "family_size": 4, "credit_score": 781},
@@ -182,7 +172,6 @@ Return ONLY a valid JSON array of 5 objects. Do not use markdown wrappers like `
 
     return base_personas
 
-
 def _normalize_twin_decision(raw_decision: str) -> str:
     decision = str(raw_decision or "").upper()
     if decision == "CLICK":
@@ -192,7 +181,6 @@ def _normalize_twin_decision(raw_decision: str) -> str:
     if decision == "IGNORE":
         return "ignore"
     return "pending"
-
 
 def _emit_twin_progress(
     emit_progress: TwinProgressEmitter | None,
@@ -253,16 +241,14 @@ async def generate_segment_variant(
     verbose: bool = True,
 ) -> EmailVariant:
     """Generate a high-performing email variant using the Multi-Agent War Room, Bandit, and Sim."""
-    
-    # 1. Get tier from segment (set by the data-aware segment engine)
-    #    Falls back to keyword heuristic if tier not present
+
     tier = segment.get('tier', '')
     if tier not in ('Diamond', 'Gold', 'Silver', 'Reactivate'):
-        # Fallback heuristic for retarget segments that don't have a tier
+
         seg_name_lower = segment['segment_name'].lower()
         criteria_lower = segment.get('criteria', '').lower()
         combined = seg_name_lower + ' ' + criteria_lower
-        
+
         if any(kw in combined for kw in ['high-value', 'diamond', 'premium', 'high income', 'high earner', 'wealthy']):
             tier = 'Diamond'
         elif any(kw in combined for kw in ['loyal', 'gold', 'existing', 'trust']):
@@ -271,8 +257,7 @@ async def generate_segment_variant(
             tier = 'Silver'
         else:
             tier = 'Reactivate'
-        
-    # 2. Contextual bandit chooses the angle for this tier.
+
     angle = bandit_engine.select_action(tier)
     _safe_print(f"      [Bandit] Selected Angle: {angle.upper()} for Tier: {tier}", enabled=verbose)
     if emit_agent_message:
@@ -281,7 +266,7 @@ async def generate_segment_variant(
             f"Selected the {angle.upper()} angle for {segment.get('segment_name', 'this segment')} in the {tier} tier.",
             "decision",
         )
-    
+
     _safe_print(
         f"      [Simulator] Generating dynamic synthetic personas for '{segment.get('segment_name', '')}'...",
         enabled=verbose,
@@ -294,19 +279,17 @@ async def generate_segment_variant(
         )
     personas = await _build_twin_personas(segment)
 
-    # 3. War Room generates and Digital Twin tests (Loop up to 3 times)
     variant = None
     max_attempts = 3
-    
-    # Meta-Strategy explicit assignment (with random fallback for Round 1 exploration)
+
     if meta_strategy:
         length_constraint = meta_strategy.get("body_length", "medium")
         emoji_constraint = meta_strategy.get("emoji_usage", "moderate")
     else:
-        # Fallback for round 1 where we have no past metrics
+
         length_constraint = random.choice(["short", "medium"])
         emoji_constraint = random.choice(["none", "moderate", "some"])
-    
+
     for attempt_index in range(max_attempts):
         attempt = attempt_index + 1
         _safe_print(
@@ -330,8 +313,7 @@ async def generate_segment_variant(
             emit_agent_message=emit_agent_message,
         )
         draft_variant = _ensure_variant_has_cta_link(draft_variant, cta_link)
-        
-        # Test draft using Digital Twin Simulation on 5 synthentic personas
+
         twin_results = []
         _emit_twin_progress(
             emit_progress,
@@ -358,10 +340,10 @@ async def generate_segment_variant(
                 twin_results=twin_results,
                 cta_link=cta_link,
             )
-        
+
         clicks = sum(1 for r in twin_results if r["decision"] == "CLICK")
         opens = sum(1 for r in twin_results if r["decision"] == "OPEN")
-        
+
         _safe_print(f"      [Simulator] Twin Test: {clicks} Clicks, {opens} Opens out of 5", enabled=verbose)
         if emit_agent_message:
             emit_agent_message(
@@ -369,9 +351,9 @@ async def generate_segment_variant(
                 f"Attempt {attempt} for {segment.get('segment_name', 'this segment')} scored {clicks} clicks and {opens} opens across {len(personas)} personas.",
                 "observation",
             )
-        
+
         if not twin_engine.bayesian_kill_rule(twin_results):
-            # Survived the kill rule!
+
             bandit_engine.update_reward(tier, angle, opens, max(1, clicks), len(personas))
             variant = draft_variant
             if emit_agent_message:
@@ -420,9 +402,9 @@ async def generate_segment_variant(
                     f"Retrying {segment.get('segment_name', 'this segment')} with the {angle.upper()} angle after the failed draft.",
                     "decision",
                 )
-            
+
     if not variant:
-        # Fallback if all 3 attempts failed the simulator (unlikely)
+
         variant = draft_variant
         if emit_agent_message:
             emit_agent_message(
@@ -448,7 +430,7 @@ async def generate_segment_variant(
     variant["variant"] = segment["segment_name"]
     if "tone" not in variant:
         variant["tone"] = angle
-        
+
     return variant
 
 async def generate_content(

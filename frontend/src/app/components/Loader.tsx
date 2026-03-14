@@ -12,9 +12,11 @@ export function Loader({
 }) {
     return (
         <div className="flex flex-col items-center justify-center min-h-[50vh]">
-            {/* Outer Glow Ring container */}
+            {
+}
             <div className="relative w-32 h-32 flex items-center justify-center mb-6">
-                {/* Ring 1 - Fast */}
+                {
+}
                 <motion.div
                     animate={{ rotate: 360 }}
                     transition={{ repeat: Infinity, duration: 2, ease: "linear" }}
@@ -26,7 +28,8 @@ export function Loader({
                     }}
                 />
 
-                {/* Ring 2 - Slow / Opposite */}
+                {
+}
                 <motion.div
                     animate={{ rotate: -360 }}
                     transition={{ repeat: Infinity, duration: 3, ease: "linear" }}
@@ -38,7 +41,8 @@ export function Loader({
                     }}
                 />
 
-                {/* Central Core */}
+                {
+}
                 <motion.div
                     animate={{ scale: [1, 1.15, 1], opacity: [0.7, 1, 0.7] }}
                     transition={{ repeat: Infinity, duration: 1.5, ease: "easeInOut" }}
@@ -49,7 +53,8 @@ export function Loader({
                     <Zap className="w-6 h-6 text-violet-400 relative z-10" />
                 </motion.div>
 
-                {/* Ambient background glow */}
+                {
+}
                 <motion.div
                     animate={{ scale: [1, 1.5, 1], opacity: [0.1, 0.3, 0.1] }}
                     transition={{ repeat: Infinity, duration: 2, ease: "easeInOut" }}

@@ -19,11 +19,10 @@ from backend.strategy_agent import plan_strategy
 from backend.content_agent import generate_content
 from backend.supabase_client import persist_agent_trace
 
-
 def build_graph() -> StateGraph:
     """
     Build the campaign creation LangGraph.
-    
+
     Topology:
         START → load_cohort → plan_strategy → generate_content → END
     """
@@ -40,11 +39,10 @@ def build_graph() -> StateGraph:
 
     return graph.compile()
 
-
 async def run_campaign_graph(brief: str) -> dict:
     """
     Full orchestrator: configure tracing → build graph → invoke → persist trace.
-    
+
     Returns dict with segments, segment_variants, and per-segment content.
     """
     started_at = time.time()

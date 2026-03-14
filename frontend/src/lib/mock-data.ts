@@ -1,11 +1,5 @@
-/**
- * MOCK DATA - CampaignX AI Platform
- * All data here is hardcoded for demo purposes.
- * In production, this would be fetched from:
- * - CampaignX API (customer cohort, campaign reports)
- * - Supabase (stored campaigns, history)
- * - AI-generated content
- */
+
+
 
 export const MOCK_CAMPAIGNS = [
   {
